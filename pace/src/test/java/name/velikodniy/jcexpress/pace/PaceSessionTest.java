@@ -257,18 +257,15 @@ class PaceSessionTest {
 
             private int determineStep(byte[] data) {
                 if (data == null || data.length <= 4) return 1; // empty 7C 00
-                // Check for specific tags inside 7C
-                if (containsTag(data, Tags.PACE_MAP_DATA)) return 2;
-                if (containsTag(data, Tags.PACE_EPHEMERAL_PK)) return 3;
-                if (containsTag(data, Tags.PACE_AUTH_TOKEN)) return 4;
+                // Parse TLV properly to find the tag inside 7C
+                var parsed = name.velikodniy.jcexpress.tlv.TLVParser.parse(data);
+                var outer = parsed.find(Tags.DYNAMIC_AUTH_DATA);
+                if (outer.isEmpty()) return 1;
+                var children = outer.get().children();
+                if (children.contains(Tags.PACE_MAP_DATA)) return 2;
+                if (children.contains(Tags.PACE_EPHEMERAL_PK)) return 3;
+                if (children.contains(Tags.PACE_AUTH_TOKEN)) return 4;
                 return 1;
-            }
-
-            private boolean containsTag(byte[] data, int tag) {
-                for (int i = 0; i < data.length - 1; i++) {
-                    if ((data[i] & 0xFF) == tag) return true;
-                }
-                return false;
             }
 
             private byte[] extractPubKey(byte[] data, int tag) {
