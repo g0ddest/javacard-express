@@ -16,7 +16,7 @@ import name.velikodniy.jcexpress.SmartCardSession;
  * and extended APDUs (data up to 65535 bytes, Le up to 65536).
  * The encoding format is chosen automatically based on data length and Le.</p>
  *
- * <h3>Basic usage:</h3>
+ * <h2>Basic usage:</h2>
  * <pre>
  * // Build raw bytes
  * byte[] apdu = APDUBuilder.command()
@@ -31,7 +31,7 @@ import name.velikodniy.jcexpress.SmartCardSession;
  *     .sendTo(session);
  * </pre>
  *
- * <h3>Convenience factory methods:</h3>
+ * <h2>Convenience factory methods:</h2>
  * <pre>
  * // SELECT by AID
  * APDUResponse r = APDUBuilder.select("A0000000031010").sendTo(session);
@@ -46,7 +46,7 @@ import name.velikodniy.jcexpress.SmartCardSession;
  *     .sendTo(session);
  * </pre>
  *
- * <h3>APDU structure (ISO 7816-4):</h3>
+ * <h2>APDU structure (ISO 7816-4):</h2>
  * <pre>
  * Short:    CLA INS P1 P2 [Lc(1) Data(1-255)] [Le(1)]
  * Extended: CLA INS P1 P2 0x00 [Lc(2) Data(1-65535)] [Le(2)]

@@ -12,7 +12,7 @@ import java.util.Arrays;
  * <p>SCP03 uses AES for both MAC (AES-CMAC) and encryption (AES-CBC) operations.
  * It provides stronger security than SCP02 and supports AES-128 and AES-256 keys.</p>
  *
- * <h3>Key differences from SCP02:</h3>
+ * <h2>Key differences from SCP02:</h2>
  * <ul>
  *   <li>AES-CMAC instead of 3DES retail MAC</li>
  *   <li>AES-CBC instead of 3DES-CBC for encryption</li>
@@ -21,7 +21,7 @@ import java.util.Arrays;
  *   <li>Encryption IV derived from MAC chaining value</li>
  * </ul>
  *
- * <h3>Authentication flow:</h3>
+ * <h2>Authentication flow:</h2>
  * <pre>
  * // 1. Parse INITIALIZE UPDATE response
  * SCP03 scp = SCP03.from(keys, hostChallenge, initUpdateResponse);

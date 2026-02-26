@@ -6,7 +6,7 @@ package name.velikodniy.jcexpress.gp;
  * <p>Thrown when GP commands fail: authentication errors, unexpected status words,
  * malformed responses, etc. Includes the status word from the card when applicable.</p>
  *
- * <h3>Typical scenarios:</h3>
+ * <h2>Typical scenarios:</h2>
  * <ul>
  *   <li>INITIALIZE UPDATE returns non-9000 status</li>
  *   <li>EXTERNAL AUTHENTICATE fails (wrong keys, wrong SCP version)</li>
@@ -16,6 +16,7 @@ package name.velikodniy.jcexpress.gp;
  */
 public class GPException extends RuntimeException {
 
+    /** The ISO 7816 status word returned by the card (0 if not applicable). */
     private final int statusWord;
 
     /**

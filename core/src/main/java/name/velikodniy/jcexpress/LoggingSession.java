@@ -15,7 +15,7 @@ import java.util.logging.Logger;
  * calls, recording each exchange as an {@link APDULogEntry}. Optionally prints to
  * java.util.logging for human-readable output.</p>
  *
- * <h3>Usage — programmatic access:</h3>
+ * <h2>Usage — programmatic access:</h2>
  * <pre>
  * LoggingSession logged = LoggingSession.wrap(card);
  * logged.send(0x80, 0x01);
@@ -27,7 +27,7 @@ import java.util.logging.Logger;
  * String dump = logged.dump();  // human-readable text
  * </pre>
  *
- * <h3>Usage — with console logging:</h3>
+ * <h2>Usage — with console logging:</h2>
  * <pre>
  * LoggingSession logged = LoggingSession.wrap(card, true);
  * // APDUs are printed to java.util.logging as they are sent

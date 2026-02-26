@@ -23,7 +23,7 @@ import java.util.zip.ZipInputStream;
  * in the order defined by the JCVM specification, and produces the load file data
  * wrapped in a C4 BER-TLV structure ready for transmission.</p>
  *
- * <h3>Usage:</h3>
+ * <h2>Usage:</h2>
  * <pre>
  * CAPFile cap = CAPFile.from(Files.readAllBytes(Path.of("applet.cap")));
  *
@@ -34,7 +34,7 @@ import java.util.zip.ZipInputStream;
  * gp.load(cap);
  * </pre>
  *
- * <h3>Component order (JCVM specification):</h3>
+ * <h2>Component order (JCVM specification):</h2>
  * <p>Header, Directory, Import, Applet, Class, Method, StaticField, Export,
  * ConstantPool, RefLocation, Descriptor. Debug is excluded.</p>
  *

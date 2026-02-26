@@ -9,14 +9,14 @@ import name.velikodniy.jcexpress.crypto.CryptoUtil;
  * a master key using the card's diversification data (returned in the first 10 bytes
  * of the INITIALIZE UPDATE response).</p>
  *
- * <h3>Supported algorithms:</h3>
+ * <h2>Supported algorithms:</h2>
  * <ul>
  *   <li>{@link #visa2} — VISA2 diversification (3DES, used with SCP02)</li>
  *   <li>{@link #emvCps11} — EMV CPS 1.1 diversification (3DES, used with SCP02)</li>
  *   <li>{@link #kdf3} — KDF3 diversification (AES-CMAC, used with SCP03)</li>
  * </ul>
  *
- * <h3>Usage with GPSession:</h3>
+ * <h2>Usage with GPSession:</h2>
  * <pre>
  * GPSession gp = GPSession.on(card)
  *     .keys(SCPKeys.fromMasterKey(masterKey))
@@ -24,7 +24,7 @@ import name.velikodniy.jcexpress.crypto.CryptoUtil;
  *     .open();
  * </pre>
  *
- * @see GPSession
+ * @see name.velikodniy.jcexpress.gp.GPSession
  */
 public final class KeyDiversification {
 

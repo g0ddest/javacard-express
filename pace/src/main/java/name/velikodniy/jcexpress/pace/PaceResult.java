@@ -36,21 +36,25 @@ public record PaceResult(byte[] encKey, byte[] macKey, byte[] cardToken, byte[] 
         termToken = termToken.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] encKey() {
         return encKey.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] macKey() {
         return macKey.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] cardToken() {
         return cardToken.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] termToken() {
         return termToken.clone();

@@ -31,7 +31,7 @@ import java.util.function.BiFunction;
  * All commands sent through an opened GPSession are automatically wrapped
  * with the secure channel (C-MAC, optionally C-ENC).</p>
  *
- * <h3>Authentication flow (performed by {@link #open()}):</h3>
+ * <h2>Authentication flow (performed by {@link #open()}):</h2>
  * <ol>
  *   <li>Sends INITIALIZE UPDATE (INS=0x50) with random 8-byte host challenge</li>
  *   <li>Parses response → auto-detects SCP02 vs SCP03</li>
@@ -39,7 +39,7 @@ import java.util.function.BiFunction;
  *   <li>Sends EXTERNAL AUTHENTICATE (INS=0x82) with host cryptogram, wrapped with C-MAC</li>
  * </ol>
  *
- * <h3>Usage:</h3>
+ * <h2>Usage:</h2>
  * <pre>
  * GPSession gp = GPSession.on(session)
  *     .keys(SCPKeys.defaultKeys())
@@ -51,7 +51,7 @@ import java.util.function.BiFunction;
  * gp.close();
  * </pre>
  *
- * <h3>Custom configuration:</h3>
+ * <h2>Custom configuration:</h2>
  * <pre>
  * GPSession gp = GPSession.on(session)
  *     .keys(SCPKeys.of(enc, mac, dek))
@@ -192,7 +192,7 @@ public final class GPSession implements AutoCloseable {
      * data (first 10 bytes of the INITIALIZE UPDATE response) before creating
      * the secure channel session.</p>
      *
-     * <h3>Example:</h3>
+     * <p><strong>Example:</strong></p>
      * <pre>
      * GPSession gp = GPSession.on(card)
      *     .keys(SCPKeys.fromMasterKey(masterKey))
@@ -496,7 +496,7 @@ public final class GPSession implements AutoCloseable {
      * <p>Sends GET STATUS (INS=F2) with TLV response format and parses
      * the result into a list of {@link AppletInfo} entries.</p>
      *
-     * <h3>Scope values:</h3>
+     * <p><strong>Scope values:</strong></p>
      * <ul>
      *   <li>{@code 0x80} — Issuer Security Domain only</li>
      *   <li>{@code 0x40} — Applications and Security Domains</li>
@@ -828,7 +828,7 @@ public final class GPSession implements AutoCloseable {
      *
      * <p>Sends SET STATUS (INS=0xF0) with the specified scope, AID, and new state.</p>
      *
-     * <h3>Scope values:</h3>
+     * <p><strong>Scope values:</strong></p>
      * <ul>
      *   <li>{@link Lifecycle#SCOPE_ISD} (0x80) — Issuer Security Domain</li>
      *   <li>{@link Lifecycle#SCOPE_APPS} (0x40) — Applications and Security Domains</li>

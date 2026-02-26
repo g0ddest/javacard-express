@@ -26,11 +26,13 @@ public record SMKeys(byte[] encKey, byte[] macKey) {
         macKey = macKey.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] encKey() {
         return encKey.clone();
     }
 
+    /** {@inheritDoc} */
     @Override
     public byte[] macKey() {
         return macKey.clone();

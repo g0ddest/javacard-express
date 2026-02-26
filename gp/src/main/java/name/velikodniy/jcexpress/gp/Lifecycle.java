@@ -6,7 +6,7 @@ package name.velikodniy.jcexpress.gp;
  * <p>Defines constants for application, card manager (ISD), and load file
  * lifecycle states as specified in the GlobalPlatform Card Specification.</p>
  *
- * <h3>Application lifecycle:</h3>
+ * <h2>Application lifecycle:</h2>
  * <pre>
  * INSTALLED (03) → SELECTABLE (07) → PERSONALIZED (0F)
  *       ↓              ↓                   ↓
@@ -15,7 +15,7 @@ package name.velikodniy.jcexpress.gp;
  *                                    TERMINATED (FF)
  * </pre>
  *
- * <h3>Card Manager (ISD) lifecycle:</h3>
+ * <h2>Card Manager (ISD) lifecycle:</h2>
  * <pre>
  * OP_READY (01) → INITIALIZED (07) → SECURED (0F)
  *                                        ↓

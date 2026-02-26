@@ -9,7 +9,7 @@ import java.util.StringJoiner;
  * security domain on a smart card. These bits are typically found in the
  * INSTALL [for install] command and in GET STATUS responses (tag C5).</p>
  *
- * <h3>Byte 1 bits (GP Card Specification 2.2+):</h3>
+ * <h2>Byte 1 bits (GP Card Specification 2.2+):</h2>
  * <ul>
  *   <li>Bit 8 ({@link #SECURITY_DOMAIN}) — entry is a Security Domain</li>
  *   <li>Bit 7 ({@link #DAP_VERIFICATION}) — DAP verification</li>

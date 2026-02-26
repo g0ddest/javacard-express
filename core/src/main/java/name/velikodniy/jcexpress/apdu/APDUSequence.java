@@ -15,7 +15,7 @@ import java.io.ByteArrayOutputStream;
  * <p>When a card returns 6CXX, it means the command should be retried with Le=XX.
  * This class retries the original command once with the corrected Le value.</p>
  *
- * <h3>Usage:</h3>
+ * <h2>Usage:</h2>
  * <pre>
  * // Simple: auto-handle GET RESPONSE and Le correction
  * APDUResponse full = APDUSequence.on(session)

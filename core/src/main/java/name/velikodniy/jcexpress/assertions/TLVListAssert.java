@@ -8,6 +8,11 @@ import org.assertj.core.api.AbstractAssert;
  */
 public class TLVListAssert extends AbstractAssert<TLVListAssert, TLVList> {
 
+    /**
+     * Creates a new assertion for the given TLV list.
+     *
+     * @param actual the TLV list to assert on
+     */
     public TLVListAssert(TLVList actual) {
         super(actual, TLVListAssert.class);
     }

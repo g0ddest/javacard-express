@@ -16,7 +16,7 @@ import java.util.List;
  * and one or more key components describing the cryptographic algorithm
  * and key length.</p>
  *
- * <h3>C0 entry format:</h3>
+ * <h2>C0 entry format:</h2>
  * <pre>
  * C0 len keyId(1) keyVersion(1) [keyType(1) keyLength(1)]+
  * </pre>
@@ -61,10 +61,12 @@ public record KeyInfoEntry(
             };
         }
 
-        /** Returns true if this is a Triple DES key component. */
+        /** Returns true if this is a Triple DES key component.
+         * @return true for DES3 keys */
         public boolean isDes3() { return keyType == TYPE_DES3; }
 
-        /** Returns true if this is an AES key component. */
+        /** Returns true if this is an AES key component.
+         * @return true for AES keys */
         public boolean isAes() { return keyType == TYPE_AES; }
 
         @Override

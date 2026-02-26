@@ -12,7 +12,7 @@ import name.velikodniy.jcexpress.Hex;
  *   <li><b>DEK</b> — data encryption key (for encrypting sensitive data like new keys)</li>
  * </ul>
  *
- * <h3>Usage:</h3>
+ * <h2>Usage:</h2>
  * <pre>
  * // Default test keys (all 404142...4F)
  * SCPKeys keys = SCPKeys.defaultKeys();

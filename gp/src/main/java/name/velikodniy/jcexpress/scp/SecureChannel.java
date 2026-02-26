@@ -10,7 +10,7 @@ import name.velikodniy.jcexpress.APDUResponse;
  * Once established, all subsequent commands to the card should
  * be wrapped through this interface.</p>
  *
- * <h3>Typical lifecycle:</h3>
+ * <h2>Typical lifecycle:</h2>
  * <ol>
  *   <li>Create session keys from INITIALIZE UPDATE response</li>
  *   <li>Verify card cryptogram</li>

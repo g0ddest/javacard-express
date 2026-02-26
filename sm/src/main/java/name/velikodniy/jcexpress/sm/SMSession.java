@@ -16,7 +16,7 @@ import javacard.framework.Applet;
  * <p>Lifecycle methods ({@code install}, {@code select}, {@code reset}, {@code close})
  * are delegated directly without SM wrapping.</p>
  *
- * <h3>Usage:</h3>
+ * <h2>Usage:</h2>
  * <pre>
  * SMKeys keys = new SMKeys(encKey, macKey);
  * SMContext ctx = new SMContext(SMAlgorithm.DES3, keys, initialSsc);

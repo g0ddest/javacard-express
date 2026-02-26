@@ -8,13 +8,13 @@ package name.velikodniy.jcexpress;
  * and security state. The channel number is encoded in the CLA byte
  * (bits [1:0] for basic channels 0-3).</p>
  *
- * <h3>Usage — basic channel (no MANAGE CHANNEL):</h3>
+ * <h2>Usage — basic channel (no MANAGE CHANNEL):</h2>
  * <pre>
  * LogicalChannel ch1 = LogicalChannel.basic(card, 1);
  * ch1.send(0x00, 0xA4, 0x04, 0x00, aid);  // CLA becomes 0x01
  * </pre>
  *
- * <h3>Usage — managed channel (MANAGE CHANNEL open/close):</h3>
+ * <h2>Usage — managed channel (MANAGE CHANNEL open/close):</h2>
  * <pre>
  * try (LogicalChannel ch = LogicalChannel.open(card)) {
  *     ch.select(AID.fromHex("A0000000031010"));

@@ -10,7 +10,7 @@ import java.util.Arrays;
  * <p>Each entry represents an application, security domain, or executable load file
  * installed on the card.</p>
  *
- * <h3>Lifecycle states (from GP Card Spec):</h3>
+ * <h2>Lifecycle states (from GP Card Spec):</h2>
  * <ul>
  *   <li>{@code 0x03} — INSTALLED</li>
  *   <li>{@code 0x07} — SELECTABLE (INSTALLED + made selectable)</li>

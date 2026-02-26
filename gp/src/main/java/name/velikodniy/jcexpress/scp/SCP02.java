@@ -17,7 +17,7 @@ import java.util.Arrays;
  *   <li><b>C-MAC + C-ENC + R-MAC</b> — full bidirectional protection</li>
  * </ul>
  *
- * <h3>Authentication flow:</h3>
+ * <h2>Authentication flow:</h2>
  * <pre>
  * // 1. Parse INITIALIZE UPDATE response
  * SCP02 scp = SCP02.from(keys, initUpdateResponse);
@@ -32,7 +32,7 @@ import java.util.Arrays;
  * byte[] wrapped = scp.wrap(plainApdu);
  * </pre>
  *
- * <h3>Session key derivation (per GP Card Spec 2.1.1):</h3>
+ * <h2>Session key derivation (per GP Card Spec 2.1.1):</h2>
  * <ul>
  *   <li>C-MAC key: 3DES-CBC(staticMAC, 0101 || seqCounter || 0x00*12)</li>
  *   <li>R-MAC key: 3DES-CBC(staticMAC, 0102 || seqCounter || 0x00*12)</li>

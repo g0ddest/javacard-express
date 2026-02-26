@@ -16,7 +16,7 @@ import java.util.Optional;
  * which includes OIDs describing the card's capabilities (supported protocols,
  * cryptographic algorithms, etc.).</p>
  *
- * <h3>Response structure:</h3>
+ * <h2>Response structure:</h2>
  * <pre>
  * 66 len                           — Card Data template
  *   73 len                         — Card Recognition Data

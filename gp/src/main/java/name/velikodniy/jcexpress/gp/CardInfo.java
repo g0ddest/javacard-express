@@ -11,7 +11,7 @@ import java.util.Arrays;
  * key configuration and provides the data needed for session key derivation
  * and mutual authentication.</p>
  *
- * <h3>Response structure (28+ bytes):</h3>
+ * <h2>Response structure (28+ bytes):</h2>
  * <pre>
  * Offset  Length  Description
  * 0       10      Key diversification data

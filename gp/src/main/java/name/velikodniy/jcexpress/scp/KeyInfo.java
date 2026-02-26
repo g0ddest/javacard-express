@@ -11,7 +11,7 @@ import java.util.Arrays;
  * the key itself. It is included in PUT KEY commands to allow the card
  * to confirm that the key was received correctly.</p>
  *
- * <h3>KCV computation:</h3>
+ * <h2>KCV computation:</h2>
  * <ul>
  *   <li><b>DES3:</b> first 3 bytes of 3DES-ECB(key, 0x00[8])</li>
  *   <li><b>AES:</b> first 3 bytes of AES-ECB(key, 0x01[16])</li>
@@ -37,7 +37,8 @@ public final class KeyInfo {
             this.code = code;
         }
 
-        /** Returns the GP key type code byte. */
+        /** Returns the GP key type code byte.
+         * @return key type code */
         public int code() {
             return code;
         }

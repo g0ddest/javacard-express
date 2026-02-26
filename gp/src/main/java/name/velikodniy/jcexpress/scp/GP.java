@@ -3,13 +3,13 @@ package name.velikodniy.jcexpress.scp;
 /**
  * GlobalPlatform constants for Secure Channel Protocol operations.
  *
- * <h3>CLA bytes:</h3>
+ * <h2>CLA bytes:</h2>
  * <ul>
  *   <li>{@link #CLA_GP} — standard GP commands (0x80)</li>
  *   <li>{@link #CLA_GP_SECURE} — GP commands with C-MAC (0x84)</li>
  * </ul>
  *
- * <h3>INS bytes:</h3>
+ * <h2>INS bytes:</h2>
  * <ul>
  *   <li>{@link #INS_INITIALIZE_UPDATE} — begin SCP authentication (0x50)</li>
  *   <li>{@link #INS_EXTERNAL_AUTHENTICATE} — complete authentication (0x82)</li>
@@ -22,7 +22,7 @@ package name.velikodniy.jcexpress.scp;
  *   <li>{@link #INS_STORE_DATA} — send data to applet (0xE2)</li>
  * </ul>
  *
- * <h3>SCP02 key derivation constants:</h3>
+ * <h2>SCP02 key derivation constants:</h2>
  * <ul>
  *   <li>{@link #SCP02_DERIVE_C_MAC} — C-MAC session key derivation</li>
  *   <li>{@link #SCP02_DERIVE_R_MAC} — R-MAC session key derivation</li>
@@ -30,7 +30,7 @@ package name.velikodniy.jcexpress.scp;
  *   <li>{@link #SCP02_DERIVE_DEK} — data encryption session key derivation</li>
  * </ul>
  *
- * <h3>SCP03 key derivation constants:</h3>
+ * <h2>SCP03 key derivation constants:</h2>
  * <ul>
  *   <li>{@link #SCP03_DERIVE_C_MAC} — C-MAC session key</li>
  *   <li>{@link #SCP03_DERIVE_R_MAC} — R-MAC session key</li>

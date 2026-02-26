@@ -10,7 +10,7 @@ import java.util.Arrays;
  * (Lc up to 65535, Le up to 65536). The encoding format is chosen automatically
  * based on the data length and Le value.</p>
  *
- * <h3>Short APDU format:</h3>
+ * <h2>Short APDU format:</h2>
  * <pre>
  * Case 1:  CLA INS P1 P2
  * Case 2S: CLA INS P1 P2 Le(1)
@@ -18,7 +18,7 @@ import java.util.Arrays;
  * Case 4S: CLA INS P1 P2 Lc(1) Data(1-255) Le(1)
  * </pre>
  *
- * <h3>Extended APDU format:</h3>
+ * <h2>Extended APDU format:</h2>
  * <pre>
  * Case 2E: CLA INS P1 P2 0x00 Le_hi Le_lo
  * Case 3E: CLA INS P1 P2 0x00 Lc_hi Lc_lo Data(1-65535)

@@ -11,7 +11,7 @@ import java.util.Arrays;
  * the complete production history of the card: IC fabrication, module packaging,
  * card embedding, pre-personalization, and personalization details.</p>
  *
- * <h3>Structure (GP Amendments B):</h3>
+ * <h2>Structure (GP Amendments B):</h2>
  * <pre>
  * Offset  Length  Field
  * 0       2       IC Fabricator
