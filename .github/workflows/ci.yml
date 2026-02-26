@@ -19,7 +19,7 @@ jobs:
           java-version: ${{ matrix.java }}
           distribution: temurin
           cache: maven
-      - run: ./mvnw clean verify -B
+      - run: ./mvnw clean verify -pl !container -B
 
   container-test:
     runs-on: ubuntu-latest
