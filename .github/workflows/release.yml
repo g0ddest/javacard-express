@@ -26,8 +26,11 @@ jobs:
       - name: Set version from tag
         run: ./mvnw versions:set -DnewVersion=${GITHUB_REF_NAME#v} -B -q
 
+      - name: Build server JAR for container tests
+        run: cd docker && ../mvnw package -B -q
+
       - name: Build and deploy to Maven Central
-        run: ./mvnw clean deploy -Prelease -pl !container -B
+        run: ./mvnw clean deploy -Prelease -B
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
