@@ -1,5 +1,8 @@
 # JavaCard Express :: GlobalPlatform
 
+[![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-gp)](https://search.maven.org/artifact/name.velikodniy/javacard-express-gp)
+[![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-gp/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-gp)
+
 Full GlobalPlatform card management with SCP02 and SCP03 secure channels. Automates INITIALIZE UPDATE + EXTERNAL AUTHENTICATE, then wraps all subsequent commands with C-MAC/C-ENC transparently. Includes key management, key diversification, lifecycle management, Security Domain operations, and CAP file parsing.
 
 ## Installation

@@ -1,5 +1,8 @@
 # JavaCard Express :: PACE
 
+[![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-pace)](https://search.maven.org/artifact/name.velikodniy/javacard-express-pace)
+[![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-pace/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-pace)
+
 PACE (Password Authenticated Connection Establishment) per BSI TR-03110 / ICAO 9303 Part 11. Supports ECDH with Generic Mapping on Brainpool and NIST curves, with AES-CBC-CMAC key agreement. After authentication, the result integrates directly with the [Secure Messaging module](../sm/README.md) for subsequent protected communication. Part of the [JavaCard Express](../README.md) toolkit.
 
 ## Installation

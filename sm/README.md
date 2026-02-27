@@ -1,5 +1,8 @@
 # JavaCard Express :: Secure Messaging
 
+[![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-sm)](https://search.maven.org/artifact/name.velikodniy/javacard-express-sm)
+[![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-sm/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-sm)
+
 ISO 7816-4 Secure Messaging with DES3 (ePassport BAC) and AES (PACE/EAC) algorithm suites. Wraps and unwraps APDUs with DO87/DO97/DO8E/DO99 data objects, handles Send Sequence Counter (SSC) incrementing automatically. Part of the [JavaCard Express](../README.md) toolkit.
 
 > **Note:** ISO 7816-4 Secure Messaging is a different protocol from GlobalPlatform SCP. SM is used by ePassports (ICAO 9303, BAC/PACE), national ID cards, and other non-GP applications. For GP secure channels, see the [GlobalPlatform module](../gp/README.md).

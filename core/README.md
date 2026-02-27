@@ -1,5 +1,8 @@
 # JavaCard Express :: Core
 
+[![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-core)](https://search.maven.org/artifact/name.velikodniy/javacard-express-core)
+[![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-core/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-core)
+
 Core module — provides the `SmartCardSession` interface, embedded jCardSim backend, APDU builder/codec/sequence, BER-TLV parser with path navigation, fluent AssertJ assertions, PIN helpers, logical channels, APDU logging, memory probing, well-known AIDs, and more.
 
 ## Installation

@@ -1,5 +1,7 @@
 # JavaCard Express
 
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=g0ddest_javacard-express&metric=coverage)](https://sonarcloud.io/summary/new_code?id=g0ddest_javacard-express)
+
 A Java toolkit for JavaCard development — APDU encoding, BER-TLV parsing, GlobalPlatform secure channels, ISO 7816-4 Secure Messaging, PACE, and more. Ships with JUnit 5 integration for zero-config applet testing.
 
 ## Why JavaCard Express
