@@ -21,6 +21,34 @@ jobs:
           cache: maven
       - run: ./mvnw clean verify -pl !container -B
 
+  sonar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: maven
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+      - name: Build and analyze
+        if: env.SONAR_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: >-
+          ./mvnw clean verify sonar:sonar -pl !container -B
+          -Dsonar.projectKey=g0ddest_javacard-express
+          -Dsonar.organization=g0ddest
+          -Dsonar.host.url=https://sonarcloud.io
+
   container-test:
     runs-on: ubuntu-latest
     steps:
