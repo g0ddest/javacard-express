@@ -28,7 +28,7 @@ Add the plugin and API stubs to your applet project:
     <dependency>
         <groupId>name.velikodniy</groupId>
         <artifactId>javacard-express-api</artifactId>
-        <version>0.1.0</version>
+        <version>0.2.0</version>
         <scope>provided</scope>
     </dependency>
 </dependencies>
@@ -38,7 +38,7 @@ Add the plugin and API stubs to your applet project:
         <plugin>
             <groupId>name.velikodniy</groupId>
             <artifactId>javacard-express-maven-plugin</artifactId>
-            <version>0.1.0</version>
+            <version>0.2.0</version>
             <configuration>
                 <packageAid>A00000006212</packageAid>
             </configuration>
@@ -58,7 +58,7 @@ Add the test dependency:
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-core</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -139,7 +139,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-gp</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <scope>test</scope>
 </dependency>
 
@@ -147,7 +147,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-pace</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <scope>test</scope>
 </dependency>
 
@@ -155,7 +155,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-container</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <scope>test</scope>
 </dependency>
 ```

@@ -53,14 +53,6 @@ public record ExportFile(
         int minorVersion,
         List<ClassExport> classes
 ) {
-    /**
-     * Finds an exported class by its simple (unqualified) name.
-     *
-     * @param simpleName the simple class name (e.g., {@code "Applet"}, not
-     *                   {@code "javacard/framework/Applet"})
-     * @return the matching class export
-     * @throws NoSuchElementException if no class with the given name is exported
-     */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -89,6 +81,14 @@ public record ExportFile(
                 + ", classes=" + classes + "]";
     }
 
+    /**
+     * Finds an exported class by its simple (unqualified) name.
+     *
+     * @param simpleName the simple class name (e.g., {@code "Applet"}, not
+     *                   {@code "javacard/framework/Applet"})
+     * @return the matching class export
+     * @throws NoSuchElementException if no class with the given name is exported
+     */
     public ClassExport findClass(String simpleName) {
         for (ClassExport ce : classes) {
             if (ce.name().equals(simpleName)) return ce;

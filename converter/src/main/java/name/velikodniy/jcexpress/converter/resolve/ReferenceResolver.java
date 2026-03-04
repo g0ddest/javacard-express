@@ -47,7 +47,7 @@ import java.util.function.Consumer;
  *
  * <h2>Import Finalization</h2>
  * <p>The resolver tracks which imported packages are actually referenced during translation.
- * After all bytecode has been processed, {@link #finalizeImports()} prunes unreferenced
+ * After all bytecode has been processed, {@link #finalizeImports(JavaCardVersion) finalizeImports()} prunes unreferenced
  * packages and reassigns contiguous package tokens, then remaps all external CP entries
  * to use the new token values.
  *
@@ -689,7 +689,7 @@ public final class ReferenceResolver {
 
     /**
      * Remaps CP indices in pending internal reference patches after constant pool reordering.
-     * Must be called after {@link JcvmConstantPool#reorderInstanceFieldsFirst()} and before
+     * Must be called after {@link JcvmConstantPool#reorderInstanceFieldsFirst(Map) reorderInstanceFieldsFirst()} and before
      * {@link #patchInternalRefs} so that deferred patches target the correct (reordered) entries.
      *
      * @param remap old CP index → new CP index mapping

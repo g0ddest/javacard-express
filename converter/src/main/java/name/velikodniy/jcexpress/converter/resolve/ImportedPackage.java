@@ -25,13 +25,13 @@ import java.util.Objects;
  *       or constructed directly for user-provided export files.</li>
  *   <li>Passed to {@link ReferenceResolver} which looks up class/method/field tokens
  *       during bytecode translation.</li>
- *   <li>After translation, {@link ReferenceResolver#finalizeImports()} prunes unreferenced
+ *   <li>After translation, {@link ReferenceResolver#finalizeImports(name.velikodniy.jcexpress.converter.JavaCardVersion) finalizeImports()} prunes unreferenced
  *       packages and reassigns contiguous tokens.</li>
  *   <li>The finalized list is serialized into the Import Component of the CAP file.</li>
  * </ol>
  *
  * @param token        import index (0-based), used as the package token in external CP
- *                     references; reassigned by {@link ReferenceResolver#finalizeImports()}
+ *                     references; reassigned by {@link ReferenceResolver#finalizeImports(name.velikodniy.jcexpress.converter.JavaCardVersion) finalizeImports()}
  * @param aid          Application Identifier (AID) of the imported package, as defined by
  *                     ISO 7816-5 (typically 5-16 bytes)
  * @param majorVersion major version of the imported package API
