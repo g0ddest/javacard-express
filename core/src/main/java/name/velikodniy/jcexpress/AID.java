@@ -62,6 +62,7 @@ public final class AID {
      * @param appletClass the applet class
      * @return a deterministic AID
      */
+    @SuppressWarnings("java:S4790") // SHA-1 used for deterministic AID generation, not security
     public static AID auto(Class<?> appletClass) {
         try {
             MessageDigest sha1 = MessageDigest.getInstance("SHA-1");

@@ -5,7 +5,7 @@ RUN mvn dependency:go-offline -B
 COPY src src
 RUN mvn package -B -q -DskipTests
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 COPY --from=build /app/target/jcx-simulator-*[!s].jar server.jar
 EXPOSE 9876
