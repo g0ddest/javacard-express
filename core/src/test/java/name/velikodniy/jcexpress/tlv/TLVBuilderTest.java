@@ -22,7 +22,7 @@ class TLVBuilderTest {
                 .add(Tags.DF_NAME, "A0000000031010")
                 .build();
         TLVList parsed = TLVParser.parse(data);
-        assertThat(parsed.size()).isEqualTo(1);
+        assertThat(parsed).hasSize(1);
         assertThat(parsed.get(0).tag()).isEqualTo(0x84);
         assertThat(parsed.get(0).valueHex()).isEqualTo("A0000000031010");
     }
@@ -35,7 +35,7 @@ class TLVBuilderTest {
                 )
                 .build();
         TLVList parsed = TLVParser.parse(data);
-        assertThat(parsed.size()).isEqualTo(1);
+        assertThat(parsed).hasSize(1);
         TLV fci = parsed.get(0);
         assertThat(fci.tag()).isEqualTo(0x6F);
         assertThat(fci.isConstructed()).isTrue();

@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.sm;
 
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -36,5 +38,27 @@ public record SMKeys(byte[] encKey, byte[] macKey) {
     @Override
     public byte[] macKey() {
         return macKey.clone();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o instanceof SMKeys(var ek, var mk)) {
+            return Arrays.equals(encKey, ek)
+                    && Arrays.equals(macKey, mk);
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * Arrays.hashCode(encKey) + Arrays.hashCode(macKey);
+    }
+
+    @Override
+    public String toString() {
+        HexFormat hex = HexFormat.of();
+        return "SMKeys[encKey=" + hex.formatHex(encKey)
+                + ", macKey=" + hex.formatHex(macKey) + "]";
     }
 }

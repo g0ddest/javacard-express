@@ -38,8 +38,7 @@ class AIDTest {
     void shouldSupportEquality() {
         AID a = AID.fromHex("A0000000031010");
         AID b = AID.of(0xA0, 0x00, 0x00, 0x00, 0x03, 0x10, 0x10);
-        assertThat(a).isEqualTo(b);
-        assertThat(a.hashCode()).isEqualTo(b.hashCode());
+        assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
     }
 
     @Test

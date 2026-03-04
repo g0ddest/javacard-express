@@ -45,7 +45,7 @@ public class SmartCardContainer extends GenericContainer<SmartCardContainer> {
         // Use a simple single-stage Dockerfile with the pre-built JAR
         return new ImageFromDockerfile("jcx-simulator", false)
                 .withDockerfileFromBuilder(builder -> builder
-                        .from("eclipse-temurin:17-jre")
+                        .from("eclipse-temurin:25-jre")
                         .workDir("/app")
                         .copy("server.jar", "server.jar")
                         .expose(SERVER_PORT)

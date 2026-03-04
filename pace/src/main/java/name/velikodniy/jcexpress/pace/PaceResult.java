@@ -6,6 +6,8 @@ import name.velikodniy.jcexpress.sm.SMContext;
 import name.velikodniy.jcexpress.sm.SMKeys;
 import name.velikodniy.jcexpress.sm.SMSession;
 
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -58,6 +60,36 @@ public record PaceResult(byte[] encKey, byte[] macKey, byte[] cardToken, byte[] 
     @Override
     public byte[] termToken() {
         return termToken.clone();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o instanceof PaceResult(var ek, var mk, var ct, var tt)) {
+            return Arrays.equals(encKey, ek)
+                    && Arrays.equals(macKey, mk)
+                    && Arrays.equals(cardToken, ct)
+                    && Arrays.equals(termToken, tt);
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = Arrays.hashCode(encKey);
+        result = 31 * result + Arrays.hashCode(macKey);
+        result = 31 * result + Arrays.hashCode(cardToken);
+        result = 31 * result + Arrays.hashCode(termToken);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        HexFormat hex = HexFormat.of();
+        return "PaceResult[encKey=" + hex.formatHex(encKey)
+                + ", macKey=" + hex.formatHex(macKey)
+                + ", cardToken=" + hex.formatHex(cardToken)
+                + ", termToken=" + hex.formatHex(termToken) + "]";
     }
 
     /**

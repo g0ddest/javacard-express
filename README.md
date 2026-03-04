@@ -2,13 +2,15 @@
 
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=g0ddest_javacard-express&metric=coverage)](https://sonarcloud.io/summary/new_code?id=g0ddest_javacard-express)
 
-A Java toolkit for JavaCard development — APDU encoding, BER-TLV parsing, GlobalPlatform secure channels, ISO 7816-4 Secure Messaging, PACE, and more. Ships with JUnit 5 integration for zero-config applet testing.
+A Java toolkit for JavaCard development — from building CAP files to testing on emulators. Includes a clean-room `.class` → `.cap` converter, Maven plugin, APDU encoding, BER-TLV parsing, GlobalPlatform secure channels, ISO 7816-4 Secure Messaging, PACE, and JUnit 5 integration for zero-config applet testing.
 
 ## Why JavaCard Express
 
 JavaCard development traditionally involves proprietary tools, physical card readers, and verbose boilerplate. JavaCard Express gives you:
 
-- **One dependency, zero setup** — add `javacard-express-core` and start writing code
+- **Build CAP files without Oracle SDK** — clean-room converter built from the JCVM specification, zero proprietary dependencies
+- **Maven plugin, zero config** — `mvn package` produces `.cap` files, auto-discovers applets
+- **One dependency for testing** — add `javacard-express-core` and start writing code
 - **Fluent, expressive API** — `card.send(0x80, 0x01).requireSuccess().data()` instead of manual byte wrangling
 - **Composable decorators** — `card.logged().send(...)`, `card.pin().verify(1, "1234")`
 - **Production-grade protocols** — SCP02/SCP03, ISO 7816-4 SM, PACE are fully implemented, not stubbed
@@ -17,7 +19,40 @@ JavaCard development traditionally involves proprietary tools, physical card rea
 
 ## Quick Start
 
-Add the dependency:
+### Build a CAP file
+
+Add the plugin and API stubs to your applet project:
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>name.velikodniy</groupId>
+        <artifactId>javacard-express-api</artifactId>
+        <version>0.1.0</version>
+        <scope>provided</scope>
+    </dependency>
+</dependencies>
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-maven-plugin</artifactId>
+            <version>0.1.0</version>
+            <configuration>
+                <packageAid>A00000006212</packageAid>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
+```
+
+Run `mvn package` — the plugin auto-discovers applets and produces `.cap` and `.exp`
+files in `target/`. No Oracle SDK required.
+
+### Test an applet
+
+Add the test dependency:
 
 ```xml
 <dependency>
@@ -73,10 +108,13 @@ PinSession pin = card.pin();
 
 ## Modules
 
-Five Maven modules — add only what you need:
+Maven modules — add only what you need:
 
 | Module | Artifact | Purpose | Docs |
-|--------|----------|---------|------|
+|--------|----------|---------|-----|
+| **API Stubs** | `javacard-express-api` | Clean-room JavaCard 3.0.5 API stubs (framework, security, crypto) ||
+| **Converter** | `javacard-express-converter` | Clean-room `.class` → `.cap` converter (JCVM spec, 8 JC versions) | [README](converter/README.md) |
+| **Maven Plugin** | `javacard-express-maven-plugin` | `mvn package` → `.cap`, auto-discovers applets | [README](maven-plugin/README.md) |
 | **Core** | `javacard-express-core` | Sessions, APDU builder, TLV parser, assertions, PIN, logging, AID | [README](core/README.md) |
 | **GlobalPlatform** | `javacard-express-gp` | SCP02/SCP03, card management, CAP loading, key diversification | [README](gp/README.md) |
 | **Secure Messaging** | `javacard-express-sm` | ISO 7816-4 SM with DES3 (BAC) and AES (PACE/EAC) | [README](sm/README.md) |
@@ -86,13 +124,15 @@ Five Maven modules — add only what you need:
 **Dependency graph:**
 
 ```
+javacard-api ← converter ← maven-plugin
+
 core ← gp
 core ← sm
 core ← container
 core + sm ← pace
 ```
 
-Most users only need `core`. Add `gp` for GlobalPlatform, `sm` + `pace` for ePassport/eID, or `container` for Docker isolation.
+For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing applets**: `core`. Add `gp` for GlobalPlatform, `sm` + `pace` for ePassport/eID, or `container` for Docker isolation.
 
 ```xml
 <!-- GlobalPlatform support -->
@@ -124,6 +164,9 @@ Most users only need `core`. Add `gp` for GlobalPlatform, `sm` + `pace` for ePas
 
 | Category | What it does |
 |----------|-------------|
+| **CAP Converter** | Clean-room `.class` → `.cap` — all 8 JavaCard versions (2.1.2–3.2.0), binary compatible with Oracle |
+| **Maven Plugin** | `mvn package` → `.cap` file, auto-discovers applets, no Oracle SDK required |
+| **API Stubs** | JavaCard 3.0.5 API stubs (`javacard.framework`, `javacard.security`, `javacardx.crypto`) |
 | **APDU Builder** | Fluent API for ISO 7816-4 commands — short + extended, up to 65535 bytes |
 | **APDU Sequence** | Automatic GET RESPONSE chaining (SW=61XX) and Le correction (SW=6CXX) |
 | **TLV Parser** | Full BER-TLV: multi-byte tags, constructed elements, path navigation (`at(0x6F, 0x84)`) |

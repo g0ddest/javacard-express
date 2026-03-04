@@ -11,7 +11,7 @@ class TLVParserTest {
     void shouldParseSinglePrimitive() {
         // Tag 84, length 7, value A0000000031010
         TLVList list = TLVParser.parse("84 07 A0000000031010");
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         TLV tlv = list.get(0);
         assertThat(tlv.tag()).isEqualTo(0x84);
         assertThat(tlv.length()).isEqualTo(7);
@@ -23,7 +23,7 @@ class TLVParserTest {
     void shouldParseMultiplePrimitives() {
         // Two primitives: tag 84 (7 bytes) + tag 50 (4 bytes)
         TLVList list = TLVParser.parse("84 07 A0000000031010 50 04 56495341");
-        assertThat(list.size()).isEqualTo(2);
+        assertThat(list).hasSize(2);
         assertThat(list.get(0).tag()).isEqualTo(0x84);
         assertThat(list.get(1).tag()).isEqualTo(0x50);
         assertThat(list.get(1).valueHex()).isEqualTo("56495341"); // "VISA"
@@ -33,11 +33,11 @@ class TLVParserTest {
     void shouldParseConstructedTLV() {
         // 6F (FCI Template) containing 84 (DF Name)
         TLVList list = TLVParser.parse("6F 09 84 07 A0000000031010");
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         TLV fci = list.get(0);
         assertThat(fci.tag()).isEqualTo(0x6F);
         assertThat(fci.isConstructed()).isTrue();
-        assertThat(fci.children().size()).isEqualTo(1);
+        assertThat(fci.children()).hasSize(1);
         assertThat(fci.children().get(0).tag()).isEqualTo(0x84);
     }
 
@@ -45,7 +45,7 @@ class TLVParserTest {
     void shouldParseMultiByteTag() {
         // Tag 9F38 (PDOL), length 3, value
         TLVList list = TLVParser.parse("9F38 03 9F3501");
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         assertThat(list.get(0).tag()).isEqualTo(0x9F38);
         assertThat(list.get(0).length()).isEqualTo(3);
     }
@@ -54,14 +54,14 @@ class TLVParserTest {
     void shouldSkipPaddingBytes() {
         // Padding (00, FF) before and after tag
         TLVList list = TLVParser.parse("00 FF 84 02 AABB 00");
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         assertThat(list.get(0).tag()).isEqualTo(0x84);
     }
 
     @Test
     void shouldParseEmptyValue() {
         TLVList list = TLVParser.parse("84 00");
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         assertThat(list.get(0).length()).isZero();
     }
 
@@ -81,14 +81,14 @@ class TLVParserTest {
     void shouldParseFromByteArray() {
         byte[] raw = {(byte) 0x84, 0x02, (byte) 0xAA, (byte) 0xBB};
         TLVList list = TLVParser.parse(raw);
-        assertThat(list.size()).isEqualTo(1);
+        assertThat(list).hasSize(1);
         assertThat(list.get(0).valueHex()).isEqualTo("AABB");
     }
 
     @Test
     void shouldParseEmptyInput() {
         TLVList list = TLVParser.parse(new byte[0]);
-        assertThat(list.size()).isZero();
+        assertThat(list).isEmpty();
     }
 
     @Test
