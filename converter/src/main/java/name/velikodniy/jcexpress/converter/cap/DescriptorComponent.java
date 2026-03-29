@@ -214,6 +214,9 @@ public final class DescriptorComponent {
 
                 if (mi.isStaticInitializer()) {
                     mToken = 0;
+                } else if (mi.isPrivate() && !mi.isStatic()) {
+                    // Private instance methods: token 0xFF in Descriptor (not visible outside class)
+                    mToken = 0xFF;
                 } else if (mi.isConstructor() || mi.isStatic()) {
                     mToken = findStaticMethodToken(entry, mi.name(), mi.descriptor());
                 } else {

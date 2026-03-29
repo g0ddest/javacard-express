@@ -51,7 +51,13 @@ class OracleCompatModeTest {
                 new AppletConfig("MultiClassApplet",
                         "com.example.multiclass", "A000000062030101",
                         "com.example.multiclass.MultiClassApplet", "A00000006203010101",
-                        "oracle-MultiClassApplet.cap")
+                        "oracle-MultiClassApplet.cap"),
+                // CryptoApplet: 7/10 byte-identical, 3/10 SIZE MATCH (CP ordering only)
+                // TODO: match Oracle CP entry ordering for crypto-heavy applets
+                new AppletConfig("CryptoApplet",
+                        "com.example.crypto", "A000000062070101",
+                        "com.example.crypto.CryptoApplet", "A00000006207010101",
+                        null)
         );
     }
 

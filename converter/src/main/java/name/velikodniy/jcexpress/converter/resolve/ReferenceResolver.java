@@ -80,6 +80,7 @@ public final class ReferenceResolver {
      * to find the declaring class (which may be external).
      */
     private final Map<String, Set<String>> declaredVirtualMethods;
+    private final Set<String> privateInstanceMethods;
 
     /**
      * Deferred patches for internal references. Internal refs use placeholder values during
@@ -159,18 +160,31 @@ public final class ReferenceResolver {
         this.currentPackage = tokenMap.packageName().replace('.', '/');
         this.superclassMap = new HashMap<>();
         this.declaredVirtualMethods = new HashMap<>();
+        this.privateInstanceMethods = new HashSet<>();
         for (ClassInfo ci : classes) {
             if (ci.superClass() != null) {
                 superclassMap.put(ci.thisClass(), ci.superClass());
             }
             Set<String> declared = new HashSet<>();
             for (MethodInfo mi : ci.methods()) {
-                if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic()) {
+                if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic() && !mi.isPrivate()) {
                     declared.add(mi.name() + ":" + mi.descriptor());
+                }
+                if (mi.isPrivate() && !mi.isStatic()) {
+                    privateInstanceMethods.add(ci.thisClass() + ":" + mi.name() + ":" + mi.descriptor());
                 }
             }
             declaredVirtualMethods.put(ci.thisClass(), declared);
         }
+    }
+
+    /**
+     * Returns {@code true} if the given method is a private instance method
+     * in the current package. Java 25+ (JEP 181) compiles calls to such methods
+     * as {@code invokevirtual}, but JCVM requires {@code invokespecial}.
+     */
+    public boolean isPrivateInstanceMethod(String owner, String name, String desc) {
+        return privateInstanceMethods.contains(owner + ":" + name + ":" + desc);
     }
 
     /**
@@ -342,6 +356,12 @@ public final class ReferenceResolver {
                 }
                 throw e;
             }
+            // Depth-first constructor chaining must be invoked OUTSIDE the try-catch
+            // to prevent NoSuchElementExceptions from recursive bytecode translation
+            // (via the callback) being caught and misinterpreted as "method not found".
+            if ("<init>".equals(name) && onInternalInitCreated != null) {
+                onInternalInitCreated.accept(owner);
+            }
         } else {
             cpIdx = resolveExternalMethodRef(owner, name, desc, kind);
         }
@@ -392,12 +412,6 @@ public final class ReferenceResolver {
             int cpIdx = cp.addInternalStaticMethodRef(placeholder);
             internalStaticMethodRefCache.put(key, cpIdx);
             pendingPatches.add(new PendingPatch(cpIdx, PatchKind.STATIC_METHOD, owner, name, desc));
-            // Depth-first constructor chaining: when creating an ISM for an internal <init>,
-            // trigger immediate translation of the target class's constructor so its CP entries
-            // follow right after this ISM entry (matching Oracle's ordering).
-            if ("<init>".equals(name) && onInternalInitCreated != null) {
-                onInternalInitCreated.accept(owner);
-            }
             return cpIdx;
         }
 
@@ -442,6 +456,52 @@ public final class ReferenceResolver {
         return cp.addExternalInstanceFieldRef(pkg.token(), classExport.token(), field.token());
     }
 
+    /**
+     * Result of resolving an interface method reference for {@code invokeinterface}.
+     * Per JCVM §7.5.49, invokeinterface uses a ClassRef CP index + separate method token byte.
+     *
+     * @param cpIndex     CP index pointing to a ClassRef entry for the interface
+     * @param methodToken interface method token (0-based within the interface)
+     */
+    public record InterfaceMethodRef(int cpIndex, int methodToken) {}
+
+    /**
+     * Resolves an interface method call to a ClassRef CP index and method token.
+     * Per JCVM §7.5.49, invokeinterface encodes the interface class as a ClassRef
+     * and the method token as a separate byte in the instruction.
+     */
+    public InterfaceMethodRef resolveInterfaceMethodRef(String owner, String name, String desc) {
+        // Check if the owner is in the current package
+        String ownerPkg = owner.contains("/")
+                ? owner.substring(0, owner.lastIndexOf('/'))
+                : "";
+        if (ownerPkg.equals(currentPackage)) {
+            // Internal interface — use internal class ref + token from token map
+            int cpIndex = resolveClassRef(owner);
+            String simpleName = simpleName(owner);
+            var entry = tokenMap.classes().stream()
+                    .filter(c -> c.internalName().endsWith("/" + simpleName))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Internal interface not found: " + owner));
+            int methodToken = entry.virtualMethods().stream()
+                    .filter(m -> m.name().equals(name) && m.descriptor().equals(desc))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Interface method not found: " + owner + "." + name + desc))
+                    .token();
+            return new InterfaceMethodRef(cpIndex, methodToken);
+        }
+
+        ImportedPackage pkg = findImportedPackage(owner);
+        markPackageReferenced(pkg.token());
+        String simpleName = simpleName(owner);
+        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
+        ExportFile.MethodExport method = findMethod(classExport, name, desc);
+        int cpIndex = cp.addExternalClassRef(pkg.token(), classExport.token());
+        return new InterfaceMethodRef(cpIndex, method.token());
+    }
+
     private int resolveExternalMethodRef(String owner, String name, String desc, InvokeKind kind) {
         ImportedPackage pkg = findImportedPackage(owner);
         markPackageReferenced(pkg.token());
@@ -455,7 +515,7 @@ public final class ReferenceResolver {
             return cp.addExternalStaticMethodRef(pkg.token(), classExport.token(), method.token());
         }
 
-        // VIRTUAL or INTERFACE: direct encoding (pkg|0x80, class_token, method_token)
+        // VIRTUAL: direct encoding (pkg|0x80, class_token, method_token)
         // per JCVM spec 6.8.3 — no intermediate ClassRef entry needed
         ExportFile.MethodExport method = findMethod(classExport, name, desc);
         return cp.addExternalVirtualMethodRef(pkg.token(), classExport.token(), method.token());

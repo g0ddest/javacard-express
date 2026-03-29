@@ -3,10 +3,16 @@
   <component name="Encoding">
     <file url="file://$PROJECT_DIR$/container/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/container/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/converter/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/converter/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/core/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/core/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gp/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gp/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/javacard-api/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/javacard-api/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/maven-plugin/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/maven-plugin/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/pace/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/pace/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/sm/src/main/java" charset="UTF-8" />

@@ -84,6 +84,20 @@ public record MethodInfo(
     }
 
     /**
+     * Returns {@code true} if this method is private ({@code ACC_PRIVATE} flag is set).
+     *
+     * <p>In JCVM, private instance methods are invoked via {@code invokespecial}
+     * and assigned static method tokens, not virtual method tokens.
+     * Java 25+ (JEP 181) compiles private instance calls as {@code invokevirtual},
+     * so the converter must remap these.
+     *
+     * @return {@code true} if the {@code ACC_PRIVATE} flag (0x0002) is set
+     */
+    public boolean isPrivate() {
+        return (accessFlags & 0x0002) != 0;
+    }
+
+    /**
      * Returns {@code true} if this method is native ({@code ACC_NATIVE} flag is set).
      *
      * <p>Native methods have no JVM bytecode body; the bytecode array will be empty.
