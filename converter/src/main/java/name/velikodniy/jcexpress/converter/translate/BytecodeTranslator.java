@@ -250,19 +250,16 @@ public final class BytecodeTranslator {
                     case ThrowInstruction ignored -> { flushDeferredAload0(); emit(ATHROW); }
                     // JVM monitorenter/monitorexit (0xC2/0xC3) → not supported in JCVM
                     // -- JCVM spec does not define monitor instructions
-                    case MonitorInstruction ignored -> {
+                    case MonitorInstruction _ ->
                         throw new IllegalStateException("monitorenter/monitorexit not supported");
-                    }
                     case TableSwitchInstruction tsi -> translateTableSwitch(tsi);
                     case LookupSwitchInstruction lsi -> translateLookupSwitch(lsi);
                     default -> {
                         flushDeferredAload0();
-                        // Handle simple opcodes that don't have specific instruction subtypes
-                        if (element instanceof java.lang.classfile.Instruction inst) {
-                            // JVM arraylength (0xBE) → JCVM arraylength (0x92) -- §7.5.5
-                            if (inst.opcode() == java.lang.classfile.Opcode.ARRAYLENGTH) {
-                                emit(ARRAYLENGTH);
-                            }
+                        // JVM arraylength (0xBE) → JCVM arraylength (0x92) -- §7.5.5
+                        if (element instanceof java.lang.classfile.Instruction inst
+                                && inst.opcode() == java.lang.classfile.Opcode.ARRAYLENGTH) {
+                            emit(ARRAYLENGTH);
                         }
                         // Skip line numbers, local variables, stack map frames, etc.
                     }
@@ -751,8 +748,15 @@ public final class BytecodeTranslator {
                 // JVM invokevirtual (0xB6) → JCVM invokevirtual (0x8B)
                 // -- §7.5.46: 2-byte CP index to virtual_method_ref
                 case INVOKEVIRTUAL -> {
-                    emit(INVOKEVIRTUAL);
-                    emitCpRef(owner, name, desc, ReferenceResolver.InvokeKind.VIRTUAL, 2);
+                    // JEP 181: Java 25+ compiles private instance calls as invokevirtual,
+                    // but JCVM requires invokespecial with StaticMethodRef
+                    if (resolver != null && resolver.isPrivateInstanceMethod(owner, name, desc)) {
+                        emit(INVOKESPECIAL);
+                        emitCpRef(owner, name, desc, ReferenceResolver.InvokeKind.SPECIAL, 2);
+                    } else {
+                        emit(INVOKEVIRTUAL);
+                        emitCpRef(owner, name, desc, ReferenceResolver.InvokeKind.VIRTUAL, 2);
+                    }
                 }
                 // JVM invokespecial (0xB7) → JCVM invokespecial (0x8C)
                 // -- §7.5.47: 2-byte CP index to static_method_ref (constructors/super calls)
@@ -772,8 +776,17 @@ public final class BytecodeTranslator {
                     int nargs = countArgs(desc) + 1; // +1 for 'this'
                     emit(INVOKEINTERFACE);
                     emit(nargs);
-                    emitCpRef(owner, name, desc, ReferenceResolver.InvokeKind.INTERFACE, 2);
-                    emit(0); // method token (unused in JCVM spec, reserved)
+                    // §7.5.49: CP index → ClassRef for the interface, method byte = token
+                    if (resolver != null) {
+                        var ref = resolver.resolveInterfaceMethodRef(owner, name, desc);
+                        int refPos = out.size();
+                        emitShort((short) ref.cpIndex());
+                        cpReferences.add(new CpReference(refPos, ref.cpIndex(), 2));
+                        emit(ref.methodToken());
+                    } else {
+                        emitCpRef(owner, name, desc, ReferenceResolver.InvokeKind.INTERFACE, 2);
+                        emit(0);
+                    }
                 }
                 default -> {}
             }
@@ -804,9 +817,20 @@ public final class BytecodeTranslator {
         // JVM anewarray (0xBD) → JCVM anewarray (0x91)
         // -- §7.5.4: 2-byte CP index to class_ref for component type
         private void translateANewArray(NewReferenceArrayInstruction ri) {
+            String componentName = ri.componentType().asInternalName();
+            // JCVM §7.5.4: "If the component type of the array is itself an array type,
+            // the (non-array) element type of the new array must be a reference type."
+            // Primitive array types like [B, [S, [I, [Z are NOT supported as anewarray
+            // component types because their non-array element type is primitive.
+            if (componentName.startsWith("[")) {
+                throw new IllegalStateException(
+                        "JCVM does not support anewarray with primitive array component type '"
+                        + componentName + "'. Use a flat byte[] with offset calculations instead "
+                        + "of byte[][] (2D primitive arrays are not supported in JavaCard).");
+            }
             flushDeferredAload0();
             emit(ANEWARRAY);
-            emitClassRefOperand(ri.componentType().asInternalName());
+            emitClassRefOperand(componentName);
         }
 
         // JVM type check instructions → JCVM type check instructions

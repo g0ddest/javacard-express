@@ -223,7 +223,7 @@ public final class TokenAssigner {
             // Constructors and static methods both get static method tokens
             // per JCVM spec §4.3.7.8: constructors are invoked via invokespecial
             // which uses StaticMethodRef entries (tag 6)
-            if (mi.isConstructor() || mi.isStatic()) {
+            if (mi.isConstructor() || mi.isStatic() || mi.isPrivate()) {
                 staticMethods.add(new TokenMap.MethodEntry(
                         mi.name(), mi.descriptor(), staticIdx++));
             } else {

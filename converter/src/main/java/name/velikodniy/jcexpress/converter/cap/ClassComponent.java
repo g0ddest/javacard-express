@@ -227,7 +227,7 @@ public final class ClassComponent {
         // Build set of locally declared/overridden virtual methods
         Set<String> locallyDeclared = new HashSet<>();
         for (MethodInfo mi : ci.methods()) {
-            if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic()) {
+            if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic() && !mi.isPrivate()) {
                 locallyDeclared.add(mi.name() + ":" + mi.descriptor());
             }
         }

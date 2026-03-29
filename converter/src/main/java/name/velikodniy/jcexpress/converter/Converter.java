@@ -353,7 +353,11 @@ public final class Converter {
             for (MethodModel mm : pc.model().methods()) {
                 String key = pc.info().thisClass() + ":" + mm.methodName().stringValue()
                         + ":" + mm.methodType().stringValue();
-                classMethods.add(translatedByKey.get(key));
+                MethodEntry me = translatedByKey.get(key);
+                if (me == null) {
+                    throw new ConverterException("Method not translated: " + key + " (likely uses unsupported type)");
+                }
+                classMethods.add(me);
             }
             methodsByClass.put(pc.info().thisClass(), classMethods);
         }

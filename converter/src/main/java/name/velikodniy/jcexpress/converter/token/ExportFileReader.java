@@ -112,7 +112,8 @@ public final class ExportFileReader {
         int cpCount = Short.toUnsignedInt(buf.getShort());
         Object[] cp = new Object[cpCount];
 
-        for (int i = 1; i < cpCount; i++) {
+        int cpStart = (majorVersion >= 2) ? 0 : 1;
+        for (int i = cpStart; i < cpCount; i++) {
             int tag = Byte.toUnsignedInt(buf.get());
             switch (tag) {
                 case CP_UTF8 -> {
@@ -137,8 +138,9 @@ public final class ExportFileReader {
         int classCount = Byte.toUnsignedInt(buf.get());
         List<ExportFile.ClassExport> classes = new ArrayList<>(classCount);
 
+        boolean v2Format = majorVersion >= 2;
         for (int c = 0; c < classCount; c++) {
-            classes.add(readClassExport(buf, cp));
+            classes.add(readClassExport(buf, cp, v2Format));
         }
 
         return new ExportFile(
@@ -159,8 +161,12 @@ public final class ExportFileReader {
         return new PackageEntry(nameIndex, minor, major, aid);
     }
 
-    private static ExportFile.ClassExport readClassExport(ByteBuffer buf, Object[] cp) {
-        int classToken = Short.toUnsignedInt(buf.getShort());
+    private static ExportFile.ClassExport readClassExport(ByteBuffer buf, Object[] cp,
+                                                          boolean v2Format) {
+        // Format 2.x uses u1 tokens; format 1.x uses u2
+        int classToken = v2Format
+                ? Byte.toUnsignedInt(buf.get())
+                : Short.toUnsignedInt(buf.getShort());
         int accessFlags = Short.toUnsignedInt(buf.getShort());
         int nameIndex = Short.toUnsignedInt(buf.getShort());
         String className = resolveString(cp, nameIndex);
@@ -177,10 +183,21 @@ public final class ExportFileReader {
         int fieldCount = Short.toUnsignedInt(buf.getShort());
         List<ExportFile.FieldExport> fields = new ArrayList<>(fieldCount);
         for (int f = 0; f < fieldCount; f++) {
-            int fToken = Short.toUnsignedInt(buf.getShort());
+            int fToken = v2Format
+                    ? Byte.toUnsignedInt(buf.get())
+                    : Short.toUnsignedInt(buf.getShort());
             int fFlags = Short.toUnsignedInt(buf.getShort());
             int fName = Short.toUnsignedInt(buf.getShort());
             int fDesc = Short.toUnsignedInt(buf.getShort());
+            // Format 2.x fields have an attributes section (e.g., ConstantValue)
+            if (v2Format) {
+                int attrCount = Short.toUnsignedInt(buf.getShort());
+                for (int a = 0; a < attrCount; a++) {
+                    buf.getShort(); // attribute_name_index
+                    int attrLen = buf.getInt(); // attribute_length
+                    buf.position(buf.position() + attrLen); // skip attribute data
+                }
+            }
             fields.add(new ExportFile.FieldExport(
                     resolveString(cp, fName),
                     resolveString(cp, fDesc),
@@ -191,7 +208,9 @@ public final class ExportFileReader {
         int methodCount = Short.toUnsignedInt(buf.getShort());
         List<ExportFile.MethodExport> methods = new ArrayList<>(methodCount);
         for (int m = 0; m < methodCount; m++) {
-            int mToken = Short.toUnsignedInt(buf.getShort());
+            int mToken = v2Format
+                    ? Byte.toUnsignedInt(buf.get())
+                    : Short.toUnsignedInt(buf.getShort());
             int mFlags = Short.toUnsignedInt(buf.getShort());
             int mName = Short.toUnsignedInt(buf.getShort());
             int mDesc = Short.toUnsignedInt(buf.getShort());
