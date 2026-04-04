@@ -635,7 +635,8 @@ public final class Converter {
      */
     private byte[] generateExportFile(List<ClassInfo> sortedClasses, TokenMap tokenMap) throws IOException {
         return ExportFileWriter.write(
-                tokenMap, sortedClasses, packageAid, pkgMajorVersion, pkgMinorVersion);
+                tokenMap, sortedClasses, packageAid,
+                pkgMajorVersion, pkgMinorVersion, javaCardVersion);
     }
 
     private List<ImportedPackage> loadImports() throws IOException {

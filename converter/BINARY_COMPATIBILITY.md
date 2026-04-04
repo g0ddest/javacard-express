@@ -214,6 +214,8 @@ file structure, verifying internal consistency, reference integrity, and spec co
 | InterfaceApplet | 0 | 0 | PASS |
 | ExceptionApplet | 0 | 0 | PASS |
 | InheritanceApplet | 0 | 0 | PASS |
+| VisibilityApplet | 0 | 0 | PASS |
+| CryptoApplet | 1 | 0 | FAIL (CP ordering — type mismatch in virtual method ref) |
 
 ### Oracle `cref` — Runtime Execution on JCVM Emulator
 
@@ -237,7 +239,7 @@ via TCP on port 9025.
 
 Three independent levels of validation confirm our CAP files are correct:
 
-1. **Static verification** (`verifycap`) — structural integrity of all 10 components
+1. **Static verification** (`verifycap`) — structural integrity of all 10 components (6/7 applets pass; CryptoApplet fails due to CP ordering)
 2. **JCVM loading** (`cref` installer) — component download, linking, and class resolution
 3. **Runtime execution** (`cref` APDU) — bytecode execution, object creation, method dispatch
 

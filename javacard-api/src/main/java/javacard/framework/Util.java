@@ -70,7 +70,7 @@ public class Util {
      * @param length  number of bytes to compare
      * @return 0 if equal, negative if src &lt; dest, positive if src &gt; dest
      */
-    public static short arrayCompare(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
+    public static byte arrayCompare(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
         return 0;
     }
 

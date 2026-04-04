@@ -15,7 +15,7 @@ JavaCard development traditionally involves proprietary tools, physical card rea
 - **Composable decorators** — `card.logged().send(...)`, `card.pin().verify(1, "1234")`
 - **Production-grade protocols** — SCP02/SCP03, ISO 7816-4 SM, PACE are fully implemented, not stubbed
 - **JUnit 5 integration** — `@SmartCard` annotation manages session lifecycle, or use the API directly without JUnit
-- **Dual backend** — embedded jCardSim (~50ms startup) or Docker container (full isolation)
+- **Three backends** — embedded jCardSim (~50ms), Docker container, or physical card via PC/SC
 
 ## Quick Start
 
@@ -28,7 +28,7 @@ Add the plugin and API stubs to your applet project:
     <dependency>
         <groupId>name.velikodniy</groupId>
         <artifactId>javacard-express-api</artifactId>
-        <version>0.2.0</version>
+        <version>0.3.0</version>
         <scope>provided</scope>
     </dependency>
 </dependencies>
@@ -38,7 +38,7 @@ Add the plugin and API stubs to your applet project:
         <plugin>
             <groupId>name.velikodniy</groupId>
             <artifactId>javacard-express-maven-plugin</artifactId>
-            <version>0.2.0</version>
+            <version>0.3.0</version>
             <configuration>
                 <packageAid>A00000006212</packageAid>
             </configuration>
@@ -58,7 +58,7 @@ Add the test dependency:
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-core</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -106,6 +106,29 @@ LoggingSession logged = card.logged();
 PinSession pin = card.pin();
 ```
 
+### Talk to a real card
+
+Connect to a physical JavaCard via any PC/SC reader:
+
+```java
+try (var card = PcscSession.open()) {
+    card.select(AID.fromHex("A000000151000000"));
+    APDUResponse r = card.send(0x00, 0xCA, 0x00, 0x66);
+    System.out.println(r.dataAsHex());
+}
+```
+
+Load your CAP file via GlobalPlatform:
+
+```java
+try (var card = PcscSession.open()) {
+    var gp = GPSession.on(card);
+    gp.openSecureChannel();
+    gp.loadAndInstall(CAPFile.fromFile(Path.of("target/myapplet.cap")),
+                      "A00000006212", 0x00, null);
+}
+```
+
 ## Modules
 
 Maven modules — add only what you need:
@@ -139,7 +162,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-gp</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 
@@ -147,7 +170,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-pace</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 
@@ -155,7 +178,7 @@ For **building applets**: `maven-plugin` + `javacard-express-api`. For **testing
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-container</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 ```

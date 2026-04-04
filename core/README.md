@@ -11,7 +11,7 @@ Core module — provides the `SmartCardSession` interface, embedded jCardSim bac
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-core</artifactId>
-    <version>0.1.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -65,7 +65,47 @@ card.select(AID.fromHex("A0000000031010"));                // select by AID
 card.reset();                                              // reset card state
 ```
 
-In embedded mode, `SmartCardSession` is backed by jCardSim running in-process. In container mode, it communicates over TCP with a Docker container. The API is identical in both modes.
+Three backends available:
+
+| Backend | Class | Use case |
+|---------|-------|----------|
+| **Embedded** | `EmbeddedSession` | In-process jCardSim, unit tests |
+| **Container** | `ContainerSession` | Docker jCardSim, CI/CD |
+| **PCSC** | `PcscSession` | Physical card reader, real cards |
+
+The API is identical across all backends.
+
+### PCSC — Physical Card Reader
+
+Connect to a real JavaCard via any standard PC/SC reader:
+
+```java
+// First available reader with a card present
+try (var card = PcscSession.open()) {
+    card.select(AID.fromHex("A000000151000000"));
+    APDUResponse r = card.send(0x00, 0xCA, 0x00, 0x66);
+    System.out.println("Data: " + r.dataAsHex());
+}
+
+// Specific reader by name
+try (var card = PcscSession.open("ACR122U")) {
+    card.select(AID.fromHex("A0000000031010"));
+    System.out.println("ATR: " + card.getATR());
+}
+
+// Works with all decorators
+PcscSession.open().logged(true).send(0x80, 0x50, 0x00, 0x00);
+```
+
+Applet installation on real cards requires the [GlobalPlatform module](../gp/README.md):
+
+```java
+try (var card = PcscSession.open()) {
+    var gp = GPSession.on(card);
+    gp.openSecureChannel();
+    gp.loadAndInstall(capFile, appletAid);
+}
+```
 
 ### Composing Decorators
 

@@ -126,10 +126,15 @@ public enum JavaCardVersion {
 
     private final int formatMajor;
     private final int formatMinor;
+    private final int exportFormatMajor;
+    private final int exportFormatMinor;
 
     JavaCardVersion(int formatMajor, int formatMinor) {
         this.formatMajor = formatMajor;
         this.formatMinor = formatMinor;
+        // All Oracle SDKs (JC 2.1.2–3.2.0) produce export format 2.1
+        this.exportFormatMajor = 2;
+        this.exportFormatMinor = 1;
     }
 
     /**
@@ -154,5 +159,26 @@ public enum JavaCardVersion {
      */
     public int formatMinor() {
         return formatMinor;
+    }
+
+    /**
+     * Returns the export file format major version for this JavaCard version.
+     *
+     * <p>Written into the {@code major_version} field of the export file header
+     * (JCVM spec Section 4.4). All supported versions use export format 2.1.
+     *
+     * @return the export format major version
+     */
+    public int exportFormatMajor() {
+        return exportFormatMajor;
+    }
+
+    /**
+     * Returns the export file format minor version for this JavaCard version.
+     *
+     * @return the export format minor version
+     */
+    public int exportFormatMinor() {
+        return exportFormatMinor;
     }
 }

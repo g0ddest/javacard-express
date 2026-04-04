@@ -169,9 +169,16 @@ public final class DescriptorComponent {
 
             // --- field_descriptor_info (§6.14 Table 6-38, 7 bytes each) ---
             for (FieldInfo fi : includedFields) {
-                int fieldToken = fi.isStatic()
-                        ? findStaticFieldToken(entry, fi.name())
-                        : findInstanceFieldToken(entry, fi.name());
+                int fieldToken;
+                if (fi.isStatic()) {
+                    boolean exported = (fi.accessFlags() & 0x0001) != 0
+                            || (fi.accessFlags() & 0x0004) != 0;
+                    fieldToken = exported
+                            ? findStaticFieldToken(entry, fi.name())
+                            : 0xFF;
+                } else {
+                    fieldToken = findInstanceFieldToken(entry, fi.name());
+                }
                 info.u1(fieldToken); // §6.14 Table 6-38: u1 token
 
                 // §6.14 Table 6-38: u1 access_flags
@@ -213,12 +220,17 @@ public final class DescriptorComponent {
                 if (mi.isConstructor()) mFlags |= 0x80;                // ACC_INIT
 
                 if (mi.isStaticInitializer()) {
-                    mToken = 0;
-                } else if (mi.isPrivate() && !mi.isStatic()) {
-                    // Private instance methods: token 0xFF in Descriptor (not visible outside class)
+                    mToken = 0xFF;
+                } else if (mi.isPrivate()) {
+                    // All private methods: token 0xFF (not visible outside class)
                     mToken = 0xFF;
                 } else if (mi.isConstructor() || mi.isStatic()) {
-                    mToken = findStaticMethodToken(entry, mi.name(), mi.descriptor());
+                    if ((mi.accessFlags() & 0x0001) == 0 && (mi.accessFlags() & 0x0004) == 0) {
+                        // Package-private constructors and static methods: token 0xFF
+                        mToken = 0xFF;
+                    } else {
+                        mToken = findStaticMethodToken(entry, mi.name(), mi.descriptor());
+                    }
                 } else {
                     mToken = findVirtualMethodToken(entry, mi.name(), mi.descriptor());
                 }

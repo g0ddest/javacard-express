@@ -92,6 +92,12 @@ public record ExportFile(
     public ClassExport findClass(String simpleName) {
         for (ClassExport ce : classes) {
             if (ce.name().equals(simpleName)) return ce;
+            // Also match by simple name when export stores fully-qualified name
+            String ceName = ce.name();
+            int lastSlash = ceName.lastIndexOf('/');
+            if (lastSlash >= 0 && ceName.substring(lastSlash + 1).equals(simpleName)) {
+                return ce;
+            }
         }
         throw new NoSuchElementException("Export class not found: " + simpleName);
     }

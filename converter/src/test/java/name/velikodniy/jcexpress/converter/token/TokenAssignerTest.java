@@ -86,11 +86,9 @@ class TokenAssignerTest {
                 .extracting(TokenMap.FieldEntry::name)
                 .contains("storage", "dataLen");
 
-        // TestApplet has static fields: INS_GET, INS_PUT
-        assertThat(entry.staticFields()).isNotEmpty();
-        assertThat(entry.staticFields())
-                .extracting(TokenMap.FieldEntry::name)
-                .contains("INS_GET", "INS_PUT");
+        // TestApplet has private static final byte fields (INS_GET, INS_PUT) —
+        // these are compile-time constants and private, so excluded from token map
+        assertThat(entry.staticFields()).isEmpty();
     }
 
     @Test

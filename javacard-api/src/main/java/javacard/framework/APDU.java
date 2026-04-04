@@ -179,4 +179,14 @@ public class APDU {
     public static void waitExtension() {
         throw new RuntimeException("stub");
     }
+
+    /**
+     * Returns the offset within the APDU buffer for the command data (C-data).
+     *
+     * @return the offset to the C-data field
+     * @since 3.0.5
+     */
+    public short getOffsetCdata() {
+        return 0;
+    }
 }

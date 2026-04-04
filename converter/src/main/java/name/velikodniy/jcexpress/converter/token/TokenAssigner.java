@@ -222,10 +222,17 @@ public final class TokenAssigner {
 
             // Constructors and static methods both get static method tokens
             // per JCVM spec §4.3.7.8: constructors are invoked via invokespecial
-            // which uses StaticMethodRef entries (tag 6)
+            // which uses StaticMethodRef entries (tag 6).
+            // Per §6.14 Table 6-39, private methods and package-private static/constructors
+            // are NOT exported and get token 0xFF in the Descriptor — they don't receive
+            // real tokens and are excluded from the Export component.
             if (mi.isConstructor() || mi.isStatic() || mi.isPrivate()) {
-                staticMethods.add(new TokenMap.MethodEntry(
-                        mi.name(), mi.descriptor(), staticIdx++));
+                boolean exported = !mi.isPrivate()
+                        && ((mi.accessFlags() & 0x0001) != 0 || (mi.accessFlags() & 0x0004) != 0);
+                if (exported) {
+                    staticMethods.add(new TokenMap.MethodEntry(
+                            mi.name(), mi.descriptor(), staticIdx++));
+                }
             } else {
                 // Check if this overrides a superclass method
                 boolean isOverride = virtualMethods.stream()
@@ -247,9 +254,18 @@ public final class TokenAssigner {
         int staticFieldIdx = 0;
 
         for (FieldInfo fi : ci.fields()) {
+            if (fi.isCompileTimeConstant()) {
+                // Compile-time constants are inlined by javac — they don't need
+                // tokens, storage, or export entries (JCVM §6.10, §6.14)
+                continue;
+            }
             if (fi.isStatic()) {
-                staticFields.add(new TokenMap.FieldEntry(
-                        fi.name(), fi.descriptor(), staticFieldIdx++));
+                boolean exported = (fi.accessFlags() & 0x0001) != 0
+                        || (fi.accessFlags() & 0x0004) != 0;
+                if (exported) {
+                    staticFields.add(new TokenMap.FieldEntry(
+                            fi.name(), fi.descriptor(), staticFieldIdx++));
+                }
             } else {
                 instanceFields.add(new TokenMap.FieldEntry(
                         fi.name(), fi.descriptor(), instFieldIdx++));

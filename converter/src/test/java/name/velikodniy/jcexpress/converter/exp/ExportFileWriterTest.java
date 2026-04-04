@@ -7,6 +7,7 @@ import name.velikodniy.jcexpress.converter.token.ExportFile;
 import name.velikodniy.jcexpress.converter.token.ExportFileReader;
 import name.velikodniy.jcexpress.converter.token.TokenAssigner;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
+import name.velikodniy.jcexpress.converter.JavaCardVersion;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -27,15 +28,15 @@ class ExportFileWriterTest {
         byte[] aid = {(byte) 0xA0, 0x00, 0x00, 0x00, 0x62, 0x01};
 
         // Write export file
-        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0);
+        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0, JavaCardVersion.V3_0_5);
         assertThat(expBytes).isNotEmpty();
 
         // Read it back — round trip
         ExportFile ef = ExportFileReader.read(expBytes);
         assertThat(ef.packageName()).isEqualTo("com/example");
         assertThat(ef.aid()).containsExactly((byte) 0xA0, 0x00, 0x00, 0x00, 0x62, 0x01);
-        assertThat(ef.majorVersion()).isEqualTo(1);
-        assertThat(ef.minorVersion()).isEqualTo(0);
+        assertThat(ef.majorVersion()).isEqualTo(2);
+        assertThat(ef.minorVersion()).isEqualTo(1);
     }
 
     @Test
@@ -46,11 +47,11 @@ class ExportFileWriterTest {
         TokenMap tokenMap = TokenAssigner.assign(pkg);
 
         byte[] aid = {(byte) 0xA0, 0x00, 0x00, 0x00, 0x62, 0x01};
-        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0);
+        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0, JavaCardVersion.V3_0_5);
 
         ExportFile ef = ExportFileReader.read(expBytes);
         assertThat(ef.classes()).isNotEmpty();
-        assertThat(ef.classes().getFirst().name()).isEqualTo("TestApplet");
+        assertThat(ef.classes().getFirst().name()).isEqualTo("com/example/TestApplet");
     }
 
     @Test
@@ -61,7 +62,7 @@ class ExportFileWriterTest {
         TokenMap tokenMap = TokenAssigner.assign(pkg);
 
         byte[] aid = {(byte) 0xA0, 0x00, 0x00, 0x00, 0x62, 0x01};
-        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0);
+        byte[] expBytes = ExportFileWriter.write(tokenMap, pkg.classes(), aid, 1, 0, JavaCardVersion.V3_0_5);
 
         ExportFile ef = ExportFileReader.read(expBytes);
         ExportFile.ClassExport testApplet = ef.findClass("TestApplet");
