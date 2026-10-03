@@ -2,69 +2,47 @@ package name.velikodniy.jcexpress.converter.cap;
 
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
-import name.velikodniy.jcexpress.converter.input.MethodInfo;
 import name.velikodniy.jcexpress.converter.resolve.ReferenceResolver;
+import name.velikodniy.jcexpress.converter.token.ImportedTypes;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
- * Generates the CAP Class component (tag 6) as defined in JCVM 3.0.5 spec section 6.8-6.9.
+ * Generates the CAP Class component (tag 6) as defined in JCVM 3.1 §6.9.
  *
- * <p>The Class component defines the class hierarchy for the entire package. It contains
- * two kinds of entries laid out sequentially: <em>interface_info</em> entries for
- * interfaces, followed by <em>class_info</em> entries for concrete and abstract classes.
- * Interfaces must precede classes in the component.
+ * <p>The component lists every interface ({@code interface_info}) and then every class
+ * ({@code class_info_compact}) of the package; supertypes precede subtypes. The offset of an entry
+ * within the component's info item is its internal {@code class_ref} (§6.8.1), used by the
+ * Constant Pool, Export and Descriptor components and by the entries of this component itself.
  *
- * <p>For each class, this component includes:
- * <ul>
- *   <li>Access flags and interface count</li>
- *   <li>Superclass reference (as a direct class_ref, not a CP index)</li>
- *   <li>Instance field size and reference-type field tracking (for garbage collection)</li>
- *   <li>Public and package-visible virtual method dispatch tables, containing offsets
- *       into the Method component for each method token</li>
- *   <li>Implemented interface mapping table, which maps each interface's method tokens
- *       to the class's corresponding virtual method tokens (for {@code invokeinterface})</li>
- * </ul>
- *
- * <p>The byte offset of each class within this component is significant: it serves as
- * the internal class reference used by the ConstantPool, Export, and Descriptor
- * components.
- *
- * <p><b>Current limitations:</b> Only methods declared or overridden in the class itself
- * are resolved in the dispatch tables; inherited virtual method entries are written as
- * {@code 0xFFFF}. Interface-to-method mapping count is currently 0 for interfaces with
- * no declared methods.
- *
- * <p>Binary format (JCVM 3.0.5 spec section 6.8-6.9):
+ * <p>Layout (compact format, §6.9.2; CAP 2.2+ prepends {@code u2 signature_pool_length}, CAP 2.3
+ * appends the token mapping to each class_info):
  * <pre>
- * u1  tag = 6
- * u2  size
- * // For each interface (interface_info):
- *   u1  flags (bit 7=1 ACC_INTERFACE) | interface_count (bits 3..0)
- *   u2  superinterfaces[interface_count]   (direct class_ref encoding)
- * // For each class (class_info):
- *   u1  flags (bit 6=ACC_ABSTRACT) | interface_count (bits 3..0)
- *   u2  super_class_ref                    (direct class_ref, 0xFFFF for Object)
- *   u1  declared_instance_size             (in 2-byte cells)
- *   u1  first_reference_token
- *   u1  reference_count
- *   u1  public_method_table_base
- *   u1  public_method_table_count
- *   u2  public_method_table[count]         (offsets into Method component)
- *   u1  package_method_table_base
- *   u1  package_method_table_count
- *   u2  package_method_table[count]        (offsets into Method component)
- *   implemented_interface_info[interface_count]:
- *     u2  interface_ref                    (direct class_ref)
- *     u1  count                            (number of method mappings)
- *     u1  index[count]                     (interface token to class token mapping)
+ * interface_info {
+ *   u1 bitfield { bit[4] flags (ACC_INTERFACE 0x8, ACC_SHAREABLE 0x4), bit[4] interface_count }
+ *   class_ref superinterfaces[interface_count]       // direct and indirect
+ * }
+ * class_info_compact {
+ *   u1 bitfield { bit[4] flags (ACC_SHAREABLE 0x4), bit[4] interface_count }
+ *   class_ref super_class_ref
+ *   u1 declared_instance_size                         // 16-bit cells
+ *   u1 first_reference_token
+ *   u1 reference_count
+ *   u1 public_method_table_base
+ *   u1 public_method_table_count
+ *   u1 package_method_table_base
+ *   u1 package_method_table_count
+ *   u2 public_virtual_method_table[public_method_table_count]
+ *   u2 package_virtual_method_table[package_method_table_count]
+ *   implemented_interface_info { class_ref interface; u1 count; u1 index[count] } interfaces[]
+ *   u1 public_virtual_method_token_mapping[public_method_count]   // CAP 2.3
+ *   u1 CAP22_inheritable_public_method_token_count                // CAP 2.3
+ * }
  * </pre>
  *
  * @see MethodComponent
@@ -75,373 +53,254 @@ public final class ClassComponent {
 
     public static final int TAG = 6;
 
-    private static final String JAVA_LANG_OBJECT = "java/lang/Object";
+    /** interface_info / class_info flag ACC_INTERFACE in the bitfield (§6.9.2.1 Table 6-11). */
+    static final int ACC_INTERFACE = 0x80;
+    /** interface_info / class_info flag ACC_SHAREABLE in the bitfield (§6.9.2.1 Table 6-11). */
+    static final int ACC_SHAREABLE = 0x40;
+    /** Maximum interface_count of a class_info (§6.9.2.1). */
+    static final int MAX_CLASS_INTERFACES = 15;
+    /** Maximum interface_count of an interface_info (§6.9.2.1). */
+    static final int MAX_SUPERINTERFACES = 14;
+    private static final int NO_REFERENCE_FIELDS = 0xFF;
 
     private ClassComponent() {}
 
     /**
-     * Generates the Class component bytes (format 2.1/2.2 default).
+     * Generates the Class component in CAP format 2.1.
      *
-     * @param classes          classes sorted in token order (interfaces first)
-     * @param tokenMap         token assignments
-     * @param methodOffsets    offsets of each method in the Method component (indexed by global method position)
-     * @param methodIndexMap   maps "className:methodName:methodDesc" → global method index
-     * @param resolver         reference resolver for superclass/interface CP refs
-     * @return result containing component bytes and per-class byte offsets
+     * @param classes        classes and interfaces in Class component order (see {@link TokenMap})
+     * @param tokenMap       token assignment
+     * @param methodOffsets  Method component offset of each translated method (global index)
+     * @param methodIndexMap {@code "class:name:descriptor"} to global method index
+     * @param resolver       resolver of external class references
+     * @return component bytes and the offset of every entry, in the order of {@code classes}
      */
-    public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap,
-                                        int[] methodOffsets,
-                                        Map<String, Integer> methodIndexMap,
-                                        ReferenceResolver resolver) {
-        return generate(classes, tokenMap, methodOffsets, methodIndexMap, resolver, null, false);
+    public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap, int[] methodOffsets,
+                                       Map<String, Integer> methodIndexMap, ReferenceResolver resolver) {
+        return generate(classes, tokenMap, methodOffsets, methodIndexMap, resolver, null);
     }
 
     /**
-     * Generates the Class component bytes with explicit JavaCard version.
+     * Generates the Class component.
      *
-     * <p>CAP format 2.3 (JC 3.1.0+) extends the Class component with:
-     * <ul>
-     *   <li>{@code u2 signature_pool_length} prepended before all class entries (0 for compact format)</li>
-     *   <li>VMMT (Virtual Method Mapping Table) appended after each class_info, mapping
-     *       virtual method tokens for superclass evolution compatibility</li>
-     * </ul>
-     *
-     * @param classes          classes sorted in token order (interfaces first)
-     * @param tokenMap         token assignments
-     * @param methodOffsets    offsets of each method in the Method component
-     * @param methodIndexMap   maps "className:methodName:methodDesc" → global method index
-     * @param resolver         reference resolver for superclass/interface CP refs
-     * @param version          target JavaCard version, null defaults to format 2.1
-     * @param oracleCompat     when true, replicate Oracle's dispatch table off-by-one bug
-     * @return result containing component bytes and per-class byte offsets
+     * @param classes        classes and interfaces in Class component order
+     * @param tokenMap       token assignment
+     * @param methodOffsets  Method component offset of each translated method (global index)
+     * @param methodIndexMap {@code "class:name:descriptor"} to global method index
+     * @param resolver       resolver of external class references
+     * @param version        target Java Card version; {@code null} means CAP format 2.1
+     * @param oracleCompat   ignored: the layout always follows §6.9.2, which is also what Oracle's
+     *                       converter produces
+     * @return component bytes and the offset of every entry, in the order of {@code classes}
+     * @deprecated use {@link #generate(List, TokenMap, int[], Map, ReferenceResolver, JavaCardVersion)}
      */
-    public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap,
-                                        int[] methodOffsets,
-                                        Map<String, Integer> methodIndexMap,
-                                        ReferenceResolver resolver,
-                                        JavaCardVersion version,
-                                        boolean oracleCompat) {
-        boolean isFormat23 = version != null && version.formatMinor() >= 3;
+    @Deprecated(since = "0.4.0")
+    public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap, int[] methodOffsets,
+                                       Map<String, Integer> methodIndexMap, ReferenceResolver resolver,
+                                       JavaCardVersion version, boolean oracleCompat) {
+        return generate(classes, tokenMap, methodOffsets, methodIndexMap, resolver, version);
+    }
 
-        // --- class_component (§6.8 Table 6-14) ---
-        var info = new BinaryWriter();
-
-        // §6.8: format 2.3 prepends u2 signature_pool_length before class entries
-        if (isFormat23) {
-            info.u2(0); // signature_pool_length = 0 (compact format, no signature pool)
-        }
-
-        int[] classOffsets = new int[classes.size()];
-        // Map class name → byte offset for internal super_class_ref resolution
-        Map<String, Integer> classOffsetMap = new HashMap<>();
-
+    /**
+     * Generates the Class component (§6.9).
+     *
+     * @param classes        classes and interfaces in Class component order: interfaces first,
+     *                       supertypes before subtypes (as listed by {@link TokenMap#classes()})
+     * @param tokenMap       token assignment
+     * @param methodOffsets  Method component offset of each translated method (global index)
+     * @param methodIndexMap {@code "class:name:descriptor"} to global method index
+     * @param resolver       resolver of external class references and imported type information
+     * @param version        target Java Card version; {@code null} means CAP format 2.1
+     * @return component bytes and the offset of every entry, in the order of {@code classes}
+     * @throws IllegalStateException if the classes are not in Class component order or a limit of
+     *                               §6.9.2.1 is exceeded
+     */
+    public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap, int[] methodOffsets,
+                                       Map<String, Integer> methodIndexMap, ReferenceResolver resolver,
+                                       JavaCardVersion version) {
+        ImportedTypes imported = resolver.importedTypes();
+        TypeHierarchy hierarchy = new TypeHierarchy(classes, tokenMap, imported);
+        Writer w = new Writer(hierarchy, tokenMap, resolver,
+                new MethodTables(hierarchy, offsetsByKey(methodOffsets, methodIndexMap)),
+                atLeast(version, 2), atLeast(version, 3));
+        int[] offsets = new int[classes.size()];
         for (int i = 0; i < classes.size(); i++) {
-            classOffsets[i] = info.size();
-            ClassInfo ci = classes.get(i);
-            classOffsetMap.put(ci.thisClass(), classOffsets[i]);
-            TokenMap.ClassEntry entry = tokenMap.findClass(ci.thisClass());
+            offsets[i] = w.write(classes.get(i));
+        }
+        return new ClassResult(HeaderComponent.wrapComponent(TAG, w.info.toByteArray()), offsets);
+    }
 
+    /** Whether the CAP format of {@code version} is 2.{@code minor} or later (2.1 when null). */
+    private static boolean atLeast(JavaCardVersion version, int minor) {
+        return version != null && (version.formatMajor() > 2 || version.formatMinor() >= minor);
+    }
+
+    private static Map<String, Integer> offsetsByKey(int[] methodOffsets, Map<String, Integer> methodIndexMap) {
+        Map<String, Integer> result = new HashMap<>();
+        methodIndexMap.forEach((key, idx) -> {
+            if (idx < methodOffsets.length) {
+                result.put(key, methodOffsets[idx]);
+            }
+        });
+        return result;
+    }
+
+    /** Serializes the entries; keeps the offsets of the entries written so far. */
+    private static final class Writer {
+        private final BinaryWriter info = new BinaryWriter();
+        private final Map<String, Integer> written = new HashMap<>();
+        private final TypeHierarchy hierarchy;
+        private final TokenMap tokenMap;
+        private final ReferenceResolver resolver;
+        private final MethodTables tables;
+        private final boolean tokenMapping;
+
+        Writer(TypeHierarchy hierarchy, TokenMap tokenMap, ReferenceResolver resolver, MethodTables tables,
+               boolean signaturePool, boolean tokenMapping) {
+            this.hierarchy = hierarchy;
+            this.tokenMap = tokenMap;
+            this.resolver = resolver;
+            this.tables = tables;
+            this.tokenMapping = tokenMapping;
+            if (signaturePool) {
+                info.u2(0); // §6.9: signature_pool_length (since CAP 2.2; no remote interfaces)
+            }
+        }
+
+        int write(ClassInfo ci) {
+            int offset = info.size();
             if (ci.isInterface()) {
-                writeInterface(info, ci, resolver);
+                writeInterface(ci);
             } else {
-                writeClass(info, ci, entry, methodOffsets, methodIndexMap,
-                        resolver, version, classes, classOffsetMap, oracleCompat);
+                writeClass(ci, tokenMap.findClass(ci.thisClass()));
+            }
+            written.put(ci.thisClass(), offset);
+            return offset;
+        }
+
+        /** §6.9.2.2 interface_info. */
+        private void writeInterface(ClassInfo ci) {
+            List<String> supers = hierarchy.interfaceClosure(ci.interfaces());
+            requireAtMost(supers.size(), MAX_SUPERINTERFACES, ci, "superinterfaces");
+            int flags = ACC_INTERFACE | (hierarchy.isShareableInterface(ci.thisClass()) ? ACC_SHAREABLE : 0);
+            info.u1(flags | supers.size());
+            supers.forEach(s -> info.u2(classRef(s)));
+        }
+
+        /** §6.9.2.3 class_info_compact. */
+        private void writeClass(ClassInfo ci, TokenMap.ClassEntry entry) {
+            List<String> interfaces = hierarchy.interfaceClosure(ci.interfaces());
+            requireAtMost(interfaces.size(), MAX_CLASS_INTERFACES, ci, "implemented interfaces");
+            info.u1((hierarchy.isShareableClass(ci) ? ACC_SHAREABLE : 0) | interfaces.size());
+            info.u2(ci.superClass() == null ? 0xFFFF : classRef(ci.superClass())); // super_class_ref
+            writeInstanceLayout(entry);
+            MethodTables.Table pub = tables.table(ci, entry, false);
+            MethodTables.Table pkg = tables.table(ci, entry, true);
+            info.u1(pub.base());
+            info.u1(pub.count());
+            info.u1(pkg.base());
+            info.u1(pkg.count());
+            pub.entries().forEach(info::u2);
+            pkg.entries().forEach(info::u2);
+            for (String iface : interfaces) {
+                writeImplementedInterface(ci, entry, iface);
+            }
+            if (tokenMapping) {
+                writeTokenMapping(ci, pub); // since CAP 2.3
             }
         }
 
-        return new ClassResult(
-                HeaderComponent.wrapComponent(TAG, info.toByteArray()),
-                classOffsets);
-    }
-
-    private static void writeInterface(BinaryWriter info, ClassInfo ci,
-                                        ReferenceResolver resolver) {
-        // --- interface_info (§6.8 Table 6-15) ---
-        int interfaceCount = ci.interfaces().size();
-        // §6.8 Table 6-15: u1 bitfield — bit 7 = ACC_INTERFACE, bits 3..0 = interface_count
-        info.u1(0x80 | (interfaceCount & 0x0F));
-
-        // §6.8 Table 6-15: u2[] superinterfaces — direct class_ref encoding (not CP indices)
-        for (String iface : ci.interfaces()) {
-            int ifaceRef = resolver.resolveClassRefDirect(iface);
-            info.u2(ifaceRef); // §6.8: u2 superinterface class_ref
-        }
-    }
-
-    @SuppressWarnings("java:S3776") // Inherently complex class_info binary generation
-    private static void writeClass(BinaryWriter info, ClassInfo ci,
-                                    TokenMap.ClassEntry entry, int[] methodOffsets,
-                                    Map<String, Integer> methodIndexMap,
-                                    ReferenceResolver resolver,
-                                    JavaCardVersion version,
-                                    List<ClassInfo> allClasses,
-                                    Map<String, Integer> classOffsetMap,
-                                    boolean oracleCompat) {
-        // --- class_info (§6.8 Table 6-16) ---
-        int interfaceCount = ci.interfaces().size();
-        // §6.8 Table 6-16: u1 bitfield — bits 3..0 = interface_count
-        // bit 6 = ACC_SHAREABLE: set when class implements javacard.framework.Shareable
-        int flags = interfaceCount & 0x0F;
-        if (implementsShareable(ci, allClasses)) {
-            flags |= 0x40; // ACC_SHAREABLE
-        }
-        info.u1(flags);
-
-        // §6.8 Table 6-16: u2 super_class_ref — direct class_ref encoding (NOT a CP index!)
-        // Internal: byte offset into ClassComponent info; External: (0x80|pkg_token)<<8|class_token
-        if (ci.superClass() == null) {
-            info.u2(0xFFFF); // §6.8: 0xFFFF = this class IS java.lang.Object
-        } else if (JAVA_LANG_OBJECT.equals(ci.superClass())) {
-            // External class ref to java.lang.Object
-            int objectRef = resolver.resolveClassRefDirect(JAVA_LANG_OBJECT);
-            info.u2(objectRef);
-        } else {
-            Integer internalOffset = classOffsetMap.get(ci.superClass());
-            if (internalOffset != null) {
-                // Internal superclass: use byte offset into ClassComponent info area
-                info.u2(internalOffset);
-            } else {
-                // External superclass: use (0x80|pkg_token)<<8|class_token encoding
-                int superRef = resolver.resolveClassRefDirect(ci.superClass());
-                info.u2(superRef);
-            }
-        }
-
-        // §6.8 Table 6-16: u1 declared_instance_size (in 2-byte cells)
-        int instanceSize = entry.instanceFields().size();
-        info.u1(instanceSize);
-
-        // §6.8 Table 6-16: u1 first_reference_token, u1 reference_count
-        // Tracks reference-type instance fields for GC root scanning
-        int firstRefToken = 0xFF; // §6.8: 0xFF when no reference-type instance fields
-        int refCount = 0;
-        for (TokenMap.FieldEntry fe : entry.instanceFields()) {
-            if (fe.descriptor().startsWith("L") || fe.descriptor().startsWith("[")) {
-                if (refCount == 0) firstRefToken = fe.token();
-                refCount++;
-            }
-        }
-        info.u1(firstRefToken); // §6.8: u1 first_reference_token (0xFF if no refs)
-        info.u1(refCount);      // §6.8: u1 reference_count
-
-        // Build set of locally declared/overridden virtual methods
-        Set<String> locallyDeclared = new HashSet<>();
-        for (MethodInfo mi : ci.methods()) {
-            if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic() && !mi.isPrivate()) {
-                locallyDeclared.add(mi.name() + ":" + mi.descriptor());
-            }
-        }
-
-        // --- public_virtual_method_table (§6.8 Table 6-16) ---
-        // §6.8: contiguous range from min to max locally declared/overridden token.
-        // Inherited non-overridden methods within the range are included with their
-        // implementation offset resolved by walking up the class hierarchy.
-        List<TokenMap.MethodEntry> allVirtuals = entry.virtualMethods();
-        int minLocalToken = Integer.MAX_VALUE;
-        int maxLocalToken = -1;
-        for (TokenMap.MethodEntry me : allVirtuals) {
-            if (locallyDeclared.contains(me.name() + ":" + me.descriptor())) {
-                minLocalToken = Math.min(minLocalToken, me.token());
-                maxLocalToken = Math.max(maxLocalToken, me.token());
-            }
-        }
-
-        // Tracks whether Oracle compat mode consumed the pkg_base/pkg_count bytes
-        // by overflowing the last dispatch table entry into those positions.
-        boolean pkgTableWritten = false;
-
-        if (maxLocalToken < 0) {
-            // No locally declared public virtual methods
-            info.u1(0); // §6.8: u1 public_method_table_base
-            info.u1(0); // §6.8: u1 public_method_table_count
-        } else {
-            info.u1(minLocalToken); // §6.8: u1 public_method_table_base
-            int count = maxLocalToken - minLocalToken + 1;
-            info.u1(count); // §6.8: u1 public_method_table_count
-
-            if (oracleCompat) {
-                // Oracle compatibility: replicate the off-by-one bug in
-                // public_virtual_method_table serialization (see BINARY_COMPATIBILITY.md).
-                // Oracle writes a phantom 0x0000 first, then all real entries. The last
-                // real entry overflows into the package_method_table_base/count positions.
-                // Total byte count is identical to spec-correct: 2*(count+1) = 2*count+2.
-                info.u2(0x0000); // phantom entry
-                for (int t = minLocalToken; t <= maxLocalToken; t++) {
-                    int offset = resolveDispatchEntry(t, allVirtuals, ci, allClasses,
-                            methodIndexMap, methodOffsets);
-                    info.u2(offset);
-                }
-                pkgTableWritten = true; // last u2 occupies pkg_base/pkg_count positions
-            } else {
-                for (int t = minLocalToken; t <= maxLocalToken; t++) {
-                    int offset = resolveDispatchEntry(t, allVirtuals, ci, allClasses,
-                            methodIndexMap, methodOffsets);
-                    info.u2(offset);
+        /**
+         * declared_instance_size (16-bit cells, two for int), first_reference_token and
+         * reference_count; reference fields have consecutive tokens (§4.3.7.5, §6.9.2.3).
+         */
+        private void writeInstanceLayout(TokenMap.ClassEntry entry) {
+            int cells = 0;
+            int firstReference = NO_REFERENCE_FIELDS;
+            int references = 0;
+            for (TokenMap.FieldEntry fe : entry.instanceFields()) {
+                cells += "I".equals(fe.descriptor()) ? 2 : 1;
+                if (fe.descriptor().startsWith("L") || fe.descriptor().startsWith("[")) {
+                    firstReference = Math.min(firstReference, fe.token());
+                    references++;
                 }
             }
+            info.u1(cells);
+            info.u1(firstReference);
+            info.u1(references);
         }
 
-        // --- package_method_table (§6.8 Table 6-16) ---
-        if (!pkgTableWritten) {
-            info.u1(0); // §6.8: u1 package_method_table_base
-            info.u1(0); // §6.8: u1 package_method_table_count
-        }
-
-        // --- implemented_interface_info (§6.8 Table 6-17) ---
-        // §6.8: interface_count entries, each maps interface method tokens to class tokens
-        for (String iface : ci.interfaces()) {
-            int ifaceRef = resolver.resolveClassRefDirect(iface);
-            info.u2(ifaceRef); // §6.8 Table 6-17: u2 interface class_ref
-
-            // §6.8 Table 6-17: u1 count + u1[] index (interface-to-class token mapping)
-            List<TokenMap.MethodEntry> ifaceMethods = resolver.getInterfaceMethods(iface);
-            if (ifaceMethods.isEmpty()) {
-                info.u1(0); // §6.8: u1 count = 0 (no interface methods to map)
-            } else {
-                // count = max_token + 1 (tokens are 0-based, contiguous)
-                int maxIfaceToken = ifaceMethods.stream()
-                        .mapToInt(TokenMap.MethodEntry::token).max().orElse(-1);
-                int mappingCount = maxIfaceToken + 1;
-                info.u1(mappingCount); // §6.8: u1 count
-
-                // For each interface method token, find the class's corresponding virtual token
-                for (int t = 0; t < mappingCount; t++) {
-                    final int ifaceToken = t;
-                    TokenMap.MethodEntry ifaceMethod = ifaceMethods.stream()
-                            .filter(m -> m.token() == ifaceToken)
-                            .findFirst()
-                            .orElse(null);
-
-                    if (ifaceMethod != null) {
-                        // §6.8 Table 6-17: u1 index — class virtual method token
-                        String key = ifaceMethod.name() + ":" + ifaceMethod.descriptor();
-                        TokenMap.MethodEntry classMethod = allVirtuals.stream()
-                                .filter(m -> (m.name() + ":" + m.descriptor()).equals(key))
-                                .findFirst()
-                                .orElse(null);
-                        info.u1(classMethod != null ? classMethod.token() : 0xFF);
-                    } else {
-                        info.u1(0xFF); // §6.8: gap in token numbering
-                    }
-                }
+        /** §6.9.2.5 implemented_interface_info: index[interface token] = class virtual token. */
+        private void writeImplementedInterface(ClassInfo ci, TokenMap.ClassEntry entry, String iface) {
+            List<TokenMap.MethodEntry> methods = hierarchy.interfaceMethods(iface);
+            int count = methods.isEmpty() ? 0 : methods.getLast().token() + 1;
+            info.u2(classRef(iface));
+            info.u1(count);
+            for (int t = 0; t < count; t++) {
+                int token = t;
+                TokenMap.MethodEntry im = methods.stream().filter(m -> m.token() == token).findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Interface " + iface
+                                + " has no method with token " + token));
+                info.u1(implementingToken(ci, entry, iface, im));
             }
         }
 
-        // §6.8: CAP format 2.3 appends VMMT (Virtual Method Mapping Table) per class.
-        // VMMT maps virtual method tokens for superclass evolution compatibility.
-        // Each entry is u1: identity mapping for inherited methods, 0xFF for newly declared.
-        if (version != null && version.formatMinor() >= 3) {
-            int pubBase = (maxLocalToken < 0) ? 0 : minLocalToken;
-            int pubCount = (maxLocalToken < 0) ? 0 : (maxLocalToken - minLocalToken + 1);
-            // VMMT size = max(pub_base + pub_count, pkg_base + pkg_count) + 1
-            // pkg_base and pkg_count are currently always 0
-            int vmmtSize = pubBase + pubCount + 1;
+        private static int implementingToken(ClassInfo ci, TokenMap.ClassEntry entry, String iface,
+                                             TokenMap.MethodEntry im) {
+            return entry.virtualMethods().stream()
+                    .filter(m -> m.name().equals(im.name()) && m.descriptor().equals(im.descriptor()))
+                    .mapToInt(TokenMap.MethodEntry::token).findFirst()
+                    .orElseThrow(() -> new IllegalStateException(ci.thisClass() + " implements " + iface
+                            + " but neither it nor a superclass declares " + im.name() + im.descriptor()
+                            + "; declare the method (abstract if needed) in " + ci.thisClass()
+                            + " (JCVM 3.1 §6.9.2.5)"));
+        }
 
-            // Inherited count = superclass's virtual method count
-            int inheritedCount;
-            String superClass = ci.superClass();
-            if (superClass == null || JAVA_LANG_OBJECT.equals(superClass)) {
-                inheritedCount = 1; // Object has equals at token 0
-            } else {
-                inheritedCount = resolver.getVirtualMethodCount(superClass);
+        /**
+         * §6.9.2.7 public_virtual_method_token_mapping (identity for tokens inherited from the
+         * direct superclass, 0xFF for methods introduced by this class) followed by
+         * CAP22_inheritable_public_method_token_count.
+         */
+        private void writeTokenMapping(ClassInfo ci, MethodTables.Table pub) {
+            int publicMethodCount = pub.base() + pub.count();
+            int inherited = hierarchy.inheritedVirtuals(ci).stream().mapToInt(TokenMap.MethodEntry::token)
+                    .filter(t -> (t & 0x80) == 0).max().orElse(-1) + 1;
+            for (int t = 0; t < publicMethodCount; t++) {
+                info.u1(t < inherited ? t : 0xFF);
             }
+            info.u1(publicMethodCount);
+        }
 
-            for (int i = 0; i < vmmtSize; i++) {
-                if (i < inheritedCount || i == vmmtSize - 1) {
-                    info.u1(i); // identity mapping (inherited or phantom slot)
-                } else {
-                    info.u1(0xFF); // newly declared virtual method
-                }
+        /**
+         * class_ref (§6.8.1): the offset of an entry of this component for internal types (always
+         * written before the entries that reference them), the package and class token otherwise.
+         */
+        private int classRef(String name) {
+            Integer offset = written.get(name);
+            if (offset != null) {
+                return offset;
+            }
+            if (hierarchy.isInternal(name)) {
+                throw new IllegalStateException(name + " is referenced before its own entry; classes must"
+                        + " be in Class component order (JCVM 3.1 §6.9)");
+            }
+            return resolver.resolveClassRefDirect(name);
+        }
+
+        private static void requireAtMost(int count, int max, ClassInfo ci, String what) {
+            if (count > max) {
+                throw new IllegalStateException(ci.thisClass() + " has " + count + " " + what
+                        + ", at most " + max + " are allowed (JCVM 3.1 §6.9.2.1)");
             }
         }
-    }
-
-    /**
-     * Checks whether a class directly or transitively implements javacard.framework.Shareable.
-     * Walks both the interface hierarchy and the superclass chain.
-     */
-    @SuppressWarnings("java:S3776") // Recursive interface hierarchy traversal
-    private static boolean implementsShareable(ClassInfo ci, List<ClassInfo> allClasses) {
-        // Direct check
-        for (String iface : ci.interfaces()) {
-            if ("javacard/framework/Shareable".equals(iface)) return true;
-            // Check if the interface itself extends Shareable (transitive)
-            for (ClassInfo other : allClasses) {
-                if (other.thisClass().equals(iface) && implementsShareable(other, allClasses)) {
-                    return true;
-                }
-            }
-        }
-        // Check superclass chain
-        if (ci.superClass() != null && !JAVA_LANG_OBJECT.equals(ci.superClass())) {
-            for (ClassInfo sup : allClasses) {
-                if (sup.thisClass().equals(ci.superClass())) {
-                    return implementsShareable(sup, allClasses);
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Resolves a virtual method's offset in the Method component by walking up the
-     * class hierarchy. For locally declared/overridden methods, the offset is found
-     * in the current class. For inherited methods, the closest superclass that
-     * declares or overrides the method is used.
-     *
-     * Resolves a single dispatch table entry for the given token.
-     * Returns the method offset, or {@code 0xFFFF} for gaps in token numbering.
-     */
-    private static int resolveDispatchEntry(int token, List<TokenMap.MethodEntry> allVirtuals,
-                                             ClassInfo ci, List<ClassInfo> allClasses,
-                                             Map<String, Integer> methodIndexMap,
-                                             int[] methodOffsets) {
-        TokenMap.MethodEntry me = allVirtuals.stream()
-                .filter(m -> m.token() == token)
-                .findFirst()
-                .orElse(null);
-        if (me != null) {
-            return resolveVirtualMethodOffset(
-                    ci.thisClass(), me.name(), me.descriptor(),
-                    allClasses, methodIndexMap, methodOffsets);
-        }
-        return 0xFFFF;
-    }
-
-    /**
-     * @return method offset, or 0xFFFF if not found in any package class
-     */
-    private static int resolveVirtualMethodOffset(String className, String methodName,
-                                                   String methodDesc,
-                                                   List<ClassInfo> allClasses,
-                                                   Map<String, Integer> methodIndexMap,
-                                                   int[] methodOffsets) {
-        String current = className;
-        while (current != null) {
-            String key = current + ":" + methodName + ":" + methodDesc;
-            Integer idx = methodIndexMap.get(key);
-            if (idx != null && idx < methodOffsets.length) {
-                return methodOffsets[idx];
-            }
-            // Walk up to superclass
-            String sup = null;
-            for (ClassInfo ci : allClasses) {
-                if (ci.thisClass().equals(current)) {
-                    sup = ci.superClass();
-                    break;
-                }
-            }
-            current = sup;
-        }
-        return 0xFFFF;
     }
 
     /**
      * Result of Class component generation.
      *
      * @param bytes        complete component bytes including tag and size
-     * @param classOffsets byte offset of each class within the component info area,
-     *                     indexed by position in the sorted class list (= class token)
+     * @param classOffsets offset of each entry within the component info item, in the order of
+     *                     the class list passed to {@code generate} (Class component order)
      */
     public record ClassResult(byte[] bytes, int[] classOffsets) {
         @Override

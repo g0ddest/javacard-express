@@ -1,6 +1,11 @@
 package name.velikodniy.jcexpress.converter.input;
 
+import java.lang.classfile.Attributes;
+import java.lang.classfile.ClassModel;
+import java.lang.classfile.MethodModel;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Parsed representation of a single JVM {@code .class} file, capturing the
@@ -37,6 +42,9 @@ import java.util.List;
  *                    {@code ACC_ABSTRACT}, etc. as defined in JVM Specification Section 4.1)
  * @param methods     all declared methods, including constructors and static initializers
  * @param fields      all declared fields, both instance and static
+ * @param model       the parsed class file this record was read from, or {@code null} for
+ *                    records built in code; gives the subset check access to method code,
+ *                    line numbers and attributes. It is not part of equality.
  * @see ClassFileReader
  * @see MethodInfo
  * @see FieldInfo
@@ -47,8 +55,70 @@ public record ClassInfo(
         List<String> interfaces,
         int accessFlags,
         List<MethodInfo> methods,
-        List<FieldInfo> fields
+        List<FieldInfo> fields,
+        ClassModel model
 ) {
+    /**
+     * Creates a class record without a parsed class file.
+     *
+     * @param thisClass   internal name of this class
+     * @param superClass  internal name of the superclass, or {@code null}
+     * @param interfaces  internal names of directly implemented interfaces
+     * @param accessFlags JVM access flags
+     * @param methods     declared methods
+     * @param fields      declared fields
+     */
+    public ClassInfo(String thisClass, String superClass, List<String> interfaces, int accessFlags,
+                     List<MethodInfo> methods, List<FieldInfo> fields) {
+        this(thisClass, superClass, interfaces, accessFlags, methods, fields, null);
+    }
+
+    /**
+     * Returns the source file name of the class (SourceFile attribute), if known.
+     *
+     * @return the source file name
+     */
+    public Optional<String> sourceFile() {
+        return model == null ? Optional.empty() : model.findAttribute(Attributes.sourceFile())
+                .map(sf -> sf.sourceFile().stringValue());
+    }
+
+    /**
+     * Returns the parsed method with the given name and descriptor, if the class file is known.
+     *
+     * @param name       method name
+     * @param descriptor method descriptor
+     * @return the method model
+     */
+    public Optional<MethodModel> methodModel(String name, String descriptor) {
+        if (model == null) {
+            return Optional.empty();
+        }
+        return model.methods().stream()
+                .filter(m -> m.methodName().equalsString(name) && m.methodType().equalsString(descriptor))
+                .findFirst();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        return o instanceof ClassInfo(var tc, var sc, var itf, var af, var ms, var fs, var ignored)
+                && accessFlags == af && Objects.equals(thisClass, tc) && Objects.equals(superClass, sc)
+                && Objects.equals(interfaces, itf) && Objects.equals(methods, ms)
+                && Objects.equals(fields, fs);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(thisClass, superClass, interfaces, accessFlags, methods, fields);
+    }
+
+    @Override
+    public String toString() {
+        return "ClassInfo[thisClass=" + thisClass + ", superClass=" + superClass
+                + ", interfaces=" + interfaces + ", accessFlags=" + accessFlags
+                + ", methods=" + methods + ", fields=" + fields + "]";
+    }
+
     /**
      * Returns {@code true} if this class is an interface ({@code ACC_INTERFACE} flag is set).
      *

@@ -27,10 +27,15 @@ class StructuralValidationTest {
     private static final String APPLET_AID = "A00000006201010101";
     private static final String PACKAGE_NAME = "com.example";
 
-    private static final List<String> ALL_COMPONENT_NAMES = List.of(
+    /**
+     * Components of an application package without shareable interfaces. The Export component is
+     * absent even though {@code generateExport(true)} is requested: an application package exports
+     * only its public shareable interfaces and the component must not be empty (JCVM 3.1 §6.13).
+     */
+    private static final List<String> APPLICATION_COMPONENT_NAMES = List.of(
             "Header.cap", "Directory.cap", "Applet.cap", "Import.cap",
             "ConstantPool.cap", "Class.cap", "Method.cap", "StaticField.cap",
-            "RefLocation.cap", "Export.cap", "Descriptor.cap"
+            "RefLocation.cap", "Descriptor.cap"
     );
 
     private static final Map<String, Integer> COMPONENT_TAGS = Map.ofEntries(
@@ -101,19 +106,30 @@ class StructuralValidationTest {
         }
     }
 
-    // ── 2. All 11 components present ──
+    // ── 2. Components of an application package ──
 
-    @ParameterizedTest(name = "{0}: all 11 components present")
+    @ParameterizedTest(name = "{0}: all components of an application package present")
     @EnumSource(JavaCardVersion.class)
-    void allElevenComponentsShouldBePresent(JavaCardVersion version) throws Exception {
+    void allApplicationComponentsShouldBePresent(JavaCardVersion version) throws Exception {
         ConverterResult result = convertForVersion(version);
         Map<String, byte[]> components = extractAllComponents(result.capFile());
 
-        for (String componentName : ALL_COMPONENT_NAMES) {
+        for (String componentName : APPLICATION_COMPONENT_NAMES) {
             assertThat(components)
                     .as("Component %s should be present for %s", componentName, version)
                     .containsKey(componentName);
         }
+    }
+
+    @ParameterizedTest(name = "{0}: no Export component without shareable interfaces (6.13)")
+    @EnumSource(JavaCardVersion.class)
+    void exportComponentOmittedForApplicationPackageWithoutShareableInterfaces_6_13(JavaCardVersion version)
+            throws Exception {
+        Map<String, byte[]> components = extractAllComponents(convertForVersion(version).capFile());
+
+        assertThat(components).doesNotContainKey("Export.cap");
+        int headerFlags = components.get("Header.cap")[3 + 6] & 0xFF; // tag, size, magic, minor, major
+        assertThat(headerFlags & 0x02).as("ACC_EXPORT (6.4)").isZero();
     }
 
     // ── 3. Header magic 0xDECAFFED ──
@@ -170,9 +186,8 @@ class StructuralValidationTest {
         ConverterResult result = convertForVersion(version);
         Map<String, byte[]> components = extractAllComponents(result.capFile());
 
-        for (var entry : COMPONENT_TAGS.entrySet()) {
-            String componentName = entry.getKey();
-            int expectedTag = entry.getValue();
+        for (String componentName : APPLICATION_COMPONENT_NAMES) {
+            int expectedTag = COMPONENT_TAGS.get(componentName);
 
             byte[] data = components.get(componentName);
             assertThat(data)
@@ -192,7 +207,7 @@ class StructuralValidationTest {
         ConverterResult result = convertForVersion(version);
         Map<String, byte[]> components = extractAllComponents(result.capFile());
 
-        for (String componentName : ALL_COMPONENT_NAMES) {
+        for (String componentName : APPLICATION_COMPONENT_NAMES) {
             byte[] data = components.get(componentName);
             assertThat(data)
                     .as("Component %s should exist for %s", componentName, version)

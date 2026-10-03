@@ -22,12 +22,14 @@ class ConverterTest {
     void shouldConvertTestAppletToCapFile() throws Exception {
         Path classesDir = Path.of("target/test-classes");
 
+        // A000000062010101 (used elsewhere) is the AID of javacard.framework.service, which the
+        // converter reports as a warning (JCVM 3.1 §4.2.2.3); a clean conversion uses an unused AID.
         ConverterResult result = Converter.builder()
                 .classesDirectory(classesDir)
                 .packageName("com.example")
-                .packageAid("A000000062010101")
+                .packageAid("A000000062FE01")
                 .packageVersion(1, 0)
-                .applet("com.example.TestApplet", "A00000006201010101")
+                .applet("com.example.TestApplet", "A000000062FE0101")
                 .build()
                 .convert();
 
@@ -105,16 +107,20 @@ class ConverterTest {
     @Test
     void shouldAutoGenerateAidWhenNotSpecified() throws Exception {
         Path classesDir = Path.of("target/test-classes");
+        // the applet AID must use the RID of the (generated) package AID (JCVM 3.1 §6.6)
+        byte[] appletAid = java.util.Arrays.copyOf(Converter.Builder.generateAid("com.example"), 9);
+        appletAid[8] = 0x01;
 
         ConverterResult result = Converter.builder()
                 .classesDirectory(classesDir)
                 .packageName("com.example")
                 .packageVersion(1, 0)
-                .applet("com.example.TestApplet", "A00000006201010101")
+                .applet("com.example.TestApplet", appletAid)
                 .build()
                 .convert();
 
         assertThat(result.capFile()).isNotEmpty();
+        assertThat(result.warnings()).singleElement().asString().contains("no package AID was configured");
     }
 
     @Test

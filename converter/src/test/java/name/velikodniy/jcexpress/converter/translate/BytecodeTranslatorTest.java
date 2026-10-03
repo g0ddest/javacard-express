@@ -190,12 +190,8 @@ class BytecodeTranslatorTest {
 
         assertThat(result.capFile()).isNotEmpty();
 
-        // Extract Method component and check for int-specific opcodes
-        byte[] methodData = extractComponent(result.capFile(), "Method.cap");
-        assertThat(methodData).isNotNull();
-
-        // Search for IADD (0x42) in Method component
-        assertThat(containsOpcode(methodData, JcvmOpcode.IADD))
+        // iadd (0x42) as an instruction of some method, not just a byte value anywhere
+        assertThat(capContainsOpcode(result.capFile(), JcvmOpcode.IADD))
                 .as("should emit IADD when int32 supported").isTrue();
     }
 
@@ -212,10 +208,9 @@ class BytecodeTranslatorTest {
                 .build()
                 .convert();
 
-        byte[] methodData = extractComponent(result.capFile(), "Method.cap");
-
-        // With int32, constants should use ICONST_0 (0x0A) instead of SCONST_0 (0x03)
-        assertThat(containsOpcode(methodData, JcvmOpcode.ICONST_0))
+        // counter = 0 stores into an int field: the constant is pushed as an int (iconst_0,
+        // JCVM 3.1 §7.5.33); constants of short expressions stay sconst (IntModeTranslationTest)
+        assertThat(capContainsOpcode(result.capFile(), JcvmOpcode.ICONST_0))
                 .as("should emit ICONST_0 when int32 supported").isTrue();
     }
 
@@ -239,11 +234,18 @@ class BytecodeTranslatorTest {
         assertThat(flags & 0x01).as("ACC_INT flag should be set").isEqualTo(1);
     }
 
-    private static boolean containsOpcode(byte[] data, int opcode) {
-        for (byte b : data) {
-            if ((b & 0xFF) == opcode) return true;
-        }
-        return false;
+    /**
+     * Whether the method bytecode contains the opcode as an instruction (decoded at instruction
+     * boundaries, so operand bytes with the same value do not count).
+     */
+    private static boolean containsOpcode(byte[] bytecode, int opcode) {
+        return JcvmDisassembler.disassemble(bytecode).stream().anyMatch(i -> i.opcode() == opcode);
+    }
+
+    /** Whether some method of the CAP file contains the opcode as an instruction. */
+    private static boolean capContainsOpcode(byte[] capFile, int opcode) throws Exception {
+        return CapView.parse(capFile).methods().stream()
+                .anyMatch(m -> containsOpcode(m.code(), opcode));
     }
 
     private static byte[] extractComponent(byte[] capFile, String componentName) throws Exception {
@@ -392,6 +394,9 @@ class BytecodeTranslatorTest {
         // Verify Class component exists
         byte[] classData = extractComponent(result.capFile(), "Class.cap");
         assertThat(classData).isNotNull();
+        // AbstractBase uses data.length: arraylength must survive (JCVM 3.1 §7.5.8); before, it
+        // was dropped and the CAP failed verification
+        assertThat(capContainsOpcode(result.capFile(), JcvmOpcode.ARRAYLENGTH)).isTrue();
     }
 
     // ── Type conversion opcodes ──

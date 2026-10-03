@@ -4,10 +4,12 @@ import name.velikodniy.jcexpress.converter.JavaCardVersion;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
 import name.velikodniy.jcexpress.converter.input.MethodInfo;
 import name.velikodniy.jcexpress.converter.token.ExportFile;
+import name.velikodniy.jcexpress.converter.token.ImportedTypes;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 import name.velikodniy.jcexpress.converter.translate.JcvmConstantPool;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -16,6 +18,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * Resolves symbolic class/method/field references from JVM bytecode
@@ -58,6 +61,8 @@ import java.util.function.Consumer;
  */
 public final class ReferenceResolver {
 
+    private static final String OBJECT = "java/lang/Object";
+
     /** Token assignments for the current (being-converted) package. */
     private final TokenMap tokenMap;
 
@@ -83,14 +88,26 @@ public final class ReferenceResolver {
     private final Set<String> privateInstanceMethods;
 
     /**
+     * Statically bound members declared per class: static fields ({@code "name"}) and static
+     * methods, constructors and private methods ({@code "name:descriptor"}). javac names the
+     * qualifying class of a reference, which may inherit the member (JLS 13.1), so a member not
+     * declared in the named class is looked up in its superclasses (JCVM 3.1 §6.8.3: the
+     * reference must designate the declaring class).
+     */
+    private final Map<String, Set<String>> declaredStaticMembers = new HashMap<>();
+
+    /** Information about classes and interfaces of the imported packages (export files). */
+    private final ImportedTypes importedTypes;
+
+    /**
      * Deferred patches for internal references. Internal refs use placeholder values during
      * translation because real byte offsets are not yet known. After component generation,
-     * {@link #patchInternalRefs} replaces each placeholder with the actual offset.
+     * {@link #patchInternalRefs(Map, Map, Map)} replaces each placeholder with the actual offset.
      */
-    private final List<PendingPatch> pendingPatches = new ArrayList<>();
+    private final InternalRefPatches patches = new InternalRefPatches();
 
-    /** Next unique placeholder value for deferred internal references. Starts at {@code 0x7F00}. */
-    private int nextPlaceholder = 0x7F00;
+    /** Class component offsets of the package's classes, known after {@link #patchInternalRefs}. */
+    private Map<String, Integer> classOffsets = Map.of();
 
     /*
      * Caches for internal reference deduplication. Each cache maps a unique key
@@ -103,6 +120,7 @@ public final class ReferenceResolver {
     private final Map<String, Integer> internalStaticFieldRefCache = new HashMap<>();
     private final Map<String, Integer> internalInstanceFieldRefCache = new HashMap<>();
     private final Map<String, Integer> internalVirtualMethodRefCache = new HashMap<>();
+    private final Map<String, Integer> superMethodRefCache = new HashMap<>();
 
     /**
      * Tracks which imported package tokens were actually referenced during bytecode
@@ -161,21 +179,45 @@ public final class ReferenceResolver {
         this.superclassMap = new HashMap<>();
         this.declaredVirtualMethods = new HashMap<>();
         this.privateInstanceMethods = new HashSet<>();
+        this.importedTypes = new ExportedTypes(imports);
         for (ClassInfo ci : classes) {
-            if (ci.superClass() != null) {
-                superclassMap.put(ci.thisClass(), ci.superClass());
-            }
-            Set<String> declared = new HashSet<>();
-            for (MethodInfo mi : ci.methods()) {
-                if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic() && !mi.isPrivate()) {
-                    declared.add(mi.name() + ":" + mi.descriptor());
-                }
-                if (mi.isPrivate() && !mi.isStatic()) {
-                    privateInstanceMethods.add(ci.thisClass() + ":" + mi.name() + ":" + mi.descriptor());
-                }
-            }
-            declaredVirtualMethods.put(ci.thisClass(), declared);
+            indexMembers(ci);
         }
+    }
+
+    /**
+     * Records the superclass of a class of the package and the members it declares: virtual
+     * methods, statically bound members and private instance methods (see the fields).
+     */
+    private void indexMembers(ClassInfo ci) {
+        if (ci.superClass() != null) {
+            superclassMap.put(ci.thisClass(), ci.superClass());
+        }
+        Set<String> declared = new HashSet<>();
+        Set<String> statics = new HashSet<>();
+        for (MethodInfo mi : ci.methods()) {
+            if (!mi.isConstructor() && !mi.isStaticInitializer() && !mi.isStatic() && !mi.isPrivate()) {
+                declared.add(mi.name() + ":" + mi.descriptor());
+            } else {
+                statics.add(mi.name() + ":" + mi.descriptor());
+            }
+            if (mi.isPrivate() && !mi.isStatic()) {
+                privateInstanceMethods.add(ci.thisClass() + ":" + mi.name() + ":" + mi.descriptor());
+            }
+        }
+        ci.fields().stream().filter(f -> f.isStatic()).forEach(f -> statics.add(f.name()));
+        declaredVirtualMethods.put(ci.thisClass(), declared);
+        declaredStaticMembers.put(ci.thisClass(), statics);
+    }
+
+    /**
+     * Returns what the export files of the imported packages say about their classes and
+     * interfaces (inherited virtual method tokens, interface methods, ACC_SHAREABLE).
+     *
+     * @return imported type information
+     */
+    public ImportedTypes importedTypes() {
+        return importedTypes;
     }
 
     /**
@@ -185,6 +227,28 @@ public final class ReferenceResolver {
      */
     public boolean isPrivateInstanceMethod(String owner, String name, String desc) {
         return privateInstanceMethods.contains(owner + ":" + name + ":" + desc);
+    }
+
+    /**
+     * Whether {@code invokeinterface owner.name desc} calls a public instance method of {@code Object} the
+     * interface does not have: an interface's members include them (JLS 9.2, JVMS 5.4.3.4), but its tokens
+     * cover only its own and superinterface methods (JCVM 3.1 §4.3.7.7, §5.7): invokevirtual (§7.5.57).
+     *
+     * @param owner interface named by the reference (internal name)
+     * @param name  method name
+     * @param desc  method descriptor
+     * @return {@code true} if the call must be an invokevirtual of the {@code java.lang.Object} method
+     */
+    public boolean isObjectMethodOfInterface(String owner, String name, String desc) {
+        boolean declared = isCurrentPackage(owner)
+                ? tokenMap.findClass(owner).virtualMethods().stream()
+                        .anyMatch(m -> m.name().equals(name) && m.descriptor().equals(desc))
+                : ExportMembers.declaresMethod(exportedClass(owner), name, desc);
+        return !declared && ExportMembers.declaresPublicInstanceMethod(exportedClass(OBJECT), name, desc);
+    }
+
+    private ExportFile.ClassExport exportedClass(String internalName) {
+        return findImportedPackage(internalName).exportFile().findClass(simpleName(internalName));
     }
 
     /**
@@ -288,10 +352,10 @@ public final class ReferenceResolver {
             Integer cached = internalClassRefCache.get(internalName);
             if (cached != null) return cached;
 
-            int placeholder = nextPlaceholder++;
-            int cpIdx = cp.addInternalClassRef(placeholder);
+            int cpIdx = cp.addInternalClassRef(patches.nextPlaceholder());
             internalClassRefCache.put(internalName, cpIdx);
-            pendingPatches.add(new PendingPatch(cpIdx, PatchKind.CLASS, internalName, null, null));
+            patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.CLASS, internalName,
+                    null, null, 0));
             return cpIdx;
         }
 
@@ -345,6 +409,11 @@ public final class ReferenceResolver {
      */
     public int resolveMethodRef(String owner, String name, String desc, InvokeKind kind) {
         int cpIdx;
+        if (isSuperInvocation(owner, name, desc, kind)) {
+            cpIdx = resolveSuperMethodRef(owner, name, desc);
+            cpTypeDescriptors.put(cpIdx, desc);
+            return cpIdx;
+        }
         if (isCurrentPackage(owner)) {
             try {
                 cpIdx = resolveInternalMethodRef(owner, name, desc, kind);
@@ -369,52 +438,122 @@ public final class ReferenceResolver {
         return cpIdx;
     }
 
+    /**
+     * Returns whether an {@code invokespecial} is a super invocation ({@code super.m()}): it names
+     * neither a constructor nor a private method of the named class. JCVM 3.1 §7.5.55 requires a
+     * CONSTANT_SuperMethodref for it; CONSTANT_StaticMethodref is only for constructors and
+     * private methods.
+     */
+    private boolean isSuperInvocation(String owner, String name, String desc, InvokeKind kind) {
+        return kind == InvokeKind.SPECIAL && !"<init>".equals(name)
+                && !privateInstanceMethods.contains(owner + ":" + name + ":" + desc);
+    }
+
+    /**
+     * Resolves {@code super.m()} to a CONSTANT_SuperMethodref (JCVM 3.1 §6.8.2): the class item is
+     * the class containing the super invocation, the token is the virtual method token of the
+     * method in the hierarchy of that class's superclass (the class javac names as owner).
+     */
+    private int resolveSuperMethodRef(String owner, String name, String desc) {
+        String caller = currentTranslatingClass;
+        if (caller == null || !isCurrentPackage(caller)) {
+            throw new IllegalStateException("super invocation of " + owner + "." + name + desc
+                    + " outside a class of the converted package");
+        }
+        String key = caller + ":" + name + ":" + desc;
+        Integer cached = superMethodRefCache.get(key);
+        if (cached != null) return cached;
+
+        int token = superMethodToken(owner, name, desc);
+        int cpIdx = cp.addSuperMethodRef(patches.nextPlaceholder(), token);
+        superMethodRefCache.put(key, cpIdx);
+        patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.SUPER_METHOD, caller,
+                name, desc, token));
+        return cpIdx;
+    }
+
+    /** Virtual method token of {@code name desc} in the hierarchy of {@code superClass}. */
+    private int superMethodToken(String superClass, String name, String desc) {
+        List<TokenMap.MethodEntry> methods = isCurrentPackage(superClass)
+                ? tokenMap.findClass(superClass).virtualMethods()
+                : importedTypes.virtualMethods(superClass);
+        return methods.stream()
+                .filter(m -> m.name().equals(name) && m.descriptor().equals(desc))
+                .mapToInt(TokenMap.MethodEntry::token)
+                .findFirst()
+                .orElseThrow(() -> new NoSuchElementException("super invocation of " + superClass + "."
+                        + name + desc + ": no such virtual method in the superclass hierarchy"));
+    }
+
+    /**
+     * Throws {@link NoSuchElementException} if {@code owner} does not declare the statically bound
+     * member, so that the caller continues the lookup in the superclass (JLS 13.1, JCVM 3.1 §6.8.3).
+     */
+    private void requireDeclaredStatic(String owner, String member) {
+        Set<String> declared = declaredStaticMembers.get(owner);
+        if (declared != null && !declared.contains(member)) {
+            throw new NoSuchElementException("Member inherited but not declared in " + owner + ": " + member);
+        }
+    }
+
     // ── Internal reference resolution ──
 
     private int resolveInternalFieldRef(String owner, String name, boolean isStatic) {
         TokenMap.ClassEntry classEntry = tokenMap.findClass(owner);
         if (isStatic) {
+            requireDeclaredStatic(owner, name);
             String key = owner + ":" + name;
             Integer cached = internalStaticFieldRefCache.get(key);
             if (cached != null) return cached;
 
-            int placeholder = nextPlaceholder++;
-            int cpIdx = cp.addInternalStaticFieldRef(placeholder);
+            int cpIdx = cp.addInternalStaticFieldRef(patches.nextPlaceholder());
             internalStaticFieldRefCache.put(key, cpIdx);
-            pendingPatches.add(new PendingPatch(cpIdx, PatchKind.STATIC_FIELD, owner, name, null));
+            patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.STATIC_FIELD, owner,
+                    name, null, 0));
             return cpIdx;
         }
-        // Instance field: use ClassComponent byte offset (deferred) per JCVM spec 6.8.2
+        // Instance field: the declaring class's Class component offset (deferred), JCVM 3.1 §6.8.2
         String key = owner + ":" + name;
         Integer cached = internalInstanceFieldRefCache.get(key);
         if (cached != null) return cached;
 
         TokenMap.FieldEntry field = classEntry.findInstanceField(name);
-        int placeholder = nextPlaceholder++;
-        int cpIdx = cp.addInstanceFieldRef(placeholder, field.token());
+        int cpIdx = cp.addInstanceFieldRef(patches.nextPlaceholder(), field.token());
         internalInstanceFieldRefCache.put(key, cpIdx);
-        pendingPatches.add(new PendingPatch(cpIdx, PatchKind.INSTANCE_FIELD, owner, name, null));
+        patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.INSTANCE_FIELD, owner,
+                name, null, field.token()));
         return cpIdx;
     }
 
     private int resolveInternalMethodRef(String owner, String name, String desc, InvokeKind kind) {
         TokenMap.ClassEntry classEntry = tokenMap.findClass(owner);
-
         if (kind == InvokeKind.STATIC || kind == InvokeKind.SPECIAL) {
-            // Both invokestatic and invokespecial use StaticMethodRef (tag=6)
-            // per JCVM spec 7.5.12. This covers constructors (<init>) and
-            // super.method() calls — all resolved to specific method offsets.
-            String key = owner + ":" + name + ":" + desc;
-            Integer cached = internalStaticMethodRefCache.get(key);
-            if (cached != null) return cached;
-
-            int placeholder = nextPlaceholder++;
-            int cpIdx = cp.addInternalStaticMethodRef(placeholder);
-            internalStaticMethodRefCache.put(key, cpIdx);
-            pendingPatches.add(new PendingPatch(cpIdx, PatchKind.STATIC_METHOD, owner, name, desc));
-            return cpIdx;
+            return resolveInternalStaticMethodRef(owner, name, desc);
         }
+        return resolveInternalVirtualMethodRef(classEntry, owner, name, desc);
+    }
 
+    /**
+     * invokestatic, and invokespecial of constructors and private methods, use a
+     * CONSTANT_StaticMethodref with the Method component offset (JCVM 3.1 §6.8.3, §7.5.55);
+     * super invocations were handled by {@link #resolveSuperMethodRef}.
+     */
+    private int resolveInternalStaticMethodRef(String owner, String name, String desc) {
+        requireDeclaredStatic(owner, name + ":" + desc);
+        String key = owner + ":" + name + ":" + desc;
+        Integer cached = internalStaticMethodRefCache.get(key);
+        if (cached != null) return cached;
+
+        int cpIdx = cp.addInternalStaticMethodRef(patches.nextPlaceholder());
+        internalStaticMethodRefCache.put(key, cpIdx);
+        patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.STATIC_METHOD, owner,
+                name, desc, 0));
+        return cpIdx;
+    }
+
+    /** CONSTANT_VirtualMethodref of a method declared by a class of the package (JCVM 3.1 §6.8.2). */
+    private int resolveInternalVirtualMethodRef(TokenMap.ClassEntry classEntry, String owner, String name,
+                                                String desc) {
         // VIRTUAL or INTERFACE: check if method is declared/overridden locally.
         // If inherited (not locally declared), let the caller walk up the hierarchy
         // to the declaring class — this matches Oracle's encoding where inherited
@@ -430,35 +569,39 @@ public final class ReferenceResolver {
         if (cached != null) return cached;
 
         TokenMap.MethodEntry method = classEntry.findVirtualMethod(name, desc);
-        int placeholder = nextPlaceholder++;
-        int cpIdx = cp.addVirtualMethodRef(placeholder, method.token());
+        int cpIdx = cp.addVirtualMethodRef(patches.nextPlaceholder(), method.token());
         internalVirtualMethodRefCache.put(key, cpIdx);
-        pendingPatches.add(new PendingPatch(cpIdx, PatchKind.VIRTUAL_METHOD, owner, name, desc));
+        patches.add(new InternalRefPatches.Patch(cpIdx, InternalRefPatches.Kind.VIRTUAL_METHOD, owner,
+                name, desc, method.token()));
         return cpIdx;
     }
 
     // ── External reference resolution ──
 
     private int resolveExternalFieldRef(String owner, String name, boolean isStatic) {
-        ImportedPackage pkg = findImportedPackage(owner);
+        // The field may be inherited by the named class: reference the declaring class
+        // (JCVM 3.1 §6.8.2, §6.8.3), which may be in another imported package
+        DeclaringExport declaring = declaringExport(owner, ce -> ExportMembers.declaresField(ce, name));
+        ImportedPackage pkg = declaring.pkg();
         markPackageReferenced(pkg.token());
-        String simpleName = simpleName(owner);
-        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
-
+        ExportFile.FieldExport field = ExportMembers.field(declaring.cls(), name);
         if (isStatic) {
-            ExportFile.FieldExport field = findField(classExport, name);
-            return cp.addExternalStaticFieldRef(pkg.token(), classExport.token(), field.token());
+            return cp.addExternalStaticFieldRef(pkg.token(), declaring.cls().token(), field.token());
         }
-
         // External instance field: direct encoding (pkg|0x80, class_token, field_token)
         // per JCVM spec 6.8.2 — no intermediate ClassRef entry needed
-        ExportFile.FieldExport field = findField(classExport, name);
-        return cp.addExternalInstanceFieldRef(pkg.token(), classExport.token(), field.token());
+        return cp.addExternalInstanceFieldRef(pkg.token(), declaring.cls().token(), field.token());
+    }
+
+    /** The imported class declaring a member named through {@code owner} (see {@link DeclaringExport}). */
+    private DeclaringExport declaringExport(String owner, Predicate<ExportFile.ClassExport> declares) {
+        ImportedPackage pkg = findImportedPackage(owner);
+        return DeclaringExport.find(imports, pkg, pkg.exportFile().findClass(simpleName(owner)), declares);
     }
 
     /**
      * Result of resolving an interface method reference for {@code invokeinterface}.
-     * Per JCVM §7.5.49, invokeinterface uses a ClassRef CP index + separate method token byte.
+     * Per JCVM 3.1 §7.5.54, invokeinterface uses a ClassRef CP index + separate method token byte.
      *
      * @param cpIndex     CP index pointing to a ClassRef entry for the interface
      * @param methodToken interface method token (0-based within the interface)
@@ -466,24 +609,15 @@ public final class ReferenceResolver {
     public record InterfaceMethodRef(int cpIndex, int methodToken) {}
 
     /**
-     * Resolves an interface method call to a ClassRef CP index and method token.
-     * Per JCVM §7.5.49, invokeinterface encodes the interface class as a ClassRef
-     * and the method token as a separate byte in the instruction.
+     * Resolves an interface method call to a ClassRef CP index and method token. Per JCVM 3.1
+     * §7.5.54, invokeinterface encodes the interface as a ClassRef and the token as a separate byte.
      */
     public InterfaceMethodRef resolveInterfaceMethodRef(String owner, String name, String desc) {
-        // Check if the owner is in the current package
-        String ownerPkg = owner.contains("/")
-                ? owner.substring(0, owner.lastIndexOf('/'))
-                : "";
-        if (ownerPkg.equals(currentPackage)) {
-            // Internal interface — use internal class ref + token from token map
+        if (isCurrentPackage(owner)) {
+            // Internal interface: internal class ref + interface method token, which covers the
+            // methods inherited from superinterfaces as well (JCVM 3.1 §4.3.7.7)
             int cpIndex = resolveClassRef(owner);
-            String simpleName = simpleName(owner);
-            var entry = tokenMap.classes().stream()
-                    .filter(c -> c.internalName().endsWith("/" + simpleName))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Internal interface not found: " + owner));
+            TokenMap.ClassEntry entry = tokenMap.findClass(owner);
             int methodToken = entry.virtualMethods().stream()
                     .filter(m -> m.name().equals(name) && m.descriptor().equals(desc))
                     .findFirst()
@@ -495,29 +629,31 @@ public final class ReferenceResolver {
 
         ImportedPackage pkg = findImportedPackage(owner);
         markPackageReferenced(pkg.token());
-        String simpleName = simpleName(owner);
-        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
-        ExportFile.MethodExport method = findMethod(classExport, name, desc);
+        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName(owner));
+        ExportFile.MethodExport method = ExportMembers.method(classExport, name, desc);
         int cpIndex = cp.addExternalClassRef(pkg.token(), classExport.token());
         return new InterfaceMethodRef(cpIndex, method.token());
     }
 
     private int resolveExternalMethodRef(String owner, String name, String desc, InvokeKind kind) {
+        if (kind == InvokeKind.STATIC) {
+            // A static method may be inherited by the named class: reference the class that defines
+            // it (JCVM 3.1 §6.8.3). Encoding: (pkg|0x80, class_token, method_token)
+            DeclaringExport declaring = declaringExport(owner, ce -> ExportMembers.declaresMethod(ce, name, desc));
+            markPackageReferenced(declaring.pkg().token());
+            ExportFile.MethodExport method = ExportMembers.method(declaring.cls(), name, desc);
+            return cp.addExternalStaticMethodRef(declaring.pkg().token(), declaring.cls().token(), method.token());
+        }
         ImportedPackage pkg = findImportedPackage(owner);
         markPackageReferenced(pkg.token());
-        String simpleName = simpleName(owner);
-        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
-
-        if (kind == InvokeKind.STATIC || kind == InvokeKind.SPECIAL) {
-            // Both invokestatic and invokespecial use StaticMethodRef (tag=6)
-            // per JCVM spec 7.5.12. External encoding: (pkg|0x80, class_token, method_token)
-            ExportFile.MethodExport method = findMethod(classExport, name, desc);
+        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName(owner));
+        ExportFile.MethodExport method = ExportMembers.method(classExport, name, desc);
+        if (kind == InvokeKind.SPECIAL) {
+            // invokespecial of a constructor (never inherited) uses a StaticMethodref (JCVM 3.1 §7.5.55)
             return cp.addExternalStaticMethodRef(pkg.token(), classExport.token(), method.token());
         }
-
-        // VIRTUAL: direct encoding (pkg|0x80, class_token, method_token)
-        // per JCVM spec 6.8.3 — no intermediate ClassRef entry needed
-        ExportFile.MethodExport method = findMethod(classExport, name, desc);
+        // VIRTUAL: the named class, whose export entry lists inherited virtual methods with their
+        // tokens (JCVM 3.1 §5.9, §6.8.2); direct encoding (pkg|0x80, class_token, method_token)
         return cp.addExternalVirtualMethodRef(pkg.token(), classExport.token(), method.token());
     }
 
@@ -541,8 +677,7 @@ public final class ReferenceResolver {
     }
 
     private boolean isCurrentPackage(String internalName) {
-        String packagePart = packageOf(internalName);
-        return packagePart.equals(currentPackage);
+        return packageOf(internalName).equals(currentPackage);
     }
 
     private ImportedPackage findImportedPackage(String classInternalName) {
@@ -569,40 +704,21 @@ public final class ReferenceResolver {
         return lastSlash >= 0 ? internalName.substring(lastSlash + 1) : internalName;
     }
 
-    private static ExportFile.FieldExport findField(ExportFile.ClassExport classExport, String name) {
-        for (ExportFile.FieldExport fe : classExport.fields()) {
-            if (fe.name().equals(name)) return fe;
-        }
-        throw new NoSuchElementException(
-                "Field not found in export: " + classExport.name() + "." + name);
-    }
-
-    private static ExportFile.MethodExport findMethod(ExportFile.ClassExport classExport,
-                                                       String name, String desc) {
-        for (ExportFile.MethodExport me : classExport.methods()) {
-            if (me.name().equals(name) && me.descriptor().equals(desc)) return me;
-        }
-        // Try matching by name only (some export files may not include full descriptor)
-        for (ExportFile.MethodExport me : classExport.methods()) {
-            if (me.name().equals(name)) return me;
-        }
-        throw new NoSuchElementException(
-                "Method not found in export: " + classExport.name() + "." + name + desc);
-    }
-
     /**
-     * Returns the set of package names that must always be imported regardless of whether
-     * they are explicitly referenced in bytecode, based on the target JavaCard version.
+     * Returns the packages imported even when nothing in the CAP file references them.
      *
-     * <p>{@code javacard/framework} is always mandatory. {@code java/lang} is mandatory
-     * starting from JC 2.2.2 — Oracle's JC 2.1.2 and 2.2.1 converters omit it if not
-     * explicitly referenced in bytecode.
+     * <p>Only {@code java/lang}, starting from JC 2.2.2: Oracle's converters import it for every
+     * package of those versions (their JC 2.1.2 and 2.2.1 converters omit it if not referenced),
+     * and every card has it. Any other package, {@code javacard/framework} included, is imported
+     * only when referenced (JCVM 3.1 §6.7: the Import component lists the packages imported by the
+     * classes of the CAP file): a library that does not use the framework must not depend on a
+     * framework version.
      */
     private static Set<String> mandatoryPackages(JavaCardVersion version) {
         if (version == JavaCardVersion.V2_1_2 || version == JavaCardVersion.V2_2_1) {
-            return Set.of("javacard/framework");
+            return Set.of();
         }
-        return Set.of("java/lang", "javacard/framework");
+        return Set.of("java/lang");
     }
 
     /**
@@ -619,6 +735,24 @@ public final class ReferenceResolver {
      * @return the finalized list of imported packages with reassigned contiguous tokens
      */
     public List<ImportedPackage> finalizeImports(JavaCardVersion version) {
+        return finalizeImports(version, List.of());
+    }
+
+    /**
+     * Finalizes the import list like {@link #finalizeImports(JavaCardVersion)}, additionally
+     * keeping the packages of classes that the Class and Descriptor components name outside the
+     * constant pool: superclasses, implemented interfaces and descriptor types (JCVM 3.1 §6.7,
+     * §6.9, §6.14). Such packages are appended after the packages referenced by bytecode.
+     *
+     * @param version             the target JavaCard version (determines mandatory imports)
+     * @param structuralClassRefs internal names of classes named by class or descriptor
+     *                            structures; classes of this package and of packages without an
+     *                            export file are ignored
+     * @return the finalized list of imported packages with reassigned contiguous tokens
+     */
+    public List<ImportedPackage> finalizeImports(JavaCardVersion version,
+                                                 Collection<String> structuralClassRefs) {
+        markStructurallyReferenced(structuralClassRefs);
         Set<String> mandatory = mandatoryPackages(version);
 
         // Include referenced + mandatory packages
@@ -653,6 +787,14 @@ public final class ReferenceResolver {
             }
         }
 
+        return reassignTokens(filtered);
+    }
+
+    /**
+     * Gives the kept packages the contiguous tokens 0..n-1 in their order (JCVM 3.1 §4.3.7.1) and
+     * remaps the external constant pool entries to them.
+     */
+    private List<ImportedPackage> reassignTokens(List<ImportedPackage> filtered) {
         Map<Integer, Integer> remap = new HashMap<>();
         List<ImportedPackage> reassigned = new ArrayList<>();
         for (int i = 0; i < filtered.size(); i++) {
@@ -670,116 +812,93 @@ public final class ReferenceResolver {
         return reassigned;
     }
 
-    /**
-     * Patches all internal CP references with real component offsets.
-     * Must be called after ClassComponent, MethodComponent, and StaticFieldComponent
-     * have been generated so that byte offsets are known.
-     *
-     * @param classOffsets           byte offset of each class in ClassComponent info, indexed by class token
-     * @param methodOffsetMap        map from "className:methodName:methodDesc" → Method component offset
-     * @param staticFieldOffsetMap   map from "className:fieldName" → StaticField image offset
-     */
-    public void patchInternalRefs(int[] classOffsets,
-                                   Map<String, Integer> methodOffsetMap,
-                                   Map<String, Integer> staticFieldOffsetMap) {
-        for (PendingPatch p : pendingPatches) {
-            switch (p.kind) {
-                case CLASS -> {
-                    int token = tokenMap.classToken(p.className);
-                    int offset = classOffsets[token];
-                    // JCVM spec 6.8.1 Table 6-18: internal = u2 internal_class_ref + u1 padding
-                    // Note: differs from StaticMethodRef/StaticFieldRef which are padding + u2
-                    cp.replaceEntry(p.cpIndex, new JcvmConstantPool.CpEntry(
-                            JcvmConstantPool.TAG_CLASSREF,
-                            (byte) ((offset >> 8) & 0xFF),
-                            (byte) (offset & 0xFF),
-                            (byte) 0));
-                }
-                case STATIC_METHOD -> {
-                    String key = p.className + ":" + p.memberName + ":" + p.memberDesc;
-                    Integer offset = methodOffsetMap.get(key);
-                    if (offset != null) {
-                        // JCVM spec 6.8.6 Table 6-26: internal = padding(0) + u2 offset
-                        cp.replaceEntry(p.cpIndex, new JcvmConstantPool.CpEntry(
-                                JcvmConstantPool.TAG_STATIC_METHODREF,
-                                (byte) 0,
-                                (byte) ((offset >> 8) & 0xFF),
-                                (byte) (offset & 0xFF)));
-                    }
-                }
-                case STATIC_FIELD -> {
-                    String key = p.className + ":" + p.memberName;
-                    Integer offset = staticFieldOffsetMap.get(key);
-                    if (offset != null) {
-                        // JCVM spec 6.8.5 Table 6-24: internal = padding(0) + u2 offset
-                        cp.replaceEntry(p.cpIndex, new JcvmConstantPool.CpEntry(
-                                JcvmConstantPool.TAG_STATIC_FIELDREF,
-                                (byte) 0,
-                                (byte) ((offset >> 8) & 0xFF),
-                                (byte) (offset & 0xFF)));
-                    }
-                }
-                case INSTANCE_FIELD -> {
-                    // Patch class offset in InstanceFieldRef (b1:b2 = class offset, b3 = field token)
-                    int classToken = tokenMap.classToken(p.className);
-                    int classOffset = classOffsets[classToken];
-                    TokenMap.ClassEntry classEntry = tokenMap.findClass(p.className);
-                    TokenMap.FieldEntry field = classEntry.findInstanceField(p.memberName);
-                    cp.replaceEntry(p.cpIndex, new JcvmConstantPool.CpEntry(
-                            JcvmConstantPool.TAG_INSTANCE_FIELDREF,
-                            (byte) ((classOffset >> 8) & 0xFF),
-                            (byte) (classOffset & 0xFF),
-                            (byte) field.token()));
-                }
-                case VIRTUAL_METHOD -> {
-                    // Patch class offset in VirtualMethodRef (b1:b2 = class offset, b3 = method token)
-                    int classToken = tokenMap.classToken(p.className);
-                    int classOffset = classOffsets[classToken];
-                    TokenMap.ClassEntry classEntry = tokenMap.findClass(p.className);
-                    TokenMap.MethodEntry method = classEntry.findVirtualMethod(p.memberName, p.memberDesc);
-                    cp.replaceEntry(p.cpIndex, new JcvmConstantPool.CpEntry(
-                            JcvmConstantPool.TAG_VIRTUAL_METHODREF,
-                            (byte) ((classOffset >> 8) & 0xFF),
-                            (byte) (classOffset & 0xFF),
-                            (byte) method.token()));
+    /** Marks the imported packages of classes named outside the constant pool as referenced. */
+    private void markStructurallyReferenced(Collection<String> structuralClassRefs) {
+        for (String className : structuralClassRefs) {
+            if (isCurrentPackage(className)) continue;
+            String pkg = packageOf(className);
+            for (ImportedPackage imp : imports) {
+                if (imp.exportFile().packageName().equals(pkg) && referencedPackages.add(imp.token())) {
+                    packageEncounterOrder.add(imp.token());
                 }
             }
         }
+    }
+
+    /**
+     * Patches all internal CP references with their final component offsets (JCVM 3.1 §6.8).
+     * Must be called after the Class, Method and Static Field components have been laid out.
+     *
+     * @param classOffsets         internal class name to the offset of its {@code interface_info}
+     *                             or {@code class_info} in the Class component
+     * @param methodOffsetMap      {@code "class:name:descriptor"} to Method component offset
+     * @param staticFieldOffsetMap {@code "class:field"} to static field image offset
+     * @throws IllegalStateException if an internal reference names an item without an offset
+     */
+    public void patchInternalRefs(Map<String, Integer> classOffsets,
+                                  Map<String, Integer> methodOffsetMap,
+                                  Map<String, Integer> staticFieldOffsetMap) {
+        this.classOffsets = Map.copyOf(classOffsets);
+        patches.apply(cp, this.classOffsets, methodOffsetMap, staticFieldOffsetMap);
+    }
+
+    /**
+     * Patches all internal CP references; class offsets are given per class token.
+     *
+     * @param classOffsets         Class component offset per class token
+     * @param methodOffsetMap      {@code "class:name:descriptor"} to Method component offset
+     * @param staticFieldOffsetMap {@code "class:field"} to static field image offset
+     * @deprecated package-visible classes have no class token (JCVM 3.1 §4.3.7.2), so their
+     *             offsets cannot be passed this way; use {@link #patchInternalRefs(Map, Map, Map)}
+     */
+    @Deprecated(since = "0.4.0")
+    public void patchInternalRefs(int[] classOffsets,
+                                  Map<String, Integer> methodOffsetMap,
+                                  Map<String, Integer> staticFieldOffsetMap) {
+        Map<String, Integer> byName = new HashMap<>();
+        for (TokenMap.ClassEntry ce : tokenMap.classes()) {
+            if (ce.token() != TokenMap.NO_TOKEN && ce.token() < classOffsets.length) {
+                byName.put(ce.internalName(), classOffsets[ce.token()]);
+            }
+        }
+        patchInternalRefs(byName, methodOffsetMap, staticFieldOffsetMap);
     }
 
     /**
      * Remaps CP indices in pending internal reference patches after constant pool reordering.
-     * Must be called after {@link JcvmConstantPool#reorderInstanceFieldsFirst(Map) reorderInstanceFieldsFirst()} and before
-     * {@link #patchInternalRefs} so that deferred patches target the correct (reordered) entries.
+     * Must be called after {@link JcvmConstantPool#reorderInstanceFieldsFirst(Map) reorderInstanceFieldsFirst()}
+     * and before {@link #patchInternalRefs(Map, Map, Map)} so that deferred patches target the
+     * correct (reordered) entries.
      *
      * @param remap old CP index → new CP index mapping
      */
     public void remapPendingCpIndices(int[] remap) {
-        for (int i = 0; i < pendingPatches.size(); i++) {
-            PendingPatch p = pendingPatches.get(i);
-            int newIndex = remap[p.cpIndex()];
-            if (newIndex != p.cpIndex()) {
-                pendingPatches.set(i, new PendingPatch(
-                        newIndex, p.kind(), p.className(), p.memberName(), p.memberDesc()));
-            }
-        }
+        patches.remap(remap);
     }
 
     /**
-     * Returns a mapping from CP index to class token for all pending instance field patches.
-     * Used by {@link JcvmConstantPool#reorderInstanceFieldsFirst(Map)} to sort instance
-     * field refs by class token order (matching Oracle's ordering).
+     * Returns, for every internal CONSTANT_InstanceFieldref entry, the position of the declaring
+     * class in the Class component order of {@link TokenMap#classes()}. Used as the sort key by
+     * {@link JcvmConstantPool#reorderInstanceFieldsFirst(Map)}.
      *
-     * @return map from CP index to class token for INSTANCE_FIELD patches
+     * @return CP index to Class component position of the declaring class
      */
+    public Map<Integer, Integer> instanceFieldClassOrder() {
+        List<String> order = tokenMap.classes().stream().map(TokenMap.ClassEntry::internalName).toList();
+        return patches.instanceFieldKeys(order::indexOf);
+    }
+
+    /**
+     * Returns, for every internal CONSTANT_InstanceFieldref entry, the class token of the declaring
+     * class.
+     *
+     * @return CP index to class token
+     * @deprecated package-visible classes share the token value 0xFF (JCVM 3.1 §4.3.7.2); use
+     *             {@link #instanceFieldClassOrder()}
+     */
+    @Deprecated(since = "0.4.0")
     public Map<Integer, Integer> getInstanceFieldClassTokens() {
-        Map<Integer, Integer> result = new HashMap<>();
-        for (PendingPatch p : pendingPatches) {
-            if (p.kind() == PatchKind.INSTANCE_FIELD) {
-                result.put(p.cpIndex(), tokenMap.classToken(p.className()));
-            }
-        }
-        return result;
+        return patches.instanceFieldKeys(tokenMap::classToken);
     }
 
     /**
@@ -802,22 +921,27 @@ public final class ReferenceResolver {
     }
 
     /**
-     * Resolves a class reference to a direct 2-byte encoding, as used in ClassComponent
-     * (super_class_ref, interface_ref). This is NOT a CP index — it uses the same
-     * binary encoding as CONSTANT_Classref_info entries:
+     * Resolves a class reference to its {@code class_ref} value (JCVM 3.1 §6.8.1), as used outside
+     * the constant pool (Class and Descriptor components):
      * <ul>
-     *   <li>Internal: high bit = 0, value = byte offset into ClassComponent info</li>
-     *   <li>External: high bit = 1, b1 = 0x80 | package_token, b2 = class_token</li>
+     *   <li>Internal: the offset of the class or interface in the Class component, available once
+     *       {@link #patchInternalRefs(Map, Map, Map)} has been called</li>
+     *   <li>External: {@code (0x80 | package_token) << 8 | class_token}</li>
      * </ul>
      *
      * @param internalName class name in internal format
-     * @return 2-byte direct class reference encoding
+     * @return the class_ref value
+     * @throws IllegalStateException if an internal class is requested before its Class component
+     *                               offset is known
      */
     public int resolveClassRefDirect(String internalName) {
         if (isCurrentPackage(internalName)) {
-            // Internal: will be patched with ClassComponent offset later
-            // Use token as placeholder (patched in Converter after ClassComponent gen)
-            return tokenMap.classToken(internalName);
+            Integer offset = classOffsets.get(internalName);
+            if (offset == null) {
+                throw new IllegalStateException("Class component offset of " + internalName
+                        + " is not known yet (JCVM 3.1 §6.8.1: internal class_ref is an offset)");
+            }
+            return offset;
         }
 
         ImportedPackage pkg = findImportedPackage(internalName);
@@ -829,71 +953,51 @@ public final class ReferenceResolver {
     }
 
     /**
-     * Returns the virtual method declarations for an interface, ordered by token.
-     * Used by ClassComponent for interface-to-method mapping tables.
+     * Returns the methods of an interface with their interface method tokens.
      *
-     * @param internalName interface name in internal format (e.g. "javacard/framework/Shareable")
-     * @return list of method entries, empty if interface has no methods
+     * @param internalName interface name in internal format
+     * @return method entries, empty if the interface has no methods
+     * @deprecated the Class component now derives interface tables from {@link TokenMap} and
+     *             {@link #importedTypes()}; kept for source compatibility
      */
+    @Deprecated(since = "0.4.0")
     public List<TokenMap.MethodEntry> getInterfaceMethods(String internalName) {
-        if (isCurrentPackage(internalName)) {
-            // Internal interface — get methods from token map
-            TokenMap.ClassEntry classEntry = tokenMap.findClass(internalName);
-            return classEntry.virtualMethods();
-        }
-
-        // External interface — get methods from export file
-        ImportedPackage pkg = findImportedPackage(internalName);
-        String simpleName = simpleName(internalName);
-        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
-
-        return classExport.methods().stream()
-                .filter(m -> (m.accessFlags() & 0x0008) == 0) // not ACC_STATIC
-                .filter(m -> !"<init>".equals(m.name()) && !"<clinit>".equals(m.name()))
-                .map(m -> new TokenMap.MethodEntry(m.name(), m.descriptor(), m.token()))
-                .toList();
+        return isCurrentPackage(internalName)
+                ? tokenMap.findClass(internalName).virtualMethods()
+                : importedTypes.virtualMethods(internalName);
     }
 
     /**
-     * Returns the number of virtual method tokens for a class (max_token + 1).
-     * Used by ClassComponent to compute the VMMT (Virtual Method Mapping Table)
-     * in CAP format 2.3 (JCVM 3.1.0+).
+     * Returns the number of public virtual method tokens of a class (largest public token + 1).
      *
-     * @param internalName class name in internal format (e.g. "javacard/framework/Applet")
-     * @return number of virtual method tokens (max_token + 1), or 0 if no virtual methods
+     * @param internalName class name in internal format
+     * @return largest public virtual method token plus one, 0 if none
+     * @deprecated no longer used by the converter; kept for source compatibility
      */
+    @Deprecated(since = "0.4.0")
     public int getVirtualMethodCount(String internalName) {
-        if ("java/lang/Object".equals(internalName)) {
-            return 1; // equals at token 0
-        }
-        if (isCurrentPackage(internalName)) {
-            TokenMap.ClassEntry entry = tokenMap.findClass(internalName);
-            return entry.virtualMethods().stream()
-                    .mapToInt(TokenMap.MethodEntry::token).max().orElse(-1) + 1;
-        }
-        ImportedPackage pkg = findImportedPackage(internalName);
-        String simpleName = simpleName(internalName);
-        ExportFile.ClassExport classExport = pkg.exportFile().findClass(simpleName);
-        return classExport.methods().stream()
-                .filter(m -> (m.accessFlags() & 0x0008) == 0) // not ACC_STATIC
-                .filter(m -> !"<init>".equals(m.name()) && !"<clinit>".equals(m.name()))
-                .mapToInt(ExportFile.MethodExport::token).max().orElse(-1) + 1;
+        List<TokenMap.MethodEntry> methods = isCurrentPackage(internalName)
+                ? tokenMap.findClass(internalName).virtualMethods()
+                : importedTypes.virtualMethods(internalName);
+        return methods.stream().mapToInt(TokenMap.MethodEntry::token)
+                .filter(t -> (t & 0x80) == 0).max().orElse(-1) + 1;
     }
 
     /**
      * Invocation kind for method reference resolution, corresponding to JVM invoke opcodes.
      *
-     * <p>Determines the CP entry tag used in the JCVM constant pool:
+     * <p>Determines the CP entry tag used in the JCVM constant pool (JCVM 3.1 §6.8):
      * <ul>
-     *   <li>{@link #VIRTUAL} and {@link #INTERFACE} produce {@code CONSTANT_VirtualMethodref}
-     *       (tag 3) entries, encoding (class_offset, method_token) for internal or
-     *       (pkg|0x80, class_token, method_token) for external references.</li>
-     *   <li>{@link #STATIC} and {@link #SPECIAL} produce {@code CONSTANT_StaticMethodref}
-     *       (tag 6) entries, encoding a method component offset for internal or
-     *       (pkg|0x80, class_token, method_token) for external references.</li>
+     *   <li>{@link #VIRTUAL} produces {@code CONSTANT_VirtualMethodref} (tag 3) entries, encoding
+     *       (class_offset, method_token) for internal or (pkg|0x80, class_token, method_token)
+     *       for external references; {@link #INTERFACE} produces a class reference plus the
+     *       interface method token of the {@code invokeinterface} instruction.</li>
+     *   <li>{@link #STATIC}, and {@link #SPECIAL} for constructors and private methods, produce
+     *       {@code CONSTANT_StaticMethodref} (tag 6) entries, encoding a Method component offset
+     *       for internal or (pkg|0x80, class_token, method_token) for external references.</li>
+     *   <li>{@link #SPECIAL} for any other method is a super invocation and produces a
+     *       {@code CONSTANT_SuperMethodref} (tag 4) entry (§7.5.55).</li>
      * </ul>
-     *
-     * @see <a href="https://docs.oracle.com/javacard/3.0.5/JCVM/jcvm-spec-3_0_5.pdf">JCVM 3.0.5 spec, section 6.8.3</a>
      */
     public enum InvokeKind {
         /** JVM {@code invokevirtual} -- dispatched via virtual method table. */
@@ -905,35 +1009,4 @@ public final class ReferenceResolver {
         /** JVM {@code invokeinterface} -- dispatched via interface method table. */
         INTERFACE
     }
-
-    /**
-     * Discriminates the kind of internal reference that needs deferred patching.
-     * Each kind requires a different byte layout in the final CP entry.
-     */
-    private enum PatchKind {
-        /** Class reference: 2-byte offset into ClassComponent info. */
-        CLASS,
-        /** Static or special method: 2-byte offset into MethodComponent. */
-        STATIC_METHOD,
-        /** Static field: 2-byte offset into StaticFieldComponent image. */
-        STATIC_FIELD,
-        /** Instance field: 2-byte class offset + 1-byte field token. */
-        INSTANCE_FIELD,
-        /** Virtual method: 2-byte class offset + 1-byte method token. */
-        VIRTUAL_METHOD
-    }
-
-    /**
-     * A deferred patch record: captures the CP index that holds a placeholder value
-     * along with enough information (class name, member name/descriptor) to compute
-     * the real byte offset once components have been generated.
-     *
-     * @param cpIndex    index of the CP entry containing a placeholder value
-     * @param kind       what kind of reference this is (determines patching logic)
-     * @param className  internal name of the owning class
-     * @param memberName field or method name (null for CLASS patches)
-     * @param memberDesc method descriptor (null for CLASS and field patches)
-     */
-    private record PendingPatch(int cpIndex, PatchKind kind, String className,
-                                String memberName, String memberDesc) {}
 }

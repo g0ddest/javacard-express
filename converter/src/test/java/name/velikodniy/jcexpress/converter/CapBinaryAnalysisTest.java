@@ -1,12 +1,20 @@
 package name.velikodniy.jcexpress.converter;
 
+import name.velikodniy.jcexpress.converter.capcheck.CapImage;
+import name.velikodniy.jcexpress.converter.capcheck.ClassComponentView;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -345,59 +353,19 @@ class CapBinaryAnalysisTest {
 
     @Test
     void classComponentParseable() {
-        byte[] cls = components.get("Class.cap");
-        int size = u2(cls, 1);
-        assertThat(size).as("Class component size").isGreaterThan(0);
+        // Parsed with the class_info_compact layout of JCVM 3.1 §6.9.2 (test-only spec parser):
+        // the four u1 table items precede the public and package virtual method tables
+        ClassComponentView view = CapImage.parse(result.capFile()).classComponent();
 
-        // Parse class entries
-        int pos = 3;
-        int classCount = 0;
-        while (pos < 3 + size) {
-            int flagsByte = cls[pos] & 0xFF;
-            boolean isInterface = (flagsByte & 0x80) != 0;
-            int ifaceCount = flagsByte & 0x0F;
-
-            if (isInterface) {
-                pos++; // flags byte
-                pos += ifaceCount * 2; // superinterface CP indices
-            } else {
-                pos++; // flags byte
-                int superRef = u2(cls, pos); pos += 2;
-                // superRef uses direct class_ref encoding (JCVM 3.0.5 §6.9):
-                // 0xFFFF = java.lang.Object, high bit set = external (0x80|pkg, class_token),
-                // high bit clear = internal ClassComponent offset
-                assertThat(superRef == 0xFFFF || superRef < 0x7F00 || (superRef >> 8 & 0x80) != 0)
-                        .as("Superclass ref for class %d should be 0xFFFF, internal offset, or external ref, got 0x%04X",
-                                classCount, superRef)
-                        .isTrue();
-
-                int instanceSize = cls[pos++] & 0xFF;
-                int firstRefToken = cls[pos++] & 0xFF;
-                int refCount = cls[pos++] & 0xFF;
-
-                int pubBase = cls[pos++] & 0xFF;
-                int pubCount = cls[pos++] & 0xFF;
-                for (int j = 0; j < pubCount; j++) {
-                    int methodOffset = u2(cls, pos); pos += 2;
-                    // Method offsets should be > 0 (after handler table)
-                    assertThat(methodOffset).as("Virtual method offset for class %d, method %d",
-                            classCount, j).isGreaterThan(0);
-                }
-
-                int pkgBase = cls[pos++] & 0xFF;
-                int pkgCount = cls[pos++] & 0xFF;
-                pos += pkgCount * 2;
-
-                // Interface mappings — count is in flags byte (bits 3..0)
-                for (int j = 0; j < ifaceCount; j++) {
-                    int ifaceRef = u2(cls, pos); pos += 2;
-                    int mappingCount = cls[pos++] & 0xFF;
-                    pos += mappingCount; // mapping entries are u1 each
-                }
-            }
-            classCount++;
-        }
-        assertThat(classCount).as("Number of classes").isGreaterThan(0);
+        assertThat(view.interfaces()).isEmpty();
+        assertThat(view.classes()).hasSize(1);
+        ClassComponentView.ClassEntry applet = view.classes().getFirst();
+        assertThat(applet.superClassRef() & 0x8000).as("superclass Applet is imported (6.8.1)").isNotZero();
+        assertThat(applet.publicBase()).as("process() overrides Applet token 7").isEqualTo(7);
+        assertThat(applet.publicTable()).hasSize(1)
+                .allSatisfy(offset -> assertThat(offset).as("Method component offset").isPositive());
+        assertThat(applet.packageBase()).isZero();
+        assertThat(applet.packageTable()).isEmpty();
     }
 
     // ── Method Component (tag=7) ──
@@ -548,10 +516,10 @@ class CapBinaryAnalysisTest {
         }
     }
 
-    // ── Print full binary dump for visual inspection ──
+    // ── Binary dump for visual inspection (asserts the constant pool layout of JCVM 3.1 §6.8) ──
 
     @Test
-    void printBinaryDump() {
+    void binaryDumpCoversEveryConstantPoolEntry() {
         System.out.println("═══ CAP Binary Analysis ═══");
         System.out.println("Total CAP size: " + result.capSize() + " bytes");
         System.out.println("Components: " + components.size());
@@ -567,8 +535,11 @@ class CapBinaryAnalysisTest {
 
         // Detailed CP dump
         byte[] cp = components.get("ConstantPool.cap");
-        if (cp != null && cp.length > 5) {
+        assertThat(cp).as("ConstantPool component").isNotNull();
+        List<Integer> tags = new ArrayList<>();
+        if (cp.length > 5) {
             int count = u2(cp, 3);
+            assertThat(cp.length).as("u1 tag, u2 size, u2 count, 4-byte entries (6.8)").isEqualTo(5 + 4 * count);
             System.out.println("── ConstantPool Entries (" + count + ") ──");
             String[] tagNames = {"?", "ClassRef", "InstanceField", "VirtualMethod",
                     "SuperMethod", "StaticField", "StaticMethod"};
@@ -576,6 +547,7 @@ class CapBinaryAnalysisTest {
                 int base = 5 + i * 4;
                 if (base + 3 >= cp.length) break;
                 int tag = cp[base] & 0xFF;
+                tags.add(tag);
                 int b1 = cp[base + 1] & 0xFF;
                 int b2 = cp[base + 2] & 0xFF;
                 int b3 = cp[base + 3] & 0xFF;
@@ -587,6 +559,8 @@ class CapBinaryAnalysisTest {
             }
             System.out.println();
         }
+        assertThat(tags).as("constant pool tags (6.8: 1 Classref ... 6 StaticMethodref)")
+                .isNotEmpty().allSatisfy(tag -> assertThat(tag).isBetween(1, 6));
     }
 
     // ── Helpers ──

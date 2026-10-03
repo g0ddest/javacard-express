@@ -1,10 +1,14 @@
 package name.velikodniy.jcexpress.converter.input;
 
 import java.io.IOException;
+import java.lang.classfile.ClassFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -25,6 +29,9 @@ import java.util.stream.Stream;
  * <p>Per the JCVM 3.0.5 specification, a CAP file represents exactly one Java
  * package. This class enforces that boundary by scanning only the classes that
  * reside in the specified package directory.
+ *
+ * <p>Private members that other classes of the package access directly (nestmate access of
+ * javac 11 and later) are made package-visible, see {@link NestmateAccess}.
  *
  * @see ClassFileReader
  * @see PackageInfo
@@ -50,19 +57,49 @@ public final class PackageScanner {
      *                     {@code .class} file fails
      */
     public static PackageInfo scan(Path classesDir, String packageName) throws IOException {
-        Path packageDir = classesDir.resolve(packageName.replace('.', '/'));
+        return read(packageName, classFiles(classesDir, packageName).values());
+    }
 
+    /**
+     * Reads the {@code .class} files of a package.
+     *
+     * @param classesDir  root of compiled classes
+     * @param packageName dot-separated package name
+     * @return class file bytes by internal class name, in directory listing order
+     * @throws IOException if the package directory does not exist, a file cannot be read, or two
+     *                     files declare the same class
+     */
+    public static Map<String, byte[]> classFiles(Path classesDir, String packageName) throws IOException {
+        Path packageDir = classesDir.resolve(packageName.replace('.', '/'));
         if (!Files.isDirectory(packageDir)) {
             throw new IOException("Package directory not found: " + packageDir);
         }
-
-        List<ClassInfo> classes = new ArrayList<>();
+        Map<String, byte[]> classFiles = new LinkedHashMap<>();
         try (Stream<Path> files = Files.list(packageDir)) {
             for (Path file : files.filter(p -> p.toString().endsWith(".class")).toList()) {
-                classes.add(ClassFileReader.readFile(file));
+                byte[] bytes = Files.readAllBytes(file);
+                String name = ClassFile.of().parse(bytes).thisClass().asInternalName();
+                if (classFiles.put(name, bytes) != null) {
+                    throw new IOException("Two class files in " + packageDir + " declare " + name);
+                }
             }
         }
+        return classFiles;
+    }
 
-        return new PackageInfo(packageName, List.copyOf(classes));
+    /**
+     * Builds the package model from class files already read.
+     *
+     * @param packageName dot-separated package name
+     * @param classFiles  the class files of the package, in the order the classes are listed
+     * @return the package with its classes in the given order
+     */
+    public static PackageInfo read(String packageName, Collection<byte[]> classFiles) {
+        List<ClassInfo> classes = new ArrayList<>();
+        for (byte[] bytes : classFiles) {
+            classes.add(ClassFileReader.read(bytes));
+        }
+        // javac 11+ nestmate access to private members becomes package access (JCVM 3.1 §2.2.1.1.6)
+        return new PackageInfo(packageName, NestmateAccess.widen(List.copyOf(classes)));
     }
 }

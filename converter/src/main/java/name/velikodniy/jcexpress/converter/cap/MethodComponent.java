@@ -1,52 +1,47 @@
 package name.velikodniy.jcexpress.converter.cap;
 
 import name.velikodniy.jcexpress.converter.translate.TranslatedMethod;
+import name.velikodniy.jcexpress.converter.translate.TranslatedMethod.JcvmExceptionHandler;
 
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
- * Generates the CAP Method component (tag 7) as defined in JCVM 3.0.5 spec section 6.9.
+ * Generates the CAP Method component (tag 7) in the compact format of JCVM 3.1 spec section 6.10.
  *
- * <p>The Method component contains all executable code for the package. It consists of
- * two sections: a global exception handler table at the beginning, followed by all
- * methods laid out sequentially. The byte offset of each method within this component
- * is used by the Applet component (for {@code install()} entry points), the Class
- * component (for virtual method dispatch tables), and the Descriptor component
- * (for off-card verification).
+ * <p>The Method component contains all executable code for the package: a global exception
+ * handler table followed by all {@code method_info} structures laid out sequentially. The byte
+ * offset of each method within this component is used by the Applet, Class, Constant Pool and
+ * Descriptor components.
  *
- * <p><b>Exception handler table:</b> All exception handlers from all methods are
- * collected into a single flat table at the start of the component. Each handler
- * specifies absolute offsets (within the component's info area) for the protected
- * range and handler entry point. The {@code stop_bit} in the bitfield marks the
- * last handler belonging to a particular method, allowing the JCVM to partition
- * handlers by method without additional metadata.
+ * <p><b>Exception handler table (6.10.1, 6.10.3):</b> the handlers of all methods are collected
+ * into one table with absolute offsets, method by method. Each method's handlers are already in
+ * ascending {@code handler_offset} order (enforced by {@link TranslatedMethod}). The
+ * {@code stop_bit} is 1 exactly when no succeeding handler's active range intersects this
+ * handler's active range (handlers of other methods never intersect).
  *
- * <p><b>Method headers:</b> Each method begins with either a standard 2-byte header
- * (when max_stack, nargs, and max_locals all fit in 4 bits) or an extended 4-byte
- * header (when any value exceeds 15). Abstract methods use the extended format with
- * both {@code ACC_EXTENDED} and {@code ACC_ABSTRACT} flags set and all counters at 0.
+ * <p><b>Method headers (6.10.4):</b> a 2-byte {@code method_header_info} when max_stack, nargs
+ * and max_locals all fit in 4 bits, otherwise a 4-byte {@code extended_method_header_info} with
+ * {@code ACC_EXTENDED}. Abstract methods have {@code ACC_ABSTRACT}, an empty bytecode array and,
+ * when their arguments need more than 15 words, the extended header.
  *
- * <p>The generation process is two-pass: first, method sizes and handler counts are
- * pre-computed to determine absolute offsets; then the actual bytes are written.
+ * <p><b>Limits:</b> {@code handler_count} is a u1 (at most 255 handlers), header values of the
+ * extended header are u1, a method has at most 32767 bytecodes (2.2.4.4), and all offsets are
+ * u2, so the component info may not exceed 65535 bytes. Violations raise an
+ * {@link IllegalStateException} instead of silently truncated output.
  *
- * <p>Binary format (JCVM 3.0.5 spec section 6.9, Tables 6-7 through 6-9):
  * <pre>
  * u1  tag = 7
  * u2  size
- * u1  handler_count                  (total exception handlers across all methods)
+ * u1  handler_count
  * exception_handler_info[handler_count]:
- *   u2  start_offset                 (absolute offset of try-block start)
- *   u2  bitfield                     (stop_bit(1) | active_length(15))
- *   u2  handler_offset               (absolute offset of handler entry)
- *   u2  catch_type_index             (CP index of caught class, 0 = finally/any)
- * method_info[]:
- *   method_header:
- *     Standard (2 bytes): flags|max_stack(4 bits) + nargs|max_locals(4 bits)
- *     Extended (4 bytes): flags(8) + max_stack(8) + nargs(8) + max_locals(8)
- *   u1  bytecodes[]                  (JCVM bytecode)
+ *   u2  start_offset, u2 bitfield (stop_bit(1) | active_length(15)),
+ *   u2  handler_offset, u2 catch_type_index (0 = finally)
+ * method_info[]: method_header + u1 bytecodes[]
  * </pre>
  *
  * @see AppletComponent
@@ -58,134 +53,140 @@ public final class MethodComponent {
 
     public static final int TAG = 7;
 
-    // Method header flags
+    // Method header flags (high nibble of the first header byte)
     public static final int ACC_EXTENDED = 0x80;
     public static final int ACC_ABSTRACT = 0x40;
+
+    /** JCVM 3.1 §2.2.4.4: "A method can have at most 32767 Java Card virtual machine bytecodes." */
+    static final int MAX_BYTECODES = 32767;
+    private static final int MAX_U1 = 0xFF;
+    private static final int MAX_U2 = 0xFFFF;
+    private static final int MAX_ACTIVE_LENGTH = 0x7FFF;
 
     private MethodComponent() {}
 
     /**
-     * Generates the Method component bytes.
-     * Also returns an array of method offsets within the component
-     * (used by AppletComponent and ClassComponent for install/virtual method tables).
+     * Generates the Method component bytes and the offset of every method within the
+     * component info (used by the Applet, Class, Constant Pool and Descriptor components).
      *
-     * @param methods translated methods in declaration order
+     * @param methods translated methods in Method component order
      * @return result containing component bytes and method offsets
+     * @throws IllegalStateException if a JCVM 3.1 format limit is exceeded
      */
-    @SuppressWarnings("java:S3776") // Inherently complex method_component binary generation
     public static MethodResult generate(List<TranslatedMethod> methods) {
-        // First, collect all exception handlers from all methods, adjusting offsets
-        // to be absolute within the Method component's info area.
-        // Also track per-method handler boundaries for stop_bit.
-        var allHandlers = new ArrayList<AdjustedHandler>();
-
-        // We need to pre-compute method offsets to adjust handler positions.
-        // Exception handlers come first in the component, then methods.
-        // So we do a 2-pass: first calculate total handler table size,
-        // then calculate method offsets.
-
-        int totalHandlerCount = 0;
-        for (TranslatedMethod m : methods) {
-            totalHandlerCount += m.exceptionHandlers().size();
+        int handlerCount = methods.stream().mapToInt(m -> m.exceptionHandlers().size()).sum();
+        if (handlerCount > MAX_U1) {
+            throw new IllegalStateException("Package contains " + handlerCount
+                    + " exception handlers; the Method component allows at most 255"
+                    + " (JCVM 3.1 §6.10, §6.10.1: u1 handler_count)" + largestHandlerTables(methods));
         }
+        int[] offsets = methodOffsets(methods, 1 + handlerCount * 8);
 
-        // §6.9 Table 6-7: handler_count(u1) + exception_handler_info[count] * 8 bytes each
-        int handlerTableSize = 1 + totalHandlerCount * 8;
-
-        // Pre-calculate method byte sizes to know offsets
-        int[] methodSizes = new int[methods.size()];
-        for (int i = 0; i < methods.size(); i++) {
-            TranslatedMethod m = methods.get(i);
-            if (m == TranslatedMethod.EMPTY || m.bytecode().length == 0) {
-                methodSizes[i] = 2; // abstract header
-            } else if (m.isExtended()) {
-                methodSizes[i] = 4 + m.bytecode().length; // extended header + bytecode
-            } else {
-                methodSizes[i] = 2 + m.bytecode().length; // standard header + bytecode
-            }
-        }
-
-        // Calculate absolute method offsets (from start of info)
-        int[] methodOffsets = new int[methods.size()];
-        int currentOffset = handlerTableSize;
-        for (int i = 0; i < methods.size(); i++) {
-            methodOffsets[i] = currentOffset;
-            currentOffset += methodSizes[i];
-        }
-
-        // Collect all handlers with adjusted offsets
-        for (int i = 0; i < methods.size(); i++) {
-            TranslatedMethod m = methods.get(i);
-            // Method bytecode starts after its header
-            int headerSize = (m == TranslatedMethod.EMPTY || m.bytecode().length == 0)
-                    ? 2 : (m.isExtended() ? 4 : 2);
-            int bytecodeBase = methodOffsets[i] + headerSize;
-
-            var methodHandlers = m.exceptionHandlers();
-            for (int h = 0; h < methodHandlers.size(); h++) {
-                var handler = methodHandlers.get(h);
-                boolean isLastForMethod = (h == methodHandlers.size() - 1);
-                allHandlers.add(new AdjustedHandler(
-                        bytecodeBase + handler.startOffset(),
-                        handler.endOffset() - handler.startOffset(),
-                        bytecodeBase + handler.handlerOffset(),
-                        handler.catchTypeIndex(),
-                        isLastForMethod
-                ));
-            }
-        }
-
-        // --- method_component (§6.9 Table 6-7) ---
         var info = new BinaryWriter();
-        info.u1(totalHandlerCount); // §6.9 Table 6-7: u1 handler_count
-
-        // --- exception_handler_info (§6.9 Table 6-8) ---
-        for (var handler : allHandlers) {
-            info.u2(handler.startOffset);   // §6.9 Table 6-8: u2 start_offset
-            int bitfield = handler.activeLength & 0x7FFF;
-            if (handler.isLast) {
-                bitfield |= 0x8000; // §6.9 Table 6-8: bit 15 = stop_bit (last handler per method)
-            }
-            info.u2(bitfield);              // §6.9 Table 6-8: u2 bitfield (stop_bit|active_length)
-            info.u2(handler.handlerOffset); // §6.9 Table 6-8: u2 handler_offset
-            info.u2(handler.catchTypeIndex); // §6.9 Table 6-8: u2 catch_type_index (0 = any)
-        }
-
-        // --- method_info[] (§6.9 Table 6-9) ---
-        int[] offsets = new int[methods.size()];
+        info.u1(handlerCount);
         for (int i = 0; i < methods.size(); i++) {
-            offsets[i] = info.size();
-            TranslatedMethod m = methods.get(i);
-
-            if (m == TranslatedMethod.EMPTY || m.bytecode().length == 0) {
-                // §6.9 Table 6-9: standard_method_header with ACC_ABSTRACT (2 bytes)
-                // Oracle uses standard 2-byte format for abstract methods.
-                info.u1(ACC_ABSTRACT | (0 & 0x0F)); // §6.9: flags(4)|max_stack(4) — ACC_ABSTRACT=0x40
-                info.u1(((m.nargs() & 0x0F) << 4) | (0 & 0x0F)); // §6.9: nargs(4)|max_locals(4)
-                continue;
-            }
-
-            if (m.isExtended()) {
-                // §6.9 Table 6-9: extended_method_header (4 bytes, used when values > 15)
-                info.u1(ACC_EXTENDED);   // §6.9: u1 flags (bit 7 = ACC_EXTENDED)
-                info.u1(m.maxStack());   // §6.9: u1 max_stack
-                info.u1(m.nargs());      // §6.9: u1 nargs
-                info.u1(m.maxLocals());  // §6.9: u1 max_locals
-            } else {
-                // §6.9 Table 6-9: method_header_info (standard 2-byte compact form)
-                // byte 1: flags(4bit) | max_stack(4bit)
-                info.u1((0x00 << 4) | (m.maxStack() & 0x0F)); // §6.9: u1 flags|max_stack
-                // byte 2: nargs(4bit) | max_locals(4bit)
-                info.u1(((m.nargs() & 0x0F) << 4) | (m.maxLocals() & 0x0F)); // §6.9: u1 nargs|max_locals
-            }
-
-            info.bytes(m.bytecode()); // §6.9: u1[] bytecodes
+            writeHandlers(info, methods.get(i).exceptionHandlers(), offsets[i] + headerSize(methods.get(i)));
         }
+        for (TranslatedMethod m : methods) {
+            writeMethod(info, m);
+        }
+        if (info.size() > MAX_U2) {
+            throw new IllegalStateException("Method component is " + info.size() + " bytes;"
+                    + " the compact CAP format allows at most 65535 (JCVM 3.1 §6.10: u2 offsets)");
+        }
+        return new MethodResult(HeaderComponent.wrapComponent(TAG, info.toByteArray()), offsets);
+    }
 
-        return new MethodResult(
-                HeaderComponent.wrapComponent(TAG, info.toByteArray()),
-                offsets
-        );
+    /** The methods with the most exception handlers (catch and finally blocks), for the error. */
+    private static String largestHandlerTables(List<TranslatedMethod> methods) {
+        String top = methods.stream()
+                .filter(m -> !m.exceptionHandlers().isEmpty())
+                .sorted(Comparator.comparingInt((TranslatedMethod m) -> m.exceptionHandlers().size())
+                        .reversed())
+                .limit(5)
+                .map(m -> Objects.requireNonNullElse(m.origin(), "method") + ": "
+                        + m.exceptionHandlers().size())
+                .collect(Collectors.joining(", "));
+        return top.isEmpty() ? "" : ". Most handlers: " + top;
+    }
+
+    private static int[] methodOffsets(List<TranslatedMethod> methods, int firstOffset) {
+        int[] offsets = new int[methods.size()];
+        int offset = firstOffset;
+        for (int i = 0; i < methods.size(); i++) {
+            offsets[i] = offset;
+            offset += headerSize(methods.get(i)) + methods.get(i).bytecode().length;
+        }
+        return offsets;
+    }
+
+    /** JCVM 3.1 §6.10.3: stop_bit = 1 iff no succeeding handler's active range intersects. */
+    private static void writeHandlers(BinaryWriter info, List<JcvmExceptionHandler> handlers,
+                                      int bytecodeBase) {
+        for (int i = 0; i < handlers.size(); i++) {
+            JcvmExceptionHandler h = handlers.get(i);
+            int activeLength = h.endOffset() - h.startOffset();
+            if (activeLength <= 0 || activeLength > MAX_ACTIVE_LENGTH) {
+                throw new IllegalStateException("Invalid exception handler active range length "
+                        + activeLength + " (JCVM 3.1 §6.10.3: 1..32767)");
+            }
+            if (!h.catchesAll() && h.catchTypeIndex() == 0) {
+                throw new IllegalStateException("A catch block refers to constant pool index 0;"
+                        + " JCVM 3.1 §6.10.3 requires catch types at non-zero indices (0 = finally)");
+            }
+            boolean stop = handlers.subList(i + 1, handlers.size()).stream()
+                    .noneMatch(h::intersects);
+            info.u2(bytecodeBase + h.startOffset());             // u2 start_offset
+            info.u2((stop ? 0x8000 : 0) | activeLength);          // u2 stop_bit | active_length
+            info.u2(bytecodeBase + h.handlerOffset());            // u2 handler_offset
+            info.u2(h.catchTypeIndex());                          // u2 catch_type_index (0 = finally)
+        }
+    }
+
+    private static void writeMethod(BinaryWriter info, TranslatedMethod m) {
+        int length = m.bytecode().length;
+        if (length > MAX_BYTECODES) {
+            throw new IllegalStateException("Method has " + length + " bytes of bytecode;"
+                    + " JCVM 3.1 §2.2.4.4 allows at most 32767");
+        }
+        boolean isAbstract = length == 0;
+        int flags = isAbstract ? ACC_ABSTRACT : 0;
+        if (m.isExtended()) {
+            checkU1("max_stack", m.maxStack());
+            checkU1("nargs", m.nargs());
+            checkU1("max_locals", m.maxLocals());
+            info.u1(ACC_EXTENDED | flags);                        // flags | padding
+            info.u1(m.maxStack());
+            info.u1(m.nargs());
+            info.u1(m.maxLocals());
+        } else {
+            info.u1(flags | m.maxStack());                        // flags(4) | max_stack(4)
+            info.u1((m.nargs() << 4) | m.maxLocals());            // nargs(4) | max_locals(4)
+        }
+        info.bytes(m.bytecode());
+    }
+
+    private static void checkU1(String item, int value) {
+        if (value < 0 || value > MAX_U1) {
+            throw new IllegalStateException("Method header " + item + " = " + value
+                    + " does not fit in a u1 (JCVM 3.1 §6.10.4, §2.2.4.4)");
+        }
+    }
+
+    private static int headerSize(TranslatedMethod m) {
+        return m.isExtended() ? 4 : 2;
+    }
+
+    /**
+     * Returns the size of a method's header in the Method component (2 for
+     * {@code method_header_info}, 4 for {@code extended_method_header_info}), i.e. the distance
+     * from the method offset to its first bytecode (JCVM 3.1 §6.10.4).
+     *
+     * @param m translated method
+     * @return header size in bytes
+     */
+    public static int methodHeaderSize(TranslatedMethod m) {
+        return headerSize(m);
     }
 
     /**
@@ -215,8 +216,4 @@ public final class MethodComponent {
                     + ", offsets=" + Arrays.toString(offsets) + "]";
         }
     }
-
-    private record AdjustedHandler(int startOffset, int activeLength,
-                                   int handlerOffset, int catchTypeIndex,
-                                   boolean isLast) {}
 }

@@ -279,6 +279,48 @@ public final class JcvmOpcode {
         return LENGTHS[opcode & 0xFF];
     }
 
+    /** Array type code of {@code int[]} in newarray / checkcast / instanceof (JCVM 3.1 Table 7-2). */
+    private static final int T_INT = 13;
+
+    private static final boolean[] INT_OPCODES = new boolean[256];
+
+    static {
+        for (int op : new int[]{
+                ICONST_M1, ICONST_0, ICONST_1, ICONST_2, ICONST_3, ICONST_4, ICONST_5,
+                BIPUSH, SIPUSH, IIPUSH, ILOAD, ILOAD_0, ILOAD_1, ILOAD_2, ILOAD_3, IALOAD,
+                ISTORE, ISTORE_0, ISTORE_1, ISTORE_2, ISTORE_3, IASTORE,
+                IADD, ISUB, IMUL, IDIV, IREM, INEG, ISHL, ISHR, IUSHR, IAND, IOR, IXOR,
+                IINC, IINC_W, S2I, I2B, I2S, ICMP, ITABLESWITCH, ILOOKUPSWITCH, IRETURN,
+                GETSTATIC_I, PUTSTATIC_I, GETFIELD_I, PUTFIELD_I, GETFIELD_I_W, PUTFIELD_I_W,
+                GETFIELD_I_THIS, PUTFIELD_I_THIS
+        }) {
+            INT_OPCODES[op] = true;
+        }
+    }
+
+    /**
+     * Returns whether a symbolic instruction is "an instruction of type int" or "of type int
+     * array" in the sense of the ACC_INT flag (JCVM 3.1 §6.4): an int opcode of Chapter 7, or
+     * newarray / checkcast / instanceof with the array type {@code T_INT}.
+     */
+    static boolean isIntInstruction(JcvmInsn insn) {
+        return switch (insn) {
+            case JcvmInsn.Plain p -> INT_OPCODES[p.opcode()]
+                    || (isArrayTypeInstruction(p.opcode()) && p.operands()[0] == T_INT);
+            case JcvmInsn.CpRef c -> INT_OPCODES[c.opcode()];
+            case JcvmInsn.FieldRef f -> f.type() == 3;
+            case JcvmInsn.TableSwitch t -> INT_OPCODES[t.opcode()];
+            case JcvmInsn.LookupSwitch l -> INT_OPCODES[l.opcode()];
+            case JcvmInsn.Branch b -> false;
+            case JcvmInsn.Mark m -> false;
+            case JcvmInsn.ThisAnchor a -> false;
+        };
+    }
+
+    private static boolean isArrayTypeInstruction(int opcode) {
+        return opcode == NEWARRAY || opcode == CHECKCAST || opcode == INSTANCEOF;
+    }
+
     private static final int[] LENGTHS = new int[256];
 
     static {

@@ -161,6 +161,17 @@ class SubsetCheckerTest {
                 .isNull();
     }
 
+    /** Each message cites one section: the specific one where there is one (System: §2.2.1.4.1). */
+    @Test
+    void unsupportedClassMessagesCiteOneSection() {
+        assertThat(ForbiddenTypes.checkInternalName("java/lang/System"))
+                .endsWith("(JCVM 3.1 §2.2.1.4.1)").containsOnlyOnce("JCVM 3.1");
+        assertThat(ForbiddenTypes.checkInternalName("java/lang/Enum"))
+                .endsWith("(JCVM 3.1 §2.2.1.1.7)").containsOnlyOnce("JCVM 3.1");
+        assertThat(ForbiddenTypes.checkInternalName("java/lang/Integer"))
+                .endsWith("(JCVM 3.1 §2.2.1.4)").containsOnlyOnce("JCVM 3.1");
+    }
+
     @Test
     void forbiddenTypesShouldDetectInMethodDescriptors() {
         // Method taking a long parameter
@@ -203,12 +214,17 @@ class SubsetCheckerTest {
         assertThat(violations).isUnmodifiable();
     }
 
+    /**
+     * JCVM 3.1 §2.3.2.2 supports jsr and ret: the converter inlines subroutines when it reads the class
+     * files (SubroutineInlinerTest), so the subset check meets them only in code that skipped that step,
+     * and says so instead of claiming that the JCVM has no subroutines (§7.5.69, §7.5.79).
+     */
     @Test
-    void forbiddenOpcodes_subroutines_shouldBeForbidden() {
-        assertThat(ForbiddenOpcodes.isForbidden(0xA8)).isTrue();  // jsr
-        assertThat(ForbiddenOpcodes.reason(0xA8)).contains("subroutine");
-        assertThat(ForbiddenOpcodes.isForbidden(0xA9)).isTrue();  // ret
-        assertThat(ForbiddenOpcodes.reason(0xA9)).contains("subroutine");
+    void subroutineOpcodesMustBeInlinedBeforeTheCheck_2_3_2_2() {
+        for (int opcode : new int[]{0xA8, 0xA9, 0xC9}) { // jsr, ret, jsr_w
+            assertThat(ForbiddenOpcodes.reason(opcode)).contains("not inlined", "§2.3.2.2")
+                    .doesNotContain("counterpart");
+        }
     }
 
     @Test
@@ -217,12 +233,10 @@ class SubsetCheckerTest {
         assertThat(ForbiddenOpcodes.reason(0xC3)).contains("threading");
     }
 
+    /** JCVM 3.1 §7.5.25: the JCVM has goto_w, so the JVM goto_w is translatable. */
     @Test
-    void forbiddenOpcodes_wideJumps_shouldBeForbidden() {
-        assertThat(ForbiddenOpcodes.isForbidden(0xC8)).isTrue();  // goto_w
-        assertThat(ForbiddenOpcodes.reason(0xC8)).contains("wide");
-        assertThat(ForbiddenOpcodes.isForbidden(0xC9)).isTrue();  // jsr_w
-        assertThat(ForbiddenOpcodes.reason(0xC9)).contains("wide");
+    void gotoWIsAllowed() {
+        assertThat(ForbiddenOpcodes.isForbidden(0xC8)).isFalse(); // goto_w
     }
 
     @Test
@@ -304,11 +318,13 @@ class SubsetCheckerTest {
         assertThat(ForbiddenTypes.checkDescriptor("Ljava/lang/Long;")).isNotNull();
     }
 
+    /** JCVM 3.1 §2.2.1.3: "The Java Card platform does not support types: char, ...". */
     @Test
     void forbiddenTypes_allowedPrimitives() {
         assertThat(ForbiddenTypes.checkDescriptor("Z")).isNull(); // boolean
-        assertThat(ForbiddenTypes.checkDescriptor("C")).isNull(); // char
         assertThat(ForbiddenTypes.checkDescriptor("V")).isNull(); // void
+        assertThat(ForbiddenTypes.checkDescriptor("C")).contains("char");
+        assertThat(ForbiddenTypes.checkDescriptor("[C")).contains("char");
     }
 
     @Test
@@ -414,6 +430,7 @@ class SubsetCheckerTest {
         assertThat(violations).isEmpty();
     }
 
+    /** A native method has no bytecode; JCVM 3.1 §2.2.1.2 lists native as unsupported keyword. */
     @Test
     void methodWithNullBytecode_shouldNotThrow() {
         ClassInfo ci = new ClassInfo(
@@ -424,7 +441,8 @@ class SubsetCheckerTest {
         );
 
         List<Violation> violations = SubsetChecker.check(List.of(ci));
-        assertThat(violations).isEmpty();
+        assertThat(violations).singleElement()
+                .satisfies(v -> assertThat(v.message()).contains("native"));
     }
 
     @Test

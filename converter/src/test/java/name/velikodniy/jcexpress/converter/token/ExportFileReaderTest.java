@@ -1,172 +1,204 @@
 package name.velikodniy.jcexpress.converter.token;
 
+import name.velikodniy.jcexpress.converter.testutil.ExpFixture;
+import name.velikodniy.jcexpress.converter.testutil.ExpFixture.Cls;
+import name.velikodniy.jcexpress.converter.testutil.ExpFixture.Field;
+import name.velikodniy.jcexpress.converter.testutil.ExpFixture.Method;
+import name.velikodniy.jcexpress.converter.testutil.ExpFixture.Pkg;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests {@link ExportFileReader} against spec-conformant export files built by the independent
+ * {@link ExpFixture} writer (JCVM 3.1 Chapter 5).
+ */
 class ExportFileReaderTest {
 
+    private static final Pkg LIB = new Pkg("com/acme/lib", ExportFile.ACC_LIBRARY, 1, 2, "A0000000FF01");
+    private static final Pkg FRAMEWORK = new Pkg("javacard/framework", 1, 1, 6, "A0000000620101");
+
+    private static final Cls LIB_ERROR = new Cls(1, 0x0001, "com/acme/lib/LibError",
+            List.of("javacard/framework/CardRuntimeException", "java/lang/RuntimeException",
+                    "java/lang/Exception", "java/lang/Throwable", "java/lang/Object"),
+            List.of(),
+            List.of(),
+            List.of(new Method(0, 0x0001, "<init>", "(S)V"),
+                    new Method(0, 0x0001, "equals", "(Ljava/lang/Object;)Z"),
+                    new Method(1, 0x0001, "getReason", "()S"),
+                    new Method(2, 0x0001, "setReason", "(S)V")),
+            3);
+
+    private static final Cls LIB_UTIL = new Cls(2, 0x0001, "com/acme/lib/LibUtil",
+            List.of("java/lang/Object"), List.of(),
+            List.of(new Field(0xFF, 0x0019, "MAGIC", "S", 0x1234),
+                    new Field(0, 0x0009, "table", "[B", null),
+                    new Field(0, 0x0001, "counter", "S", null)),
+            List.of(new Method(0, 0x0009, "twice", "(S)S")),
+            1);
+
+    private static final Cls LIB_SERVICE = new Cls(0, 0x0E01, "com/acme/lib/LibService",
+            List.of("java/lang/Object"), List.of("javacard/framework/Shareable"),
+            List.of(), List.of(new Method(0, 0x0401, "ping", "(S)S")), 0);
+
+    private static byte[] lib21() {
+        return ExpFixture.write(2, 1, LIB, List.of(), List.of(LIB_SERVICE, LIB_ERROR, LIB_UTIL));
+    }
+
+    private static byte[] lib23() {
+        return ExpFixture.write(2, 3, LIB, List.of(FRAMEWORK), List.of(LIB_SERVICE, LIB_ERROR, LIB_UTIL));
+    }
+
+    // ── JCVM 3.1 §5.5 / §5.6.1: package version vs. export file format version ──
+
     @Test
-    void shouldReadMinimalExportFile() throws IOException {
-        byte[] data = buildMinimalExportFile();
-        ExportFile ef = ExportFileReader.read(data);
+    void packageVersionComesFromConstantPackageNotFromFileHeader_jcvm31_5_6_1() throws IOException {
+        ExportFile ef = ExportFileReader.read(lib21());
 
-        assertThat(ef.packageName()).isEqualTo("com/example");
-        assertThat(ef.aid()).containsExactly(0xA0, 0x00, 0x00, 0x00, 0x62, 0x01);
-        assertThat(ef.majorVersion()).isEqualTo(1);
-        assertThat(ef.minorVersion()).isEqualTo(0);
-        assertThat(ef.classes()).hasSize(1);
-
-        ExportFile.ClassExport cls = ef.classes().getFirst();
-        assertThat(cls.name()).isEqualTo("MyApplet");
-        assertThat(cls.token()).isZero();
-        assertThat(cls.methods()).hasSize(1);
-        assertThat(cls.methods().getFirst().name()).isEqualTo("process");
-        assertThat(cls.methods().getFirst().token()).isZero();
-        assertThat(cls.fields()).isEmpty();
+        assertThat(ef.majorVersion()).as("package major (CONSTANT_Package)").isEqualTo(1);
+        assertThat(ef.minorVersion()).as("package minor (CONSTANT_Package)").isEqualTo(2);
+        assertThat(ef.formatMajor()).as("format major (header)").isEqualTo(2);
+        assertThat(ef.formatMinor()).as("format minor (header)").isEqualTo(1);
+        assertThat(ef.isLibrary()).isTrue();
+        assertThat(ef.packageName()).isEqualTo("com/acme/lib");
+        assertThat(ef.aid()).containsExactly(0xA0, 0x00, 0x00, 0x00, 0xFF, 0x01);
     }
 
     @Test
-    void shouldRejectInvalidMagic() {
-        byte[] bad = {0x00, 0x00, 0x00, 0x00};
+    void readsClassesMethodsAndFieldsOfFormat21_jcvm31_5_7() throws IOException {
+        ExportFile ef = ExportFileReader.read(lib21());
+
+        assertThat(ef.classes()).extracting(ExportFile.ClassExport::name)
+                .containsExactly("com/acme/lib/LibService", "com/acme/lib/LibError", "com/acme/lib/LibUtil");
+        ExportFile.ClassExport error = ef.findClass("LibError");
+        assertThat(error.token()).isEqualTo(1);
+        assertThat(error.supers()).containsExactly("javacard/framework/CardRuntimeException",
+                "java/lang/RuntimeException", "java/lang/Exception", "java/lang/Throwable", "java/lang/Object");
+        assertThat(error.methods()).containsExactly(
+                new ExportFile.MethodExport("<init>", "(S)V", 0, 0x0001),
+                new ExportFile.MethodExport("equals", "(Ljava/lang/Object;)Z", 0, 0x0001),
+                new ExportFile.MethodExport("getReason", "()S", 1, 0x0001),
+                new ExportFile.MethodExport("setReason", "(S)V", 2, 0x0001));
+    }
+
+    @Test
+    void keepsInterfacesAndShareableFlag_jcvm31_5_7() throws IOException {
+        ExportFile.ClassExport service = ExportFileReader.read(lib21()).findClass("com/acme/lib/LibService");
+
+        assertThat(service.isInterface()).isTrue();
+        assertThat(service.isShareable()).isTrue();
+        assertThat(service.interfaces()).containsExactly("javacard/framework/Shareable");
+    }
+
+    @Test
+    void readsConstantValueAttributeOfCompileTimeConstants_jcvm31_5_10_1() throws IOException {
+        ExportFile.ClassExport util = ExportFileReader.read(lib21()).findClass("LibUtil");
+
+        assertThat(util.fields()).containsExactly(
+                new ExportFile.FieldExport("MAGIC", "S", 0xFF, 0x0019, 0x1234),
+                new ExportFile.FieldExport("table", "[B", 0, 0x0009, null),
+                new ExportFile.FieldExport("counter", "S", 0, 0x0001, null));
+    }
+
+    // ── JCVM 3.1 §5.5 / §5.7: format 2.3 items ──
+
+    @Test
+    void readsFormat23WithReferencedPackagesAndCap22Counts_jcvm31_5_5() throws IOException {
+        ExportFile ef = ExportFileReader.read(lib23());
+
+        assertThat(ef.formatMajor()).isEqualTo(2);
+        assertThat(ef.formatMinor()).isEqualTo(3);
+        assertThat(ef.majorVersion()).isEqualTo(1);
+        assertThat(ef.minorVersion()).isEqualTo(2);
+        assertThat(ef.classes()).hasSize(3);
+        assertThat(ef.findClass("LibUtil").fields()).hasSize(3);
+        assertThat(ef.findClass("LibError").methods()).hasSize(4);
+        assertThat(ef.referencedPackages()).containsExactly(
+                new ExportFile.PackageReference("javacard/framework",
+                        java.util.HexFormat.of().parseHex("A0000000620101"), 1, 6));
+        assertThat(ef.classes()).extracting(ExportFile.ClassExport::cap22InheritableCount)
+                .containsExactly(0, 3, 1);
+    }
+
+    @Test
+    void format21AndFormat23DescribeTheSameApi() throws IOException {
+        ExportFile a = ExportFileReader.read(lib21());
+        ExportFile b = ExportFileReader.read(lib23());
+
+        // format 2.1 has no CAP22 count: the reader derives it from the public virtual methods
+        assertThat(b.classes()).usingRecursiveFieldByFieldElementComparatorIgnoringFields("cap22InheritableCount")
+                .isEqualTo(a.classes());
+        assertThat(a.classes()).extracting(ExportFile.ClassExport::cap22InheritableCount)
+                .containsExactly(0, 3, 0);
+    }
+
+    // ── Robustness: unsupported formats and malformed input fail with a clear message ──
+
+    @Test
+    void rejectsInvalidMagic() {
+        byte[] bad = {0x00, 0x00, 0x00, 0x00, 1, 2};
         assertThatThrownBy(() -> ExportFileReader.read(bad))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("magic");
     }
 
     @Test
-    void shouldReadExportFileWithFields() throws IOException {
-        byte[] data = buildExportFileWithField();
-        ExportFile ef = ExportFileReader.read(data);
-
-        assertThat(ef.classes()).hasSize(1);
-        ExportFile.ClassExport cls = ef.classes().getFirst();
-        assertThat(cls.fields()).hasSize(1);
-        assertThat(cls.fields().getFirst().name()).isEqualTo("MAX_SIZE");
-        assertThat(cls.fields().getFirst().token()).isEqualTo(0);
+    void rejectsExportFormatMajorOtherThan2_jcvm31_5_5() {
+        byte[] data = lib21();
+        data[5] = 1; // header major_version
+        assertThatThrownBy(() -> ExportFileReader.read(data))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("format 1.1")
+                .hasMessageContaining("not supported");
     }
 
-    /**
-     * Builds a minimal valid .exp binary with one class and one method.
-     * Constant pool layout:
-     *   [1] UTF8 "com/example"
-     *   [2] PACKAGE (nameIdx=1, aid=A00000006201)
-     *   [3] UTF8 "MyApplet"
-     *   [4] CLASSREF (nameIdx=3)
-     *   [5] UTF8 "process"
-     *   [6] UTF8 "(Ljavacard/framework/APDU;)V"
-     */
-    private byte[] buildMinimalExportFile() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var out = new DataOutputStream(baos);
-
-        // Magic
-        out.writeInt(ExportFileReader.EXP_MAGIC);
-        // Minor, major version
-        out.writeByte(0); // minor
-        out.writeByte(1); // major
-
-        // Constant pool count (7 entries, index 0 unused)
-        out.writeShort(7);
-
-        // CP[1]: UTF8 "com/example"
-        writeUtf8(out, "com/example");
-        // CP[2]: PACKAGE (flags=0, nameIdx=1, minor=0, major=1, aid)
-        out.writeByte(13); // tag
-        out.writeByte(0);  // flags
-        out.writeShort(1); // name index
-        out.writeByte(0);  // minor
-        out.writeByte(1);  // major
-        byte[] aid = {(byte) 0xA0, 0x00, 0x00, 0x00, 0x62, 0x01};
-        out.writeByte(aid.length);
-        out.write(aid);
-        // CP[3]: UTF8 "MyApplet"
-        writeUtf8(out, "MyApplet");
-        // CP[4]: CLASSREF (nameIdx=3)
-        out.writeByte(7);  // tag
-        out.writeShort(3); // name index
-        // CP[5]: UTF8 "process"
-        writeUtf8(out, "process");
-        // CP[6]: UTF8 "(Ljavacard/framework/APDU;)V"
-        writeUtf8(out, "(Ljavacard/framework/APDU;)V");
-
-        // this_package = CP[2]
-        out.writeShort(2);
-
-        // export_class_count = 1
-        out.writeByte(1);
-
-        // class_export_info
-        out.writeShort(0);    // token
-        out.writeShort(0x21); // access_flags (public + super)
-        out.writeShort(4);    // name_index → CP[4] (CLASSREF)
-        out.writeShort(0);    // supers count
-        out.writeByte(0);     // interfaces count
-        out.writeShort(0);    // field count
-        out.writeShort(1);    // method count
-        // method: token=0, flags=public, name=process, desc=(LAPDU;)V
-        out.writeShort(0);    // token
-        out.writeShort(0x01); // access_flags (public)
-        out.writeShort(5);    // name → CP[5]
-        out.writeShort(6);    // descriptor → CP[6]
-
-        out.flush();
-        return baos.toByteArray();
+    @Test
+    void rejectsExportFormatNewerThan23_jcvm31_5_5() {
+        byte[] data = lib23();
+        data[4] = 4; // header minor_version
+        assertThatThrownBy(() -> ExportFileReader.read(data))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("format 2.4");
     }
 
-    /**
-     * Builds an .exp file with one class that has one static field.
-     */
-    private byte[] buildExportFileWithField() throws IOException {
-        var baos = new ByteArrayOutputStream();
-        var out = new DataOutputStream(baos);
-
-        out.writeInt(ExportFileReader.EXP_MAGIC);
-        out.writeByte(0); out.writeByte(1);
-
-        // CP: 8 entries
-        out.writeShort(8);
-        writeUtf8(out, "com/example");        // [1]
-        out.writeByte(13); out.writeByte(0);   // [2] PACKAGE
-        out.writeShort(1); out.writeByte(0); out.writeByte(1);
-        out.writeByte(6); out.write(new byte[]{(byte)0xA0, 0, 0, 0, 0x62, 1});
-        writeUtf8(out, "Constants");           // [3]
-        out.writeByte(7); out.writeShort(3);   // [4] CLASSREF
-        writeUtf8(out, "MAX_SIZE");            // [5]
-        writeUtf8(out, "S");                   // [6]
-        writeUtf8(out, "process");             // [7] (not used, but valid)
-
-        out.writeShort(2); // this_package
-        out.writeByte(1);  // 1 class
-
-        // class
-        out.writeShort(0);    // token
-        out.writeShort(0x21); // flags
-        out.writeShort(4);    // name → CLASSREF[4]
-        out.writeShort(0);    // supers
-        out.writeByte(0);     // interfaces
-        out.writeShort(1);    // 1 field
-        // field: MAX_SIZE S
-        out.writeShort(0);    // token
-        out.writeShort(0x19); // public static final
-        out.writeShort(5);    // name
-        out.writeShort(6);    // descriptor
-        out.writeShort(0);    // 0 methods
-
-        out.flush();
-        return baos.toByteArray();
+    @Test
+    void rejectsTruncatedFileWithOffset() {
+        byte[] data = lib21();
+        byte[] truncated = Arrays.copyOf(data, data.length - 3);
+        assertThatThrownBy(() -> ExportFileReader.read(truncated))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("truncated")
+                .hasMessageContaining("offset");
     }
 
-    private void writeUtf8(DataOutputStream out, String s) throws IOException {
-        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
-        out.writeByte(1); // tag
-        out.writeShort(bytes.length);
-        out.write(bytes);
+    @Test
+    void rejectsTrailingBytes() {
+        byte[] data = lib21();
+        byte[] padded = Arrays.copyOf(data, data.length + 2);
+        assertThatThrownBy(() -> ExportFileReader.read(padded))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("trailing");
+    }
+
+    @Test
+    void rejectsFormat21FileLabelledAsFormat23() {
+        byte[] data = lib21();
+        data[4] = 3; // claims format 2.3 without the 2.3 items
+        assertThatThrownBy(() -> ExportFileReader.read(data))
+                .isInstanceOf(IOException.class);
+    }
+
+    @Test
+    void rejectsPackageAidOutside5To16Bytes_jcvm31_5_6_1() {
+        Pkg shortAid = new Pkg("com/acme/lib", 1, 1, 0, "A0000000");
+        byte[] data = ExpFixture.write(2, 1, shortAid, List.of(), List.of());
+        assertThatThrownBy(() -> ExportFileReader.read(data))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("AID");
     }
 }

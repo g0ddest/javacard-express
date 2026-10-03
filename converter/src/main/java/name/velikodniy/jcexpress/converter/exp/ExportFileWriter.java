@@ -1,369 +1,168 @@
 package name.velikodniy.jcexpress.converter.exp;
 
+import name.velikodniy.jcexpress.converter.ConverterException;
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
 import name.velikodniy.jcexpress.converter.cap.BinaryWriter;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
-import name.velikodniy.jcexpress.converter.input.FieldInfo;
-import name.velikodniy.jcexpress.converter.input.MethodInfo;
+import name.velikodniy.jcexpress.converter.resolve.BuiltinExports;
+import name.velikodniy.jcexpress.converter.token.ExportFile;
+import name.velikodniy.jcexpress.converter.token.ExportFile.ClassExport;
+import name.velikodniy.jcexpress.converter.token.ExportFile.FieldExport;
+import name.velikodniy.jcexpress.converter.token.ExportFile.MethodExport;
 import name.velikodniy.jcexpress.converter.token.ExportFileReader;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 
 /**
- * Generates JavaCard export (.exp) files in binary format.
- * <p>
- * Export files allow other packages to import and reference
- * public classes, methods, and fields from this package.
- * The format uses a constant pool similar to JVM class files.
- * <p>
- * Supports both format 1.x and 2.x, determined by {@link JavaCardVersion#exportFormatMajor()}.
- * All current JavaCard versions produce format 2.1.
- * <p>
- * Key differences between formats:
- * <ul>
- *   <li>Format 1.x: CP starts at index 1, tokens are u2, no field attributes</li>
- *   <li>Format 2.x: CP starts at index 0, tokens are u1, field attributes present</li>
- * </ul>
+ * Writes Java Card export ({@code .exp}) files (JCVM 3.1 Chapter 5).
+ *
+ * <p>{@link #write(ExportInput)} describes a converted package: {@link ExportModelBuilder}
+ * decides what the file contains, {@link #write(ExportFile)} serializes it:
+ * <pre>
+ * ExportFile {
+ *   u4 magic = 0x00FACADE
+ *   u1 minor_version, u1 major_version     // export file FORMAT version: 2.1, or 2.3 (§5.5)
+ *   u2 constant_pool_count
+ *   cp_info constant_pool[]                // Utf8, Integer, Classref, Package (§5.6)
+ *   u2 this_package                        // CONSTANT_Package: flags, PACKAGE version, AID
+ *   u1 referenced_package_count            // format 2.3: packages of supertypes and
+ *   u2 referenced_packages[]               //   descriptor types (§5.5)
+ *   u1 export_class_count
+ *   class_info classes[]                   // token, flags, name, supers, interfaces, fields,
+ * }                                        //   methods [, CAP22 count in 2.3] (§5.7-§5.10)
+ * </pre>
+ * The constant pool is built deterministically, so the same model always gives the same bytes.
  *
  * @see ExportFileReader
  */
 public final class ExportFileWriter {
 
-    private static final int CP_UTF8 = 1;
-    private static final int CP_INTEGER = 3;
-    private static final int CP_CLASSREF = 7;
-    private static final int CP_PACKAGE = 13;
+    private static final int FORMAT_WITH_REFERENCED_PACKAGES = 3;
+    private static final String CONSTANT_VALUE = "ConstantValue";
 
     private ExportFileWriter() {}
 
     /**
-     * Generates an export file for the given package.
+     * Generates the export file of a converted package.
      *
-     * @param tokenMap              token assignments
-     * @param classes               class info list (for access flags)
-     * @param packageAid            package AID bytes
-     * @param packageMajorVersion   package major version (written into CONSTANT_Package)
-     * @param packageMinorVersion   package minor version (written into CONSTANT_Package)
-     * @param jcVersion             target JavaCard version (determines export format version)
-     * @return binary export file data
+     * @param input the converted package, its tokens and its imports
+     * @return the export file bytes, in the export file format of the target version
+     * @throws ConverterException if the package cannot be described by a conforming export file
      */
-    @SuppressWarnings("java:S3776") // Inherently complex export file binary generation
-    public static byte[] write(TokenMap tokenMap, List<ClassInfo> classes,
-                                byte[] packageAid, int packageMajorVersion,
-                                int packageMinorVersion, JavaCardVersion jcVersion) {
-        boolean v2 = jcVersion.exportFormatMajor() >= 2;
+    public static byte[] write(ExportInput input) throws ConverterException {
+        return write(ExportModelBuilder.build(input));
+    }
 
-        // Build constant pool entries
-        List<CpEntry> cpEntries = new ArrayList<>();
-        if (!v2) {
-            cpEntries.add(null); // v1: index 0 unused
+    /**
+     * Serializes an export file model in the format given by its {@link ExportFile#formatMajor()}
+     * and {@link ExportFile#formatMinor()}; format 2.3 adds the model's referenced packages and
+     * every class's CAP22 inheritable method count (§5.5, §5.7).
+     *
+     * @param export the export file content
+     * @return the export file bytes
+     * @throws IllegalArgumentException if a table of the model exceeds its size limit
+     */
+    public static byte[] write(ExportFile export) {
+        boolean format23 = export.formatMinor() >= FORMAT_WITH_REFERENCED_PACKAGES;
+        ConstantPool cp = new ConstantPool();
+        int thisPackage = cp.pkg(export.packageName(), export.packageFlags(), export.majorVersion(),
+                export.minorVersion(), export.aid());
+        List<Integer> referenced = new ArrayList<>();
+        if (format23) {
+            for (ExportFile.PackageReference ref : export.referencedPackages()) {
+                // §5.6.1: the flags of a referenced package are not defined; written as zero
+                referenced.add(cp.pkg(ref.name(), 0, ref.majorVersion(), ref.minorVersion(), ref.aid()));
+            }
         }
-
-        // Package name (UTF8)
-        String packageName = tokenMap.packageName().replace('.', '/');
-        int pkgNameIdx = addUtf8(cpEntries, packageName, v2);
-
-        // Package entry
-        int pkgEntryIdx = cpEntries.size();
-        cpEntries.add(new CpPackage(pkgNameIdx, packageMajorVersion, packageMinorVersion, packageAid));
-
-        // Build class export data, populating CP as we go
-        List<ClassExportInfo> classExports = new ArrayList<>();
-
-        for (TokenMap.ClassEntry ce : tokenMap.classes()) {
-            ClassInfo classInfo = findClassInfo(classes, ce.internalName());
-
-            int classNameIdx = addClassref(cpEntries, ce.internalName(), v2);
-            // Export file access flags: strip JVM-only flags like ACC_SUPER(0x0020)
-            int accessFlags = classInfo != null ? (classInfo.accessFlags() & 0x0611) : 0x0001;
-
-            // Build super class chain (direct parent → java.lang.Object)
-            List<Integer> superRefs = new ArrayList<>();
-            if (classInfo != null && classInfo.superClass() != null) {
-                buildSuperChain(classInfo, classes, cpEntries, v2, superRefs);
-            }
-
-            List<MethodExportInfo> methods = new ArrayList<>();
-            for (TokenMap.MethodEntry me : ce.virtualMethods()) {
-                int nameIdx = addUtf8(cpEntries, me.name(), v2);
-                int descIdx = addUtf8(cpEntries, me.descriptor(), v2);
-                MethodInfo mi = classInfo != null ? findMethod(classInfo, me.name(), me.descriptor()) : null;
-                int mFlags = mi != null ? mi.accessFlags() : 0x0001;
-                methods.add(new MethodExportInfo(me.token(), mFlags, nameIdx, descIdx));
-            }
-            for (TokenMap.MethodEntry me : ce.staticMethods()) {
-                int nameIdx = addUtf8(cpEntries, me.name(), v2);
-                int descIdx = addUtf8(cpEntries, me.descriptor(), v2);
-                MethodInfo mi = classInfo != null ? findMethod(classInfo, me.name(), me.descriptor()) : null;
-                int mFlags = mi != null ? (mi.accessFlags() | 0x0008) : 0x0009;
-                methods.add(new MethodExportInfo(me.token(), mFlags, nameIdx, descIdx));
-            }
-
-            List<FieldExportInfo> fields = new ArrayList<>();
-            for (TokenMap.FieldEntry fe : ce.staticFields()) {
-                int nameIdx = addUtf8(cpEntries, fe.name(), v2);
-                int descIdx = addUtf8(cpEntries, fe.descriptor(), v2);
-                FieldInfo fi = classInfo != null ? findField(classInfo, fe.name()) : null;
-                int fFlags = fi != null ? fi.accessFlags() : 0x0009;
-                // For v2 ConstantValue attributes, pre-register CP entries
-                int cvNameIdx = -1;
-                int cvValueIdx = -1;
-                if (v2 && fi != null && fi.constantValue() != null) {
-                    cvNameIdx = addUtf8(cpEntries, "ConstantValue", v2);
-                    cvValueIdx = addInteger(cpEntries, fi.constantValue());
-                }
-                fields.add(new FieldExportInfo(fe.token(), fFlags, nameIdx, descIdx,
-                        cvNameIdx, cvValueIdx));
-            }
-
-            classExports.add(new ClassExportInfo(ce.token(), accessFlags, classNameIdx,
-                    superRefs, methods, fields));
+        BinaryWriter body = new BinaryWriter();
+        body.u2(thisPackage);
+        if (format23) {
+            body.u1(checkU1(referenced.size(), "referenced_package_count"));
+            referenced.forEach(body::u2);
         }
+        body.u1(checkU1(export.classes().size(), "export_class_count"));
+        for (ClassExport c : export.classes()) writeClass(body, c, cp, format23);
 
-        // Write binary output
-        var out = new BinaryWriter();
-
-        // Header: export FORMAT version, not package version
+        BinaryWriter out = new BinaryWriter();
         out.u4(ExportFileReader.EXP_MAGIC);
-        out.u1(jcVersion.exportFormatMinor());
-        out.u1(jcVersion.exportFormatMajor());
-
-        // Constant pool
-        out.u2(cpEntries.size());
-        int writeStart = v2 ? 0 : 1;
-        for (int i = writeStart; i < cpEntries.size(); i++) {
-            cpEntries.get(i).writeTo(out);
-        }
-
-        // this_package
-        out.u2(pkgEntryIdx);
-
-        // Classes
-        out.u1(classExports.size());
-        for (ClassExportInfo cei : classExports) {
-            writeToken(out, cei.token, v2);
-            out.u2(cei.accessFlags);
-            out.u2(cei.nameIndex);
-
-            // Supers
-            out.u2(cei.superRefs.size());
-            for (int superRef : cei.superRefs) {
-                out.u2(superRef);
-            }
-
-            // Interfaces count
-            out.u1(0);
-
-            // Fields
-            out.u2(cei.fields.size());
-            for (FieldExportInfo fei : cei.fields) {
-                writeToken(out, fei.token, v2);
-                out.u2(fei.accessFlags);
-                out.u2(fei.nameIndex);
-                out.u2(fei.descriptorIndex);
-                // v2: field attributes
-                if (v2) {
-                    if (fei.cvNameIdx >= 0) {
-                        out.u2(1); // attribute_count = 1
-                        out.u2(fei.cvNameIdx);
-                        out.u4(2); // attribute_length = 2
-                        out.u2(fei.cvValueIdx);
-                    } else {
-                        out.u2(0); // attribute_count = 0
-                    }
-                }
-            }
-
-            // Methods
-            out.u2(cei.methods.size());
-            for (MethodExportInfo mei : cei.methods) {
-                writeToken(out, mei.token, v2);
-                out.u2(mei.accessFlags);
-                out.u2(mei.nameIndex);
-                out.u2(mei.descriptorIndex);
-            }
-        }
-
+        out.u1(export.formatMinor());
+        out.u1(export.formatMajor());
+        cp.writeTo(out);
+        out.bytes(body.toByteArray());
         return out.toByteArray();
     }
 
-    private static void writeToken(BinaryWriter out, int token, boolean v2) {
-        if (v2) {
-            out.u1(token);
-        } else {
-            out.u2(token);
+    /**
+     * Generates an export file that describes the package as a library, with the built-in API
+     * export data of {@code jcVersion} for external supertypes.
+     *
+     * @param tokenMap            token assignments
+     * @param classes             classes of the package
+     * @param packageAid          package AID bytes
+     * @param packageMajorVersion package major version (written into CONSTANT_Package)
+     * @param packageMinorVersion package minor version (written into CONSTANT_Package)
+     * @param jcVersion           target Java Card version (determines the export file format)
+     * @return binary export file data
+     * @throws IllegalArgumentException if the package cannot be described by a conforming export file
+     * @deprecated use {@link #write(ExportInput)}, which also knows whether the package declares
+     *             applets (an applet package exports only its shareable interfaces, §5.5) and the
+     *             export files of user-supplied imports
+     */
+    @Deprecated(since = "0.4.0")
+    public static byte[] write(TokenMap tokenMap, List<ClassInfo> classes, byte[] packageAid,
+                               int packageMajorVersion, int packageMinorVersion, JavaCardVersion jcVersion) {
+        try {
+            return write(new ExportInput(tokenMap.packageName(), packageAid, packageMajorVersion,
+                    packageMinorVersion, true, classes, tokenMap,
+                    BuiltinExports.allBuiltinImports(0, jcVersion), jcVersion));
+        } catch (ConverterException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
         }
     }
 
-    // ── CP helpers ──
+    // ── class_info, field_info, method_info (§5.7-§5.10) ──
 
-    private static int addUtf8(List<CpEntry> cp, String value, boolean v2) {
-        int start = v2 ? 0 : 1;
-        for (int i = start; i < cp.size(); i++) {
-            CpEntry e = cp.get(i);
-            if (e instanceof CpUtf8 u && u.value.equals(value)) {
-                return i;
-            }
+    private static void writeClass(BinaryWriter out, ClassExport c, ConstantPool cp, boolean format23) {
+        out.u1(c.token());
+        out.u2(c.accessFlags());
+        out.u2(cp.classref(c.name()));
+        out.u2(c.supers().size());
+        for (String s : c.supers()) out.u2(cp.classref(s));
+        out.u1(checkU1(c.interfaces().size(), "export_interfaces_count of " + c.name()));
+        for (String i : c.interfaces()) out.u2(cp.classref(i));
+        out.u2(c.fields().size());
+        for (FieldExport f : c.fields()) writeField(out, f, cp);
+        out.u2(c.methods().size());
+        for (MethodExport m : c.methods()) {
+            out.u1(m.token());
+            out.u2(m.accessFlags());
+            out.u2(cp.utf8(m.name()));
+            out.u2(cp.utf8(m.descriptor()));
         }
-        int idx = cp.size();
-        cp.add(new CpUtf8(value));
-        return idx;
+        if (format23) out.u1(c.cap22InheritableCount());
     }
 
-    private static int addClassref(List<CpEntry> cp, String className, boolean v2) {
-        int utf8Idx = addUtf8(cp, className, v2);
-        // Check for existing CLASSREF pointing to this UTF8
-        for (int i = 0; i < cp.size(); i++) {
-            if (cp.get(i) instanceof CpClassref cr && cr.nameIndex == utf8Idx) return i;
+    private static void writeField(BinaryWriter out, FieldExport f, ConstantPool cp) {
+        out.u1(f.token());
+        out.u2(f.accessFlags());
+        out.u2(cp.utf8(f.name()));
+        out.u2(cp.utf8(f.descriptor()));
+        if (f.constantValue() == null) {
+            out.u2(0);
+            return;
         }
-        int idx = cp.size();
-        cp.add(new CpClassref(utf8Idx));
-        return idx;
+        out.u2(1);                              // §5.10.1 ConstantValue_attribute
+        out.u2(cp.utf8(CONSTANT_VALUE));
+        out.u4(2);
+        out.u2(cp.integer(f.constantValue()));
     }
 
-    private static int addInteger(List<CpEntry> cp, Object value) {
-        if (value instanceof Number n) {
-            int intVal = n.intValue();
-            for (int i = 0; i < cp.size(); i++) {
-                if (cp.get(i) instanceof CpInteger ci && ci.value == intVal) return i;
-            }
-            int idx = cp.size();
-            cp.add(new CpInteger(intVal));
-            return idx;
+    private static int checkU1(int value, String item) {
+        if (value > 0xFF) {
+            throw new IllegalArgumentException(item + " is " + value + ", at most 255 (JCVM 3.1 §5.5, §5.7)");
         }
-        return 0;
+        return value;
     }
-
-    private static void buildSuperChain(ClassInfo ci, List<ClassInfo> allClasses,
-                                          List<CpEntry> cp, boolean v2, List<Integer> result) {
-        String superName = ci.superClass();
-        while (superName != null) {
-            result.add(addClassref(cp, superName, v2));
-            ClassInfo superInfo = findClassInfo(allClasses, superName);
-            superName = (superInfo != null) ? superInfo.superClass() : null;
-        }
-        // Always end with java.lang.Object if not already there
-        if (result.isEmpty() || !isJavaLangObject(cp, result.getLast())) {
-            result.add(addClassref(cp, "java/lang/Object", v2));
-        }
-    }
-
-    private static boolean isJavaLangObject(List<CpEntry> cp, int classrefIdx) {
-        if (cp.get(classrefIdx) instanceof CpClassref cr) {
-            if (cp.get(cr.nameIndex) instanceof CpUtf8 u) {
-                return "java/lang/Object".equals(u.value);
-            }
-        }
-        return false;
-    }
-
-    private static String simpleName(String internalName) {
-        int last = internalName.lastIndexOf('/');
-        return last >= 0 ? internalName.substring(last + 1) : internalName;
-    }
-
-    private static ClassInfo findClassInfo(List<ClassInfo> classes, String internalName) {
-        for (ClassInfo ci : classes) {
-            if (ci.thisClass().equals(internalName)) return ci;
-        }
-        return null;
-    }
-
-    private static MethodInfo findMethod(ClassInfo ci, String name, String desc) {
-        for (MethodInfo mi : ci.methods()) {
-            if (mi.name().equals(name) && mi.descriptor().equals(desc)) return mi;
-        }
-        return null;
-    }
-
-    private static FieldInfo findField(ClassInfo ci, String name) {
-        for (FieldInfo fi : ci.fields()) {
-            if (fi.name().equals(name)) return fi;
-        }
-        return null;
-    }
-
-    // ── CP entry types ──
-
-    private sealed interface CpEntry {
-        void writeTo(BinaryWriter out);
-    }
-
-    private record CpUtf8(String value) implements CpEntry {
-        @Override
-        public void writeTo(BinaryWriter out) {
-            byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-            out.u1(CP_UTF8);
-            out.u2(bytes.length);
-            out.bytes(bytes);
-        }
-    }
-
-    private record CpInteger(int value) implements CpEntry {
-        @Override
-        public void writeTo(BinaryWriter out) {
-            out.u1(CP_INTEGER);
-            out.u4(value);
-        }
-    }
-
-    private record CpClassref(int nameIndex) implements CpEntry {
-        @Override
-        public void writeTo(BinaryWriter out) {
-            out.u1(CP_CLASSREF);
-            out.u2(nameIndex);
-        }
-    }
-
-    private record CpPackage(int nameIndex, int majorVersion, int minorVersion, byte[] aid) implements CpEntry {
-        @Override
-        public void writeTo(BinaryWriter out) {
-            out.u1(CP_PACKAGE);
-            out.u1(0); // flags
-            out.u2(nameIndex);
-            out.u1(minorVersion);
-            out.u1(majorVersion);
-            out.u1(aid.length);
-            out.bytes(aid);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o instanceof CpPackage(var ni, var maj, var min, var a)) {
-                return nameIndex == ni && majorVersion == maj
-                        && minorVersion == min && Arrays.equals(aid, a);
-            }
-            return false;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = Integer.hashCode(nameIndex);
-            result = 31 * result + Integer.hashCode(majorVersion);
-            result = 31 * result + Integer.hashCode(minorVersion);
-            result = 31 * result + Arrays.hashCode(aid);
-            return result;
-        }
-
-        @Override
-        public String toString() {
-            return "CpPackage[nameIndex=" + nameIndex + ", majorVersion=" + majorVersion
-                    + ", minorVersion=" + minorVersion + ", aid=" + HexFormat.of().formatHex(aid) + "]";
-        }
-    }
-
-    private record ClassExportInfo(int token, int accessFlags, int nameIndex,
-                                    List<Integer> superRefs,
-                                    List<MethodExportInfo> methods, List<FieldExportInfo> fields) {}
-
-    private record MethodExportInfo(int token, int accessFlags, int nameIndex, int descriptorIndex) {}
-
-    private record FieldExportInfo(int token, int accessFlags, int nameIndex, int descriptorIndex,
-                                    int cvNameIdx, int cvValueIdx) {}
 }
