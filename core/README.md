@@ -7,8 +7,6 @@ Core module — provides the `SmartCardSession` interface, the embedded jCardSim
 
 Recipes for everyday applet tests: the [testing cookbook](../TESTING.md).
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Installation
 
 ```xml
@@ -190,7 +188,7 @@ of an IDE run). A backend whose module is missing fails with the dependency to a
   of the package (those of the build descriptor, or every concrete `Applet` subclass with an `install` method) and
   only the classes those applets need, from every class path entry that holds the package (classes directories and
   jars, main and test sources), so test classes next to a test applet are not converted. A package that imports
-  another package of the project is refused before conversion; in 0.4.0 such tests run only on the default backend.
+  another package of the project is refused before conversion; such tests run only on the default backend for now.
 - Two declarations with the same instance AID are a configuration error that names the fix (give one an `aid`);
   identical repeated annotations count once.
 

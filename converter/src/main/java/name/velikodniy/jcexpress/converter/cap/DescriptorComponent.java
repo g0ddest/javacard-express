@@ -106,7 +106,7 @@ public final class DescriptorComponent {
      * @return complete component bytes including tag and size
      * @deprecated use {@link #generate(Input)}, which takes the static field image offsets
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public static byte[] generate(List<ClassInfo> classes, TokenMap tokenMap, int[] methodOffsets,
                                   Map<String, Integer> methodIndexMap, int[] classOffsets,
                                   List<TranslatedMethod> allMethods, JcvmConstantPool cp,

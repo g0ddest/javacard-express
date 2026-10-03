@@ -15,7 +15,7 @@ import java.util.Map;
  * u2  nameLength, applet class binary name (UTF-8)
  * s4  classLength, applet class file
  * s4  extraCount, extraCount x { u2 nameLength, name, s4 length, class file }
- * u2  paramsLength, install parameters   (optional: absent in requests of clients before 0.3.0)
+ * u2  paramsLength, install parameters   (optional: absent in requests of older clients)
  * </pre>
  *
  * <p>The install parameters are passed unchanged to {@code Applet.install(bArray, 0, bLength)}: the client builds

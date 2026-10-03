@@ -2,8 +2,6 @@
 
 Maven plugin for building JavaCard CAP files. No Oracle SDK required.
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Requirements
 
 - **Maven must run on JDK 25 or newer.** The built-in converter reads class files with the JDK

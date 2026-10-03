@@ -8,8 +8,6 @@ Testcontainers. Part of the [JavaCard Express](../README.md) toolkit.
 > the container. The server executes commands directly on jCardSim. To test through a real PC/SC reader, use the
 > PC/SC backend of the core module.
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Installation
 
 ```xml
@@ -118,9 +116,9 @@ The simulator a container session uses is resolved in this order:
 | Local `docker/` project | `-Djcx.docker.dir=/path/to/javacard-express/docker` | Uses `target/jcx-simulator.jar` of a built checkout (`cd docker && mvn package`); fails if it is not built |
 | Bundled server (default) | nothing | Works in any project |
 
-The release workflow publishes the image as `ghcr.io/g0ddest/jcx-simulator:<version>` (and `latest`); images up to
-0.3.0 are broken (they contain no server) and must not be used. Because the bundled server always matches the client
-version, the default is the recommended choice.
+The release workflow publishes the image as `ghcr.io/g0ddest/jcx-simulator:<version>` (and `latest`); use the image
+of the version you depend on (the [changelog](../CHANGELOG.md) names the old images that contain no server and must not
+be used). Because the bundled server always matches the client version, the default is the recommended choice.
 
 ## Programmatic Container Management
 

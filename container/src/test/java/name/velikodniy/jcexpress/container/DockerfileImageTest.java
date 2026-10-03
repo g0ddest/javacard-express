@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Regression test for the published simulator image recipe ({@code docker/Dockerfile}).
  *
  * <p>The release workflow builds this Dockerfile with {@code docker/} as the build context and pushes it to
- * GHCR. Every image published up to 0.3.0 was empty because the {@code COPY} wildcard matched no file, so the
+ * GHCR. Images were once published empty because the {@code COPY} wildcard matched no file, so the
  * container exited immediately with "Unable to access jarfile server.jar"; it also ran the server as root. This test
  * builds the image exactly like the release does, starts it and runs a real session against it.</p>
  */

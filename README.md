@@ -7,9 +7,9 @@ with JUnit 5 and AssertJ on jCardSim (an open-source Java Card simulator that ru
 JVM), on a simulated GlobalPlatform card or on a real card, and talk to cards with APDU, BER-TLV, GlobalPlatform
 (SCP02/SCP03), ISO 7816-4 Secure Messaging, PACE and BAC helpers.
 
-> **Status: 0.x, pre-1.0.** APIs can still change. Version 0.3.0 on Maven Central predates the fixes listed in the
-> [changelog](CHANGELOG.md): among other things its converter wrote a Class component that Oracle's verifier
-> rejects, and the PC/SC backend was not included. Rebuild CAP files made with 0.3.0.
+> **Status:** the APIs can still change between releases; the [changelog](CHANGELOG.md) lists every change and what
+> to do when upgrading. Rebuild CAP files that earlier releases built: their converter wrote a Class component that
+> Oracle's verifier rejects.
 
 ## Requirements
 
@@ -313,7 +313,7 @@ as it was built, and the transcript lists the build's AIDs next to the test AIDs
   under a literal AID outside the run's prefix is refused (a SELECT of a literal AID is sent as it is). A prefix
   under a registered RID needs the setting `jcx.livecard.registeredRid`.
 - **One package**: a package that imports another package of the project (a library module, a shareable interface
-  in another package) is refused before conversion; in 0.4.0 such tests run only on the default backend
+  in another package) is refused before conversion; such tests run only on the default backend for now
   (`@EnabledOnBackend(Mode.EMBEDDED)`).
 - **Basic channel**: the simulated card runs test applets on the basic channel only; a SELECT of a test applet on
   a logical channel 1 to 3 (opened with `LogicalChannel.open(card)`) is answered `6881`.

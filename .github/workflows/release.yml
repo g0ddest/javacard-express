@@ -19,7 +19,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
-            echo "::error::Release tag '$GITHUB_REF_NAME' is not <major>.<minor>.<patch>[-qualifier] (tags have no v prefix since 0.2.0)"
+            echo "::error::Release tag '$GITHUB_REF_NAME' is not <major>.<minor>.<patch>[-qualifier] (the tags of this project have no v prefix)"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -76,7 +76,7 @@ jobs:
         run: echo "version=${{ needs.verify.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       # Build the simulator image locally first and check that it really serves sessions before anything is pushed
-      # (every image published up to 0.3.0 was empty: its COPY wildcard matched no file).
+      # (images were once published empty: the COPY wildcard matched no file).
       - name: Build Docker image
         uses: docker/build-push-action@v6
         with:

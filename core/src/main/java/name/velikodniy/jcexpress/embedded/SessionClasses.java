@@ -12,7 +12,7 @@ import java.util.logging.Logger;
  * The applet classes of one {@link EmbeddedSession}: by default the session loads them itself
  * ({@link AppletClassLoader}, one per class loader of the classes passed to it), so their static fields belong
  * to the session. With the system property {@value EmbeddedSession#SHARED_STATICS_PROPERTY}{@code =true} the
- * session runs the classes it is given, and all sessions share their static fields (the behaviour of 0.3.0).
+ * session runs the classes it is given, and all sessions share their static fields (the behaviour of earlier releases).
  */
 final class SessionClasses {
 
@@ -36,8 +36,8 @@ final class SessionClasses {
         if (shared && !warned) {
             warned = true;
             LOG.warning("-D" + EmbeddedSession.SHARED_STATICS_PROPERTY + "=true: embedded sessions share the static"
-                    + " fields of applet classes, as in 0.3.0. This switch is deprecated and will be removed in the"
-                    + " next release; keep state that tests share on the card instead.");
+                    + " fields of applet classes, as in earlier releases. This switch is deprecated and will be removed"
+                    + " in the next release; keep state that tests share on the card instead.");
         }
         return new SessionClasses(shared);
     }

@@ -11,8 +11,6 @@ Part of the [JavaCard Express](../README.md) toolkit.
 > **Note:** ISO 7816-4 Secure Messaging is a different protocol from GlobalPlatform SCP. For GP secure channels, see
 > the [GlobalPlatform module](../gp/README.md). BAC and PACE themselves live in the [PACE module](../pace/README.md).
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Installation
 
 ```xml

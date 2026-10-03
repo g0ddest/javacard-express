@@ -31,7 +31,7 @@ import java.util.StringJoiner;
  * applets of one package on a card. A test's own references to an applet class (for example
  * {@code MyApplet.counter}) see the test's copy of the class, not the session's. Every class the applet code
  * needs is loaded again except the platform: the JDK, the Java Card API and jCardSim. The system property
- * {@value #SHARED_STATICS_PROPERTY}{@code =true} restores the behaviour of 0.3.0, where all sessions ran the
+ * {@value #SHARED_STATICS_PROPERTY}{@code =true} restores the behaviour of earlier releases, where all sessions ran the
  * test's classes and shared their static fields; it is deprecated and will be removed in the next release.</p>
  *
  * <ul>
@@ -68,7 +68,7 @@ public class EmbeddedSession implements SmartCardSession {
 
     /**
      * System property that makes sessions run the classes they are given, so that all sessions share the static
-     * fields of applet classes (the behaviour of 0.3.0). Deprecated; it will be removed in the next release.
+     * fields of applet classes (the behaviour of earlier releases). Deprecated; it will be removed in the next release.
      */
     static final String SHARED_STATICS_PROPERTY = "jcx.embedded.sharedStatics";
 

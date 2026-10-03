@@ -433,7 +433,7 @@ void runsWhereThePackageIsConvertedAndLoaded(SmartCardSession card) {
 The same class runs on every backend with the same AIDs. The GlobalPlatform backends (`simulated-gp`, `livecard`)
 convert the package, load it and manage it like a card, which brings a few rules: the applet's own commands avoid
 some INS values in a proprietary class, test applets run on the basic channel only, packages that import another
-package of the project run only on the default backend in 0.4.0, and instance AIDs come from `card.aid(...)`; the
+package of the project run only on the default backend for now, and instance AIDs come from `card.aid(...)`; the
 list is in the README, [On the GlobalPlatform backends](README.md#on-the-globalplatform-backends). A failed test's
 transcript notes what the backend did for it (`# install`, `# load` with the number of LOAD blocks, `# delete`,
 `# secure channel`).

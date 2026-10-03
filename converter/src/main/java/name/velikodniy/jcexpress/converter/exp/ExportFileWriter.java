@@ -110,7 +110,7 @@ public final class ExportFileWriter {
      *             applets (an applet package exports only its shareable interfaces, §5.5) and the
      *             export files of user-supplied imports
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public static byte[] write(TokenMap tokenMap, List<ClassInfo> classes, byte[] packageAid,
                                int packageMajorVersion, int packageMinorVersion, JavaCardVersion jcVersion) {
         try {

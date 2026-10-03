@@ -851,7 +851,7 @@ public final class ReferenceResolver {
      * @deprecated package-visible classes have no class token (JCVM 3.1 §4.3.7.2), so their
      *             offsets cannot be passed this way; use {@link #patchInternalRefs(Map, Map, Map)}
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public void patchInternalRefs(int[] classOffsets,
                                   Map<String, Integer> methodOffsetMap,
                                   Map<String, Integer> staticFieldOffsetMap) {
@@ -896,7 +896,7 @@ public final class ReferenceResolver {
      * @deprecated package-visible classes share the token value 0xFF (JCVM 3.1 §4.3.7.2); use
      *             {@link #instanceFieldClassOrder()}
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public Map<Integer, Integer> getInstanceFieldClassTokens() {
         return patches.instanceFieldKeys(tokenMap::classToken);
     }
@@ -960,7 +960,7 @@ public final class ReferenceResolver {
      * @deprecated the Class component now derives interface tables from {@link TokenMap} and
      *             {@link #importedTypes()}; kept for source compatibility
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public List<TokenMap.MethodEntry> getInterfaceMethods(String internalName) {
         return isCurrentPackage(internalName)
                 ? tokenMap.findClass(internalName).virtualMethods()
@@ -974,7 +974,7 @@ public final class ReferenceResolver {
      * @return largest public virtual method token plus one, 0 if none
      * @deprecated no longer used by the converter; kept for source compatibility
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public int getVirtualMethodCount(String internalName) {
         List<TokenMap.MethodEntry> methods = isCurrentPackage(internalName)
                 ? tokenMap.findClass(internalName).virtualMethods()

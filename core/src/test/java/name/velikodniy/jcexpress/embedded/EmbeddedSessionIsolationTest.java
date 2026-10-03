@@ -85,7 +85,7 @@ class EmbeddedSessionIsolationTest {
         }
     }
 
-    /** -Djcx.embedded.sharedStatics=true restores the behaviour of 0.3.0 for one release. */
+    /** -Djcx.embedded.sharedStatics=true restores the earlier behaviour for one more release. */
     @Nested
     class SharedStaticsOptOut {
 

@@ -655,7 +655,7 @@ guard supports and the end of this section for what has not been run on hardware
 | | |
 |---|---|
 | Date | 2026-10-02, 09:40 to 09:48 EEST |
-| Code | the main branch before release 0.4.0, with the declarative test model (`@JavaCardTest`, `@InstallApplet`, backends), the build descriptor of the Maven plugin and the projects' own AID prefixes: the state of the commit that added this section |
+| Code | the release branch of 2026-10-02, with the declarative test model (`@JavaCardTest`, `@InstallApplet`, backends), the build descriptor of the Maven plugin and the projects' own AID prefixes: the state of the commit that added this section |
 | Command | `git submodule update --init livecard/third_party/PivApplet livecard/third_party/SmartPGP`, then `./mvnw -Plivecard verify -pl livecard -am` (the verifier kit `build/oracle-sdks/jc304_kit` was found automatically) |
 | Live tests | 53 run: 52 passed, 0 failed, 1 aborted (the HMAC-SHA-256 known answer: the card answers `6F03`, CryptoException NO_SUCH_ALGORITHM) |
 | Same Maven run | the tests of `core` (610), `gp` (431), `javacard-api` (69) and `converter` (1352): 2462 run, 0 failures, 0 skipped (the Oracle reference CAP files, generated locally, were present in that checkout) |

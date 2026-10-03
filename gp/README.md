@@ -14,8 +14,6 @@ independent implementation written from the specifications, public sessions of r
 NXP JCOP4 SCP03 card) and the Samsung OpenSCP-Java AES-128/192/256 S8/S16 transcripts. See
 [Conformance](#conformance).
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Installation
 
 ```xml

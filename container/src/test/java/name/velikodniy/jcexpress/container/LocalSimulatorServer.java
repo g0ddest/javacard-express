@@ -27,7 +27,7 @@ final class LocalSimulatorServer implements AutoCloseable {
 
     private static Path serverJar;
 
-    /** Startup line of the server, e.g. "JCX Simulator 0.3.0 listening on 127.0.0.1:50123 (...)". */
+    /** Startup line of the server, e.g. "JCX Simulator <version> listening on 127.0.0.1:50123 (...)". */
     private static final Pattern LISTENING = Pattern.compile("listening on (\\S+):(\\d+) ");
 
     private final Process process;
