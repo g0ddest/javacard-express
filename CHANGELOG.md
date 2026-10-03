@@ -3,7 +3,7 @@
 Notable changes of each release. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.0 a minor release can change the API.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-10-03
 
 CAP files pass Oracle's off-card verifier, secure channels work on real cards, and one applet test class runs on
 jCardSim, on a simulated GlobalPlatform card or on a card in a PC/SC reader. The toolkit was checked on a real card
