@@ -20,3 +20,7 @@ Third-party software:
   and the software jCardSim bundles: Bouncy Castle (MIT License), Kryo, MinLog,
   ReflectASM and ASM (BSD 3-Clause License) and Objenesis (Apache License 2.0).
   Their licence texts are in META-INF/THIRD-PARTY-NOTICES.txt inside that jar.
+  jCardSim is included unchanged, as published on Maven Central. Its jar also
+  contains the classes of the Java Card API packages (javacard.*, javacardx.*),
+  which jCardSim's build takes from Oracle's Java Card API jar; they come with
+  jCardSim, and this project makes no claim about them beyond jCardSim's.

@@ -8,6 +8,10 @@ This runnable jar bundles the following third-party software in binary form.
    Licensed under the Apache License, Version 2.0
    (https://www.apache.org/licenses/LICENSE-2.0). jCardSim's own LICENSE and
    NOTICE files are included in this jar under META-INF/.
+   jCardSim is included unchanged, as published on Maven Central. Its jar also
+   contains the classes of the Java Card API packages (javacard.*, javacardx.*),
+   which jCardSim's build takes from Oracle's Java Card API jar; they come with
+   jCardSim, and this project makes no claim about them beyond jCardSim's.
 
 jCardSim bundles, relocated under com/licel/jcardsim, the following software,
 which this jar therefore also contains:
