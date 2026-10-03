@@ -17,10 +17,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The version is set in one place, {@code .mvn/maven.config} ({@code -Drevision=...}); the snippets of the
  * documentation show the release that the source tree becomes.
  *
- * <p>The version of a checkout is a SNAPSHOT of the next release: with a release number there, a local
+ * <p>Between releases the version is the SNAPSHOT of the next release: with a release number there, a local
  * {@code mvn install} of the {@code main} branch would replace the published artifacts of that release in the local
- * repository. The release workflow passes the release with {@code -Drevision}. The documentation names that release,
- * the version without {@code -SNAPSHOT}, and never the SNAPSHOT itself, which is not published anywhere.</p>
+ * repository. The commit a release is tagged from carries the release itself, and the next commit sets the next
+ * SNAPSHOT. The release workflow passes the release with {@code -Drevision}. The documentation names the release, the
+ * version without {@code -SNAPSHOT}, and never a SNAPSHOT of it, which is not published anywhere.</p>
  */
 class ReadmeVersionTest {
 
@@ -33,8 +34,8 @@ class ReadmeVersionTest {
             "<artifactId>javacard-express-[a-z-]+</artifactId>\\s*<version>([^<$]+)</version>");
 
     @Test
-    void theVersionOfACheckoutIsASnapshotSetInMavenConfig() throws IOException {
-        assertThat(developmentVersion()).endsWith("-SNAPSHOT");
+    void theVersionIsAReleaseOrTheSnapshotOfOneSetInMavenConfig() throws IOException {
+        assertThat(developmentVersion()).matches("\\d+\\.\\d+\\.\\d+(-SNAPSHOT)?");
         assertThat(Files.readString(ROOT.resolve("pom.xml"))).contains("<version>${revision}</version>")
                 .doesNotContain("<revision>");
     }
@@ -69,7 +70,8 @@ class ReadmeVersionTest {
 
         assertThat(documents).isNotEmpty();
         for (Path document : documents) {
-            assertThat(Files.readString(document)).as(document.toString()).doesNotContain(developmentVersion());
+            assertThat(Files.readString(document)).as(document.toString())
+                    .doesNotContain(releaseVersion() + "-SNAPSHOT");
         }
     }
 
@@ -85,7 +87,7 @@ class ReadmeVersionTest {
     /**
      * Returns the version of the source tree.
      *
-     * @return the {@code -Drevision} of {@code .mvn/maven.config}, e.g. {@code 1.2.0-SNAPSHOT}
+     * @return the {@code -Drevision} of {@code .mvn/maven.config}, e.g. {@code 1.2.0-SNAPSHOT} or {@code 1.2.0}
      * @throws IOException if the file cannot be read
      */
     static String developmentVersion() throws IOException {
@@ -97,7 +99,7 @@ class ReadmeVersionTest {
     /**
      * Returns the release the source tree becomes, which the documentation shows.
      *
-     * @return the development version without {@code -SNAPSHOT}, e.g. {@code 1.2.0}
+     * @return the version of the source tree without {@code -SNAPSHOT}, e.g. {@code 1.2.0}
      * @throws IOException if the file cannot be read
      */
     static String releaseVersion() throws IOException {
