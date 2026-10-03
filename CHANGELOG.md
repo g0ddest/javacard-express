@@ -144,8 +144,9 @@ jCardSim, on a simulated GlobalPlatform card or on a card in a PC/SC reader. The
   GlobalPlatformPro; a protected command is sent once (after `6CXX` it is protected again with the corrected Le).
 - Secure messaging: an unprotected response ends the SM context (an unprotected `9000` is an `SMException`), and so do
   a plain SELECT, install, reset and close.
-- Container: sessions behave like embedded ones (card reset, Java Card install layout, `SelectException`, channel
-  commands refused); the server serves concurrent sessions with timeouts and reports errors with their original type.
+- Container: sessions behave like embedded ones (card reset, Java Card install layout, `SelectException`,
+  `InstallException`, channel commands refused); the server serves concurrent sessions with timeouts and reports
+  errors with their original type.
 - Build: jCardSim's unused ASM dependencies are excluded; jars are reproducible; published POMs link to the GitHub
   repository. A release validates its tag and runs all tests before anything is published.
 

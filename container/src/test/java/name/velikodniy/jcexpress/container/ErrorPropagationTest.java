@@ -1,9 +1,10 @@
 package name.velikodniy.jcexpress.container;
 
 import javacard.framework.CardRuntimeException;
-import javacard.framework.SystemException;
+import javacard.framework.ISOException;
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.HelloWorldApplet;
+import name.velikodniy.jcexpress.InstallException;
 import name.velikodniy.jcexpress.container.applets.BaseApplet;
 import name.velikodniy.jcexpress.container.applets.DerivedApplet;
 import name.velikodniy.jcexpress.container.applets.Helper;
@@ -42,24 +43,26 @@ class ErrorPropagationTest {
     }
 
     @Test
-    void failingInstallRaisesTheSameJavaCardExceptionAsEmbeddedMode() throws IOException {
+    void failingInstallRaisesTheSameInstallExceptionAsEmbeddedMode() throws IOException {
         Throwable embedded = catchThrowable(() -> {
             try (EmbeddedSession session = new EmbeddedSession(false)) {
                 session.install(ThrowingInstallApplet.class);
             }
         });
-        assertThat(embedded).isInstanceOf(SystemException.class);
+        assertThat(embedded).isInstanceOf(InstallException.class)
+                .hasMessageContaining("ISOException with reason 6A80");
 
         try (ContainerSession session = server.newSession()) {
             Throwable remote = catchThrowable(() -> session.install(ThrowingInstallApplet.class));
 
-            assertThat(remote).isInstanceOf(SystemException.class);
-            assertThat(((CardRuntimeException) remote).getReason())
-                    .isEqualTo(((CardRuntimeException) embedded).getReason());
-            assertThat(remote.getCause())
+            assertThat(remote).isInstanceOf(InstallException.class);
+            assertThat(((InstallException) remote).reason()).isEqualTo(((InstallException) embedded).reason());
+            assertThat(remote.getCause()).isInstanceOf(ISOException.class);
+            assertThat(((CardRuntimeException) remote.getCause()).getReason()).isEqualTo((short) 0x6A80);
+            assertThat(remote.getCause().getCause())
                     .isInstanceOf(SimulatorException.class)
-                    .hasMessageContaining("javacard.framework.SystemException")
-                    .hasMessageContaining(String.format("0x%04X", ((CardRuntimeException) embedded).getReason()));
+                    .hasMessageContaining("javacard.framework.ISOException")
+                    .hasMessageContaining("0x6A80");
         }
     }
 

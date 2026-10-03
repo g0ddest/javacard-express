@@ -1,9 +1,11 @@
 package name.velikodniy.jcexpress.container;
 
 import javacard.framework.Applet;
+import javacard.framework.CardRuntimeException;
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.AppletInstallParameters;
+import name.velikodniy.jcexpress.InstallException;
 import name.velikodniy.jcexpress.SelectException;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.apdu.APDUCodec;
@@ -160,6 +162,8 @@ public class ContainerSession implements SmartCardSession {
      *
      * @throws IllegalArgumentException if the install parameters exceed 127 bytes in total
      * @throws IllegalStateException    if an applet with this AID is already installed on the card
+     * @throws InstallException         if the applet's install method fails, as on the embedded backend (the
+     *                                  exception the server reported is the cause)
      * @throws SelectException          if the new applet cannot be selected (it stays installed)
      */
     @Override
@@ -173,8 +177,13 @@ public class ContainerSession implements SmartCardSession {
             throw new UncheckedIOException("Cannot read the class files of " + appletClass.getName(), e);
         }
         byte[] payload = InstallPayload.encode(aidBytes, appletClass.getName(), classes, bArray);
-        byte[] selectResponse = call(Protocol.CMD_INSTALL, payload,
-                "install applet " + appletClass.getName() + " as " + aid.toHex());
+        byte[] selectResponse;
+        try {
+            selectResponse = call(Protocol.CMD_INSTALL, payload,
+                    "install applet " + appletClass.getName() + " as " + aid.toHex());
+        } catch (CardRuntimeException e) {
+            throw InstallException.onJCardSim(appletClass.getName(), aid, installParams, e);
+        }
         classToAid.put(appletClass.getName(), aid);
         installed.add(aid);
         checkSelected(aid, selectResponse);

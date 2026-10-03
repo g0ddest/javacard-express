@@ -76,8 +76,13 @@ final class SimulatorSession {
                     + " on this card (a card reset keeps installed applets; a new session starts with a blank card)");
         }
         byte[] bArray = request.installParams();
-        // InstallRequest guarantees bArray.length <= 127, so the cast to the byte bLength is lossless.
-        simulator.installApplet(aid, appletClass, bArray, (short) 0, (byte) bArray.length);
+        // InstallRequest guarantees bArray.length <= 127, so the cast to the byte bLength is lossless. Like
+        // CardSimulator.installApplet, but the runtime passes on an ISOException of the applet's install method with
+        // its reason (the simulator turns every failure into a SystemException), as the embedded backend does.
+        synchronized (runtime) {
+            simulator.loadApplet(aid, appletClass);
+            runtime.installApplet(aid, bArray, (short) 0, (byte) bArray.length);
+        }
         LOG.info("Installed " + request.appletClass() + " as " + AIDUtil.toString(aid));
         return simulator.selectAppletWithResult(aid);
     }
