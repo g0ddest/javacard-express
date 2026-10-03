@@ -1,8 +1,10 @@
 package name.velikodniy.jcexpress.sm;
 
 import name.velikodniy.jcexpress.APDUResponse;
+import name.velikodniy.jcexpress.crypto.CryptoException;
 
 import java.io.ByteArrayOutputStream;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -10,21 +12,31 @@ import java.util.Map;
 /**
  * Stateless codec for ISO 7816-4 Secure Messaging command wrapping and response unwrapping.
  *
- * <p>Implements the SM data object format used by ePassports (ICAO 9303) and
- * similar applications:</p>
+ * <p>Implements the ICAO Doc 9303-11 (9.8) profile of the ISO/IEC 7816-4 secure messaging data objects, used by
+ * ePassports and similar applications:</p>
  * <ul>
- *   <li><b>DO87</b> (tag 0x87) — encrypted command data, prefixed with 0x01 padding indicator</li>
- *   <li><b>DO97</b> (tag 0x97) — Le byte from the original command</li>
- *   <li><b>DO8E</b> (tag 0x8E) — 8-byte MAC computed over SSC + header + DOs</li>
- *   <li><b>DO99</b> (tag 0x99) — status word from the card response</li>
+ *   <li><b>DO'87'</b> — encrypted data of an even-INS command or its response, prefixed with the padding-content
+ *       indicator {@code 01}</li>
+ *   <li><b>DO'85'</b> — encrypted data of an odd-INS command or its response, without indicator</li>
+ *   <li><b>DO'97'</b> — Ne of the original command (one or two bytes)</li>
+ *   <li><b>DO'8E'</b> — 8-byte MAC over the SSC, the padded header (commands) and the preceding data objects</li>
+ *   <li><b>DO'99'</b> — status word of the response, authenticated by the MAC</li>
  * </ul>
  *
- * <p>The CLA byte is modified to indicate SM: {@code CLA' = (CLA & 0xF0) | 0x0C}.</p>
+ * <p>The CLA byte is modified to indicate SM while keeping the logical channel and chaining bits
+ * (ISO/IEC 7816-4 5.4.1): {@code 0x00 -> 0x0C}, {@code 0x01 -> 0x0D}, {@code 0x10 -> 0x1C},
+ * {@code 0x41 -> 0x61}; the reserved classes '20'-'3F' and 'FF' are rejected.</p>
  *
  * @see SMContext
  * @see SMSession
  */
 public final class SMCodec {
+
+    private static final int TAG_CRYPTOGRAM_ODD_INS = 0x85;
+    private static final int MAX_SHORT_LC = 255;
+    private static final int MAX_SHORT_NE = 256;
+    private static final int MAX_EXTENDED_LC = 65535;
+    private static final int MAX_EXTENDED_NE = 65536;
 
     private SMCodec() {
     }
@@ -32,214 +44,191 @@ public final class SMCodec {
     /**
      * Wraps a plaintext APDU command with ISO 7816-4 Secure Messaging.
      *
-     * <p>The wrapping process:</p>
+     * <p>The protected command follows ICAO Doc 9303-11, 9.8.4 and Figure 5:</p>
      * <ol>
-     *   <li>Parse the APDU into CLA, INS, P1, P2, data, Le</li>
-     *   <li>Build DO87 if data is present (encrypt padded data)</li>
-     *   <li>Build DO97 if Le is present</li>
-     *   <li>Increment SSC</li>
-     *   <li>Compute MAC over: SSC || padded(CLA' INS P1 P2) || DO87 || DO97</li>
-     *   <li>Build DO8E with the MAC</li>
-     *   <li>Assemble: CLA' INS P1 P2 Lc' DO87 DO97 DO8E 00</li>
+     *   <li>The command is parsed as an ISO/IEC 7816-4 (5.1) case 1-4 APDU in short or extended form;
+     *       a malformed command raises an {@link SMException}.</li>
+     *   <li>The SSC is increased (9.8.2).</li>
+     *   <li>Command data is padded, encrypted (IV per {@link SMAlgorithm#iv(byte[], byte[])}) and carried in
+     *       DO'87' with the padding-content indicator {@code 01} for an even INS, or in DO'85' without the
+     *       indicator for an odd INS.</li>
+     *   <li>Ne, if present, is carried in DO'97': one byte for 1..256 ({@code 256} as {@code 00}),
+     *       two bytes for 257..65536 ({@code 65536} as {@code 0000}).</li>
+     *   <li>DO'8E' holds the 8-byte MAC over {@code SSC || pad(CLA' INS P1 P2) || DO'85'/DO'87' || DO'97'},
+     *       padded.</li>
+     *   <li>The protected command is {@code CLA' INS P1 P2 Lc' body Le'}. It uses the extended form
+     *       ({@code Lc' = '00' Lc1 Lc2}, {@code Le' = '00 00'}) when the body exceeds 255 bytes or Ne exceeds 256,
+     *       and the short form ({@code Le' = '00'}) otherwise.</li>
      * </ol>
+     *
+     * <p>With short APDUs a protected response can carry at most 223 bytes of plaintext under AES and 231 bytes
+     * under 3DES, because DO'87', DO'99' and DO'8E' must fit in 256 bytes. Request more than 256 bytes to get an
+     * extended protected command.</p>
+     *
+     * <p>Wrapping is atomic: if it fails, the SSC is not changed.</p>
      *
      * @param ctx  the SM context (SSC is incremented)
      * @param apdu the plaintext APDU bytes
      * @return the wrapped APDU bytes
-     * @throws SMException if wrapping fails
+     * @throws SMException if the session is terminated or the command cannot be protected
      */
     public static byte[] wrapCommand(SMContext ctx, byte[] apdu) {
-        if (apdu == null || apdu.length < 4) {
-            throw new SMException("APDU must be at least 4 bytes (CLA INS P1 P2)");
-        }
-
-        SMAlgorithm alg = ctx.algorithm();
-
-        // Parse APDU: CLA INS P1 P2 [Lc Data] [Le]
-        int cla = apdu[0] & 0xFF;
-        int ins = apdu[1] & 0xFF;
-        int p1 = apdu[2] & 0xFF;
-        int p2 = apdu[3] & 0xFF;
-
-        byte[] data = null;
-        int le = -1;
-
-        if (apdu.length == 4) {
-            // Case 1: CLA INS P1 P2
-        } else if (apdu.length == 5) {
-            // Case 2: CLA INS P1 P2 Le
-            le = apdu[4] & 0xFF;
-            if (le == 0) le = 256;
-        } else {
-            int lc = apdu[4] & 0xFF;
-            if (lc > 0 && apdu.length >= 5 + lc) {
-                data = Arrays.copyOfRange(apdu, 5, 5 + lc);
-                if (apdu.length == 5 + lc + 1) {
-                    // Case 4: CLA INS P1 P2 Lc Data Le
-                    le = apdu[5 + lc] & 0xFF;
-                    if (le == 0) le = 256;
-                }
-            }
-        }
-
-        // Build SM CLA: set SM bits (0x0C in the low nibble)
-        int claSm = (cla & 0xF0) | 0x0C;
-
-        // Build DO87 (encrypted data)
-        byte[] do87 = null;
-        if (data != null && data.length > 0) {
-            do87 = buildDO87(alg, ctx.encKey(), data);
-        }
-
-        // Build DO97 (Le)
-        byte[] do97 = null;
-        if (le >= 0) {
-            do97 = buildDO97(le);
-        }
-
-        // Increment SSC
-        ctx.incrementSsc();
-
-        // Build MAC input: SSC || padded(CLA' INS P1 P2) || [DO87] || [DO97] || padding
-        ByteArrayOutputStream macInput = new ByteArrayOutputStream();
-        macInput.write(ctx.ssc(), 0, ctx.ssc().length);
-
-        // Padded header
-        byte[] header = {(byte) claSm, (byte) ins, (byte) p1, (byte) p2};
-        byte[] paddedHeader = alg.pad(header);
-        macInput.write(paddedHeader, 0, paddedHeader.length);
-
-        if (do87 != null) {
-            macInput.write(do87, 0, do87.length);
-        }
-        if (do97 != null) {
-            macInput.write(do97, 0, do97.length);
-        }
-
-        // Pad the entire MAC input to block boundary
-        byte[] macData = alg.pad(macInput.toByteArray());
-        byte[] mac = alg.mac(ctx.macKey(), macData);
-
-        // Build DO8E
-        byte[] do8e = buildDO8E(mac);
-
-        // Assemble wrapped APDU: CLA' INS P1 P2 Lc' body 00
+        ctx.requireActive();
+        CommandApdu plain = CommandApdu.parse(apdu);
+        byte[] header = {(byte) protectedCla(plain.cla()), (byte) plain.ins(), (byte) plain.p1(), (byte) plain.p2()};
+        byte[] ssc = ctx.nextSsc();
         ByteArrayOutputStream body = new ByteArrayOutputStream();
-        if (do87 != null) {
-            body.write(do87, 0, do87.length);
+        if (plain.data().length > 0) {
+            body.writeBytes(cryptogramObject(ctx, ssc, plain.ins(), plain.data()));
         }
-        if (do97 != null) {
-            body.write(do97, 0, do97.length);
+        if (plain.ne() > 0) {
+            body.writeBytes(buildDO97(plain.ne()));
         }
-        body.write(do8e, 0, do8e.length);
+        body.writeBytes(buildDO8E(commandMac(ctx, ssc, header, body.toByteArray())));
+        byte[] wrapped = frame(header, body.toByteArray(), plain.ne());
+        ctx.incrementSsc(); // 9.8.2: increased before the command is generated (ssc above is the new value)
+        return wrapped;
+    }
 
-        byte[] bodyBytes = body.toByteArray();
+    /**
+     * Sets the secure messaging indication in the class byte (ISO/IEC 7816-4 5.4.1), keeping the command chaining
+     * and logical channel bits.
+     *
+     * <ul>
+     *   <li>First interindustry class {@code 000x xxxx} (Table 2): b4-b3 = {@code 11}, SM with authenticated
+     *       command header, i.e. {@code CLA = 0x0C} on the basic channel as ICAO 9303-11 9.8.4 requires.</li>
+     *   <li>Further interindustry class {@code 01xx xxxx} (Table 3, channels 4-19): b6 = 1, the only SM indication
+     *       of this class. The ICAO profile implemented here still includes the header in the MAC.</li>
+     *   <li>Proprietary classes {@code 1xxx xxxx} follow the same layout as the interindustry classes, as
+     *       GlobalPlatform does: b7 = 0 like the first, b7 = 1 like the further interindustry class.</li>
+     * </ul>
+     *
+     * @throws SMException for the reserved classes '20'-'3F' and the invalid class 'FF'
+     */
+    static int protectedCla(int cla) {
+        if (cla == 0xFF || (cla & 0xE0) == 0x20) {
+            throw new SMException(String.format("CLA %02X is %s (ISO/IEC 7816-4 5.4.1) and cannot be protected",
+                    cla, cla == 0xFF ? "invalid" : "reserved for future use"));
+        }
+        if ((cla & 0x40) != 0) {
+            return cla | 0x20;
+        }
+        return (cla & 0xF3) | 0x0C;
+    }
 
-        ByteArrayOutputStream result = new ByteArrayOutputStream();
-        result.write(claSm);
-        result.write(ins);
-        result.write(p1);
-        result.write(p2);
-        result.write(bodyBytes.length);
-        result.write(bodyBytes, 0, bodyBytes.length);
-        result.write(0x00); // Le=0x00
+    /**
+     * ICAO 9303-11 9.8.4: DO'87' (padding-content indicator {@code 01} + cryptogram) for an even INS, DO'85'
+     * (cryptogram only) for an odd INS, whose data field is BER-TLV encoded.
+     */
+    private static byte[] cryptogramObject(SMContext ctx, byte[] ssc, int ins, byte[] data) {
+        SMAlgorithm alg = ctx.algorithm();
+        byte[] iv = alg.iv(ctx.encKeyRef(), ssc);
+        if ((ins & 0x01) == 0) {
+            return buildDO87(alg, ctx.encKeyRef(), data, iv);
+        }
+        return buildTlv(TAG_CRYPTOGRAM_ODD_INS, alg.encrypt(ctx.encKeyRef(), alg.pad(data), iv));
+    }
 
-        return result.toByteArray();
+    private static byte[] commandMac(SMContext ctx, byte[] ssc, byte[] header, byte[] dataObjects) {
+        SMAlgorithm alg = ctx.algorithm();
+        ByteArrayOutputStream input = new ByteArrayOutputStream();
+        input.writeBytes(ssc);
+        input.writeBytes(alg.pad(header));
+        input.writeBytes(dataObjects);
+        return alg.mac(ctx.macKeyRef(), alg.pad(input.toByteArray()));
+    }
+
+    private static byte[] frame(byte[] header, byte[] body, int ne) {
+        if (body.length > MAX_EXTENDED_LC) {
+            throw new SMException("Protected command body of " + body.length
+                    + " bytes exceeds the extended Lc limit of 65535 bytes (ISO/IEC 7816-4 5.1)");
+        }
+        boolean extended = body.length > MAX_SHORT_LC || ne > MAX_SHORT_NE;
+        ByteArrayOutputStream out = new ByteArrayOutputStream(header.length + body.length + 5);
+        out.writeBytes(header);
+        if (extended) {
+            out.write(0x00);
+            out.write(body.length >> 8);
+        }
+        out.write(body.length);
+        out.writeBytes(body);
+        out.writeBytes(new byte[extended ? 2 : 1]); // Le' = '00' or '00 00' (ICAO 9303-11 Figure 5)
+        return out.toByteArray();
     }
 
     /**
      * Unwraps a Secure Messaging response from the card.
      *
-     * <p>The unwrapping process:</p>
-     * <ol>
-     *   <li>Extract SM data objects: DO87, DO99, DO8E</li>
-     *   <li>Increment SSC</li>
-     *   <li>Verify MAC over: SSC || padded(DO87 || DO99)</li>
-     *   <li>Decrypt DO87 payload if present</li>
-     *   <li>Return APDUResponse with decrypted data and SW from DO99</li>
-     * </ol>
+     * <p>Whether a response is protected is decided by its structure, not by its status word
+     * (ICAO Doc 9303-11, 9.8.4, 9.8.5 and Figure 6):</p>
+     * <ul>
+     *   <li>A response with a data field is a protected response, whatever SW1-SW2 it carries
+     *       (e.g. 6282 at end of file, 6A82, 6982). The SSC is incremented, the MAC in DO'8E' is
+     *       verified over the SSC and the received bytes of all preceding data objects, the cryptogram
+     *       of DO'87' or DO'85' is decrypted, and the authenticated status word of DO'99' is returned.
+     *       Any structural error or MAC mismatch raises an {@link SMException}; the SSC stays counted,
+     *       so it remains in step with the chip.</li>
+     *   <li>A bare status word is an unprotected response: per 9.8.5 the chip reports an SM error
+     *       without Secure Messaging and aborts the session (9.8.3). The context is
+     *       {@linkplain SMContext#terminate(String) terminated} and the status word is returned so that
+     *       tests can assert on it. A bare {@code 9000} is never accepted as a successful protected
+     *       response: it raises an {@link SMException}.</li>
+     * </ul>
      *
-     * @param ctx           the SM context (SSC is incremented)
+     * @param ctx           the SM context (SSC is incremented for protected responses)
      * @param responseBytes the raw response bytes (data + SW1 SW2)
-     * @return the unwrapped response
-     * @throws SMException if MAC verification fails or response is malformed
+     * @return the unwrapped response: decrypted data and the status word from DO'99'
+     * @throws SMException if the session is terminated, MAC verification fails or the response is malformed
      */
     public static APDUResponse unwrapResponse(SMContext ctx, byte[] responseBytes) {
+        ctx.requireActive();
         if (responseBytes == null || responseBytes.length < 2) {
             throw new SMException("Response must be at least 2 bytes");
         }
-
-        // Split: data || SW1 || SW2
-        int len = responseBytes.length;
-        int outerSw = ((responseBytes[len - 2] & 0xFF) << 8) | (responseBytes[len - 1] & 0xFF);
-        byte[] dataPart = Arrays.copyOfRange(responseBytes, 0, len - 2);
-
-        // Check outer SW — must be 9000 for SM response
-        if (outerSw != 0x9000) {
-            // Card returned error before SM processing — return as-is
-            return new APDUResponse(dataPart, outerSw);
+        if (responseBytes.length == 2) {
+            return unprotectedStatus(ctx, ((responseBytes[0] & 0xFF) << 8) | (responseBytes[1] & 0xFF));
         }
+        ctx.incrementSsc(); // 9.8.2: the SSC is increased before the response is generated
+        ProtectedResponse response = ProtectedResponse.parse(responseBytes);
+        verifyMac(ctx, response);
+        byte[] data = response.cryptogram() == null ? new byte[0] : decrypt(ctx, response.cryptogram());
+        return new APDUResponse(data, response.statusWord());
+    }
 
-        // Parse SM data objects
-        Map<Integer, byte[]> dos = parseSMDataObjects(dataPart);
-
-        byte[] do99raw = dos.get(0x99);
-        byte[] do8eRaw = dos.get(0x8E);
-        byte[] do87raw = dos.get(0x87);
-
-        if (do99raw == null) {
-            throw new SMException("Missing DO99 (status word) in SM response");
+    private static APDUResponse unprotectedStatus(SMContext ctx, int sw) {
+        ctx.terminate(String.format("the chip answered SW=%04X without Secure Messaging, which ends the"
+                + " SM session (ICAO 9303-11 9.8.3, 9.8.5)", sw));
+        if (sw == 0x9000) {
+            throw new SMException("Unprotected 9000 response: a protected response must carry DO'99' and DO'8E'"
+                    + " (ICAO 9303-11 9.8.4)");
         }
-        if (do8eRaw == null) {
-            throw new SMException("Missing DO8E (MAC) in SM response");
-        }
+        return new APDUResponse(new byte[0], sw);
+    }
 
+    private static void verifyMac(SMContext ctx, ProtectedResponse response) {
         SMAlgorithm alg = ctx.algorithm();
-
-        // Increment SSC
-        ctx.incrementSsc();
-
-        // Build MAC verification input: SSC || pad(DO87_raw || DO99_raw)
-        // We need the raw TLV bytes (tag + length + value) for DO87 and DO99
-        ByteArrayOutputStream macInput = new ByteArrayOutputStream();
-        macInput.write(ctx.ssc(), 0, ctx.ssc().length);
-
-        // Reconstruct raw TLV bytes for MAC input
-        if (do87raw != null) {
-            byte[] do87tlv = buildTlv(0x87, do87raw);
-            macInput.write(do87tlv, 0, do87tlv.length);
-        }
-        byte[] do99tlv = buildTlv(0x99, do99raw);
-        macInput.write(do99tlv, 0, do99tlv.length);
-
-        byte[] macData = alg.pad(macInput.toByteArray());
-        byte[] computedMac = alg.mac(ctx.macKey(), macData);
-
-        // Verify MAC
-        if (!Arrays.equals(computedMac, do8eRaw)) {
+        byte[] ssc = ctx.ssc();
+        byte[] input = new byte[ssc.length + response.macInput().length];
+        System.arraycopy(ssc, 0, input, 0, ssc.length);
+        System.arraycopy(response.macInput(), 0, input, ssc.length, response.macInput().length);
+        byte[] expected = alg.mac(ctx.macKeyRef(), alg.pad(input));
+        if (!MessageDigest.isEqual(expected, response.mac())) {
             throw new SMException("SM response MAC verification failed");
         }
+    }
 
-        // Extract SW from DO99 (2 bytes: SW1 SW2)
-        if (do99raw.length != 2) {
-            throw new SMException("DO99 must contain exactly 2 bytes (SW1 SW2), got " + do99raw.length);
+    private static byte[] decrypt(SMContext ctx, byte[] cryptogram) {
+        SMAlgorithm alg = ctx.algorithm();
+        if (cryptogram.length == 0 || cryptogram.length % alg.blockSize() != 0) {
+            throw new SMException("SM response cryptogram length " + cryptogram.length
+                    + " is not a positive multiple of the block size " + alg.blockSize());
         }
-        int sw = ((do99raw[0] & 0xFF) << 8) | (do99raw[1] & 0xFF);
-
-        // Decrypt data from DO87 if present
-        byte[] plainData = new byte[0];
-        if (do87raw != null && do87raw.length > 1) {
-            // DO87 value: 0x01 (padding indicator) || encrypted data
-            if (do87raw[0] != 0x01) {
-                throw new SMException("DO87 padding indicator must be 0x01, got 0x"
-                        + String.format("%02X", do87raw[0] & 0xFF));
-            }
-            byte[] ciphertext = Arrays.copyOfRange(do87raw, 1, do87raw.length);
-            byte[] decrypted = alg.decrypt(ctx.encKey(), ciphertext, new byte[alg.blockSize()]);
-            plainData = alg.unpad(decrypted);
+        try {
+            byte[] padded = alg.decrypt(ctx.encKeyRef(), cryptogram, alg.iv(ctx.encKeyRef(), ctx.ssc()));
+            return alg.unpad(padded);
+        } catch (CryptoException e) {
+            throw new SMException("SM response data could not be decrypted: " + e.getMessage(), e);
         }
-
-        return new APDUResponse(plainData, sw);
     }
 
     // ── DO builders ──
@@ -252,11 +241,12 @@ public final class SMCodec {
      * @param alg     the algorithm suite
      * @param encKey  the encryption key
      * @param data    the plaintext data
+     * @param iv      the CBC IV from {@link SMAlgorithm#iv(byte[], byte[])}
      * @return the DO87 TLV bytes
      */
-    static byte[] buildDO87(SMAlgorithm alg, byte[] encKey, byte[] data) {
+    static byte[] buildDO87(SMAlgorithm alg, byte[] encKey, byte[] data, byte[] iv) {
         byte[] padded = alg.pad(data);
-        byte[] encrypted = alg.encrypt(encKey, padded, new byte[alg.blockSize()]);
+        byte[] encrypted = alg.encrypt(encKey, padded, iv);
 
         // Value: 0x01 (padding indicator) || encrypted
         byte[] value = new byte[1 + encrypted.length];
@@ -269,14 +259,21 @@ public final class SMCodec {
     /**
      * Builds DO97 (Le indicator).
      *
-     * <p>Format: {@code 97 01 Le}</p>
+     * <p>Format: {@code 97 01 Le} for Ne 1..256 (256 encoded as {@code 00}) and {@code 97 02 Le1 Le2} for Ne
+     * 257..65536 (65536 encoded as {@code 00 00}), the short and extended Le encodings of ISO/IEC 7816-4 5.1.</p>
      *
-     * @param le the expected response length (1-256, where 256 is encoded as 0x00)
+     * @param le the expected response length Ne (1-65536)
      * @return the DO97 TLV bytes
+     * @throws SMException if Ne is out of range
      */
     static byte[] buildDO97(int le) {
-        byte leByte = (byte) (le == 256 ? 0x00 : le);
-        return new byte[]{(byte) 0x97, 0x01, leByte};
+        if (le < 1 || le > MAX_EXTENDED_NE) {
+            throw new SMException("Ne must be 1..65536, got " + le);
+        }
+        if (le <= MAX_SHORT_NE) {
+            return new byte[]{(byte) 0x97, 0x01, (byte) le};
+        }
+        return new byte[]{(byte) 0x97, 0x02, (byte) (le >> 8), (byte) le};
     }
 
     /**
@@ -294,53 +291,18 @@ public final class SMCodec {
     /**
      * Parses SM data objects from response data.
      *
-     * <p>Extracts tag-value pairs for SM-specific tags (0x87, 0x97, 0x99, 0x8E).
-     * Tags are single-byte. Lengths follow BER short/long form.</p>
+     * <p>Extracts tag-value pairs. Tags are single-byte. Lengths follow BER short/long form.
+     * A later object with the same tag replaces an earlier one; use
+     * {@link SmDataObject#parseAll(byte[], int)} to keep every object and its received encoding.</p>
      *
      * @param data the SM response data (without SW)
      * @return map of tag → value bytes
      */
     static Map<Integer, byte[]> parseSMDataObjects(byte[] data) {
         Map<Integer, byte[]> result = new LinkedHashMap<>();
-        int offset = 0;
-
-        while (offset < data.length) {
-            // Read tag (single byte for SM objects)
-            int tag = data[offset++] & 0xFF;
-
-            // Read length (BER short or long form)
-            if (offset >= data.length) {
-                throw new SMException("Truncated SM data object at tag 0x" + String.format("%02X", tag));
-            }
-            int length;
-            int firstLenByte = data[offset++] & 0xFF;
-            if (firstLenByte <= 0x7F) {
-                length = firstLenByte;
-            } else if (firstLenByte == 0x81) {
-                if (offset >= data.length) {
-                    throw new SMException("Truncated length in SM data object");
-                }
-                length = data[offset++] & 0xFF;
-            } else if (firstLenByte == 0x82) {
-                if (offset + 1 >= data.length) {
-                    throw new SMException("Truncated length in SM data object");
-                }
-                length = ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);
-                offset += 2;
-            } else {
-                throw new SMException("Unsupported length encoding: 0x" + String.format("%02X", firstLenByte));
-            }
-
-            // Read value
-            if (offset + length > data.length) {
-                throw new SMException("SM data object value extends beyond data");
-            }
-            byte[] value = Arrays.copyOfRange(data, offset, offset + length);
-            offset += length;
-
-            result.put(tag, value);
+        for (SmDataObject object : SmDataObject.parseAll(data, data.length)) {
+            result.put(object.tag(), object.value());
         }
-
         return result;
     }
 
@@ -355,10 +317,13 @@ public final class SMCodec {
         } else if (value.length <= 0xFF) {
             out.write(0x81);
             out.write(value.length);
-        } else {
+        } else if (value.length <= 0xFFFF) {
             out.write(0x82);
             out.write((value.length >> 8) & 0xFF);
             out.write(value.length & 0xFF);
+        } else {
+            throw new SMException(String.format("SM data object %02X value of %d bytes exceeds 65535 bytes",
+                    tag, value.length));
         }
         out.write(value, 0, value.length);
         return out.toByteArray();

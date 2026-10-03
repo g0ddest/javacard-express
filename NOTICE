@@ -1,0 +1,22 @@
+JavaCard Express
+Copyright 2026 Vitalii Velicodnîi and contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Trademarks: Java and Java Card are trademarks or registered trademarks of Oracle
+and/or its affiliates. JavaCard Express is an independent project; it is not
+affiliated with, sponsored by or endorsed by Oracle. Other names may be
+trademarks of their respective owners.
+
+Provenance: see PROVENANCE.md in the source repository
+(https://github.com/g0ddest/javacard-express) for what the converter, the API
+stubs and the protocol modules are derived from.
+
+Third-party software:
+- javacard-express-core depends on jCardSim (com.klinec:jcardsim,
+  https://github.com/licel/jcardsim), Apache License 2.0.
+- javacard-express-container bundles a simulator server jar (also the content
+  of the simulator Docker image) that contains jCardSim (Apache License 2.0)
+  and the software jCardSim bundles: Bouncy Castle (MIT License), Kryo, MinLog,
+  ReflectASM and ASM (BSD 3-Clause License) and Objenesis (Apache License 2.0).
+  Their licence texts are in META-INF/THIRD-PARTY-NOTICES.txt inside that jar.

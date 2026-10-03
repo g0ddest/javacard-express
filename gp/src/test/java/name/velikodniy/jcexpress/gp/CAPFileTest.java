@@ -1,12 +1,16 @@
 package name.velikodniy.jcexpress.gp;
 
 import name.velikodniy.jcexpress.Hex;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.Arrays;
+import java.security.MessageDigest;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -14,279 +18,276 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link CAPFile} — CAP file parsing and load data generation.
+ * Tests for {@link CAPFile}: CAP file structure per JCVM 3.1 chapter 6 and the Load File of
+ * GPCS v2.3.1 Table 11-58.
  */
 class CAPFileTest {
 
-    private static final String PKG_DIR = "com/example/applet/javacard/";
-    private static final byte[] SAMPLE_AID = Hex.decode("A0000000031010");
+    private static final String PACKAGE_AID = "A0000000620301";
+    private static final String APPLET_AID = "A000000062030101";
 
-    /**
-     * Creates a synthetic Header.cap component.
-     *
-     * Header layout (simplified):
-     * [0..9]  = arbitrary header data
-     * [10]    = minor version
-     * [11]    = major version
-     * [12]    = AID length
-     * [13..]  = AID bytes
-     */
-    private static byte[] createHeader(byte[] aid, int major, int minor) {
-        byte[] header = new byte[13 + aid.length];
-        header[0] = 0x01; // tag
-        header[1] = (byte) (header.length - 2); // component length
-        header[2] = 0x00;
-        header[3] = 0x02;
-        header[4] = 0x00;
-        header[5] = 0x01;
-        header[10] = (byte) minor;
-        header[11] = (byte) major;
-        header[12] = (byte) aid.length;
-        System.arraycopy(aid, 0, header, 13, aid.length);
-        return header;
+    @Nested
+    class Header {
+
+        @Test
+        void jcvm_6_4_packageAidAndVersionsComeFromTheHeaderComponent() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID).applets(APPLET_AID).build());
+
+            assertThat(cap.packageAidHex()).isEqualTo(PACKAGE_AID);
+            assertThat(cap.packageAid()).isEqualTo(Hex.decode(PACKAGE_AID));
+            assertThat(cap.majorVersion()).isEqualTo(1);
+            assertThat(cap.minorVersion()).isZero();
+            assertThat(cap.isExtended()).isFalse();
+            assertThat(cap).hasToString("CAPFile[aid=" + PACKAGE_AID + ", version=1.0, components=11]");
+        }
+
+        @Test
+        void jcvm_6_4_extendedFormatIsFlaggedAndUsesTheCapAid() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID).applets(APPLET_AID).extended().build());
+
+            assertThat(cap.isExtended()).isTrue();
+            assertThat(cap.packageAidHex()).isEqualTo(PACKAGE_AID);
+        }
+
+        @Test
+        void jcvm_6_2_1_componentFileNamesAreNotCaseSensitive() {
+            byte[] zip = CapFixture.of(PACKAGE_AID).applets(APPLET_AID).inDirectory("com/example/JAVACARD/")
+                    .lowerCaseFileNames().build();
+
+            CAPFile cap = CAPFile.from(zip);
+
+            assertThat(cap.appletAids()).extracting(Hex::encode).containsExactly(APPLET_AID);
+            assertThat(cap.componentNames()).hasSize(11);
+        }
     }
 
-    /** Creates a synthetic component with given tag and content. */
-    private static byte[] createComponent(int tag, byte[] content) {
-        byte[] comp = new byte[3 + content.length];
-        comp[0] = (byte) tag;
-        comp[1] = (byte) ((content.length >> 8) & 0xFF);
-        comp[2] = (byte) (content.length & 0xFF);
-        System.arraycopy(content, 0, comp, 3, content.length);
-        return comp;
+    @Nested
+    class Components {
+
+        @Test
+        void jcvm_6_3_loadFileDataBlockFollowsTheReferenceComponentInstallOrder() {
+            CapFixture fixture = CapFixture.of(PACKAGE_AID).applets(APPLET_AID).withDebug();
+            CAPFile cap = CAPFile.from(fixture.build());
+
+            assertThat(cap.componentNames()).containsExactly("Header", "Directory", "Import", "Applet", "Class",
+                    "Method", "StaticField", "Export", "ConstantPool", "RefLocation", "Descriptor");
+            assertThat(Hex.encode(cap.code())).isEqualTo(concat(fixture.components(), cap.componentNames()));
+        }
+
+        @Test
+        void jcvm_6_3_debugComponentIsNeverLoaded() {
+            CapFixture fixture = CapFixture.of(PACKAGE_AID).withDebug();
+            CAPFile cap = CAPFile.from(fixture.build());
+
+            assertThat(cap.componentNames()).doesNotContain("Debug");
+            assertThat(Hex.encode(cap.code())).doesNotContain(Hex.encode(fixture.components().get("Debug")));
+        }
+
+        @Test
+        void jcvm_6_2_1_extendedFormatComponentsAreReadFromCapxFiles() {
+            CapFixture fixture = CapFixture.of(PACKAGE_AID).applets(APPLET_AID).extended();
+            CAPFile cap = CAPFile.from(fixture.build());
+
+            assertThat(cap.componentNames()).contains("Method", "RefLocation", "Descriptor");
+            assertThat(Hex.encode(cap.code())).isEqualTo(concat(fixture.components(), cap.componentNames()));
+        }
+
+        @Test
+        void jcvm_6_3_staticResourcesAreLoadedAfterRefLocationAndBeforeDescriptor() {
+            CapFixture fixture = CapFixture.of(PACKAGE_AID).applets(APPLET_AID).withStaticResources();
+            CAPFile cap = CAPFile.from(fixture.build());
+
+            assertThat(cap.componentNames()).endsWith("RefLocation", "StaticResources", "Descriptor");
+            assertThat(Hex.encode(cap.code())).isEqualTo(concat(fixture.components(), cap.componentNames()));
+        }
+
+        @Test
+        void jcvm_6_3_descriptorIsOptionalForLoading() {
+            CapFixture fixture = CapFixture.of(PACKAGE_AID).applets(APPLET_AID);
+            CAPFile cap = CAPFile.from(fixture.build());
+
+            List<String> withoutDescriptor = cap.componentNames().stream()
+                    .filter(name -> !name.equals("Descriptor")).toList();
+            assertThat(Hex.encode(cap.code(false))).isEqualTo(concat(fixture.components(), withoutDescriptor));
+            assertThat(cap.code()).isEqualTo(cap.code(true));
+            assertThat(cap.loadFileData(false)).hasSizeLessThan(cap.loadFileData().length);
+        }
+
+        @Test
+        void jcvm_6_2_missingRequiredComponentIsRejected() {
+            byte[] zip = CapFixture.of(PACKAGE_AID).without("Method").build();
+
+            assertThatThrownBy(() -> CAPFile.from(zip))
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("Method");
+        }
+
+        @Test
+        void jcvm_6_2_optionalComponentsMayBeAbsent() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID).without("Export").build());
+
+            assertThat(cap.componentNames()).containsExactly("Header", "Directory", "Import", "Class", "Method",
+                    "StaticField", "ConstantPool", "RefLocation", "Descriptor");
+        }
+
+        @Test
+        void componentPresentAsBothCapAndCapxIsRejected() {
+            byte[] zip = CapFixture.of(PACKAGE_AID).alsoAsCapx("Method").build();
+
+            assertThatThrownBy(() -> CAPFile.from(zip))
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("Method.cap and Method.capx");
+        }
     }
 
-    /** Builds a synthetic CAP file (ZIP) with the given components in order. */
-    private static byte[] buildCapZip(String pkgDir, String[] names, byte[][] data)
-            throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
-            for (int i = 0; i < names.length; i++) {
-                zos.putNextEntry(new ZipEntry(pkgDir + names[i]));
-                zos.write(data[i]);
-                zos.closeEntry();
+    @Nested
+    class AppletComponent {
+
+        @Test
+        void jcvm_6_6_appletAidsAreTheExecutableModuleAids() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID)
+                    .applets(APPLET_AID, "A00000006203010203").build());
+
+            assertThat(cap.appletAids()).extracting(Hex::encode)
+                    .containsExactly(APPLET_AID, "A00000006203010203");
+        }
+
+        @Test
+        void jcvm_6_6_extendedAppletEntriesCarryAMethodBlockIndex() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID)
+                    .applets(APPLET_AID, "A00000006203010203").extended().build());
+
+            assertThat(cap.appletAids()).extracting(Hex::encode)
+                    .containsExactly(APPLET_AID, "A00000006203010203");
+        }
+
+        @Test
+        void libraryWithoutAppletComponentHasNoApplets() {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID).build());
+
+            assertThat(cap.appletAids()).isEmpty();
+            assertThatThrownBy(cap::singleAppletAid)
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("0 applets");
+        }
+
+        @Test
+        void singleAppletAidRequiresExactlyOneApplet() {
+            CAPFile one = CAPFile.from(CapFixture.of(PACKAGE_AID).applets(APPLET_AID).build());
+            CAPFile two = CAPFile.from(CapFixture.of(PACKAGE_AID).applets(APPLET_AID, "A00000006203010203").build());
+
+            assertThat(Hex.encode(one.singleAppletAid())).isEqualTo(APPLET_AID);
+            assertThatThrownBy(two::singleAppletAid)
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("2 applets");
+        }
+
+        @Test
+        void truncatedAppletComponentIsRejected() {
+            byte[] truncated = Hex.decode("03000502" + "08A000000062030101");  // count 2, only part of one entry
+            byte[] zip = CapFixture.of(PACKAGE_AID).applets(APPLET_AID).replace("Applet", truncated).build();
+
+            CAPFile cap = CAPFile.from(zip);
+            assertThatThrownBy(cap::appletAids).isInstanceOf(GPException.class);
+        }
+    }
+
+    @Nested
+    class LoadFile {
+
+        @ParameterizedTest(name = "code of {0} bytes -> length field {1}")
+        @CsvSource({"100, 64", "200, 81C8", "1000, 8203E8"})
+        void gpcs_table_11_58_loadFileDataBlockIsC4WithBerLength(int codeLength, String lengthField) {
+            CAPFile cap = CAPFile.from(fixtureWithCodeLength(codeLength).build());
+
+            assertThat(cap.code()).hasSize(codeLength);
+            assertThat(Hex.encode(cap.loadFileData())).isEqualTo("C4" + lengthField + Hex.encode(cap.code()));
+        }
+
+        @Test
+        void gpcs_c_2_loadFileDataBlockHashCoversTheComponentsWithoutTheC4Header() throws Exception {
+            CAPFile cap = CAPFile.from(CapFixture.of(PACKAGE_AID).applets(APPLET_AID).build());
+
+            assertThat(cap.loadFileDataBlockHash("SHA-256", true))
+                    .isEqualTo(MessageDigest.getInstance("SHA-256").digest(cap.code(true)));
+            assertThat(cap.loadFileDataBlockHash("sha-1", false))
+                    .isEqualTo(MessageDigest.getInstance("SHA-1").digest(cap.code(false)));
+            assertThatThrownBy(() -> cap.loadFileDataBlockHash("MD5x", true)).isInstanceOf(GPException.class);
+        }
+
+        @Test
+        void loadBlocksSplitTheLoadFile() {
+            CAPFile cap = CAPFile.from(fixtureWithCodeLength(600).build());
+
+            List<byte[]> blocks = cap.loadBlocks(247);
+
+            assertThat(blocks).hasSize(3);
+            assertThat(blocks.get(0)).hasSize(247);
+            ByteArrayOutputStream joined = new ByteArrayOutputStream();
+            blocks.forEach(joined::writeBytes);
+            assertThat(joined.toByteArray()).isEqualTo(cap.loadFileData());
+        }
+    }
+
+    @Nested
+    class Rejection {
+
+        @Test
+        void rejectsNullOrEmptyData() {
+            assertThatThrownBy(() -> CAPFile.from(null)).isInstanceOf(GPException.class);
+            assertThatThrownBy(() -> CAPFile.from(new byte[0])).isInstanceOf(GPException.class);
+        }
+
+        @Test
+        void rejectsDataThatIsNotAZip() {
+            assertThatThrownBy(() -> CAPFile.from(Hex.decode("0102030405")))
+                    .isInstanceOf(GPException.class);
+        }
+
+        @Test
+        void rejectsCapWithoutHeaderComponent() {
+            assertThatThrownBy(() -> CAPFile.from(CapFixture.of(PACKAGE_AID).without("Header").build()))
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("Header");
+        }
+
+        @Test
+        void rejectsJarWithMoreThanOneCapFile() throws IOException {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
+                for (String dir : List.of("a/javacard/", "b/javacard/")) {
+                    zip.putNextEntry(new ZipEntry(dir + "Header.cap"));
+                    zip.write(CapFixture.of(PACKAGE_AID).components().get("Header"));
+                    zip.closeEntry();
+                }
             }
-        }
-        return baos.toByteArray();
-    }
 
-    /** Builds a minimal valid CAP file with Header, Directory, Class, and Method. */
-    private static byte[] buildMinimalCap() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 1, 0);
-        byte[] directory = createComponent(0x02, new byte[]{0x10, 0x20});
-        byte[] classComp = createComponent(0x06, new byte[]{0x01, 0x02, 0x03});
-        byte[] method = createComponent(0x07, new byte[]{0x04, 0x05, 0x06, 0x07});
-
-        return buildCapZip(PKG_DIR,
-                new String[]{"Header.cap", "Directory.cap", "Class.cap", "Method.cap"},
-                new byte[][]{header, directory, classComp, method});
-    }
-
-    @Test
-    void shouldParseCapFromZip() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap).isNotNull();
-        assertThat(cap.packageAid()).isEqualTo(SAMPLE_AID);
-    }
-
-    @Test
-    void shouldExtractPackageAid() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap.packageAidHex()).isEqualTo("A0000000031010");
-        assertThat(cap.packageAid()).isEqualTo(SAMPLE_AID);
-    }
-
-    @Test
-    void shouldExtractVersions() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap.majorVersion()).isEqualTo(1);
-        assertThat(cap.minorVersion()).isEqualTo(0);
-    }
-
-    @Test
-    void shouldListComponents() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        List<String> names = cap.componentNames();
-        assertThat(names).containsExactly("Header", "Directory", "Class", "Method");
-    }
-
-    @Test
-    void shouldConcatenateComponentsInOrder() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 1, 0);
-        byte[] classComp = new byte[]{0x01, 0x02};
-        byte[] method = new byte[]{0x03, 0x04};
-
-        // Add Method BEFORE Class in ZIP order — code() should still follow spec order
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Header.cap", "Method.cap", "Class.cap"},
-                new byte[][]{header, method, classComp});
-
-        CAPFile cap = CAPFile.from(zip);
-        byte[] code = cap.code();
-
-        // code() should follow spec order: Header, Class, Method (not ZIP order)
-        assertThat(code.length).isEqualTo(header.length + classComp.length + method.length);
-
-        // Verify Class appears before Method in output
-        byte[] expectedEnd = new byte[classComp.length + method.length];
-        System.arraycopy(classComp, 0, expectedEnd, 0, classComp.length);
-        System.arraycopy(method, 0, expectedEnd, classComp.length, method.length);
-
-        byte[] actualEnd = new byte[expectedEnd.length];
-        System.arraycopy(code, header.length, actualEnd, 0, expectedEnd.length);
-        assertThat(actualEnd).isEqualTo(expectedEnd);
-    }
-
-    @Test
-    void shouldSkipDebugComponent() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 1, 0);
-        byte[] classComp = new byte[]{0x01};
-        byte[] debug = new byte[]{(byte) 0xDE, (byte) 0xBF};
-
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Header.cap", "Class.cap", "Debug.cap"},
-                new byte[][]{header, classComp, debug});
-
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap.componentNames()).doesNotContain("Debug");
-
-        byte[] code = cap.code();
-        assertThat(code.length).isEqualTo(header.length + classComp.length);
-    }
-
-    @Test
-    void shouldWrapWithC4Tag() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        byte[] loadData = cap.loadFileData();
-        byte[] code = cap.code();
-
-        // Should start with C4 tag
-        assertThat(loadData[0] & 0xFF).isEqualTo(0xC4);
-
-        // For short data (< 128 bytes), BER length is single byte
-        if (code.length <= 0x7F) {
-            assertThat(loadData[1] & 0xFF).isEqualTo(code.length);
-            assertThat(loadData.length).isEqualTo(2 + code.length);
+            assertThatThrownBy(() -> CAPFile.from(bytes.toByteArray()))
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("more than one CAP file");
         }
 
-        // Verify the code portion matches
-        byte[] extractedCode = new byte[code.length];
-        System.arraycopy(loadData, loadData.length - code.length, extractedCode, 0, code.length);
-        assertThat(extractedCode).isEqualTo(code);
-    }
+        @Test
+        void rejectsHeaderTooShortForItsAid() {
+            byte[] zip = CapFixture.of(PACKAGE_AID).replace("Header", Hex.decode("01000ADECAFFED010200000110A0")).build();
 
-    @Test
-    void shouldWrapLargeDataWithBerLength() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 1, 0);
-        byte[] largeClass = new byte[200];
-        Arrays.fill(largeClass, (byte) 0xAA);
-
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Header.cap", "Class.cap"},
-                new byte[][]{header, largeClass});
-
-        CAPFile cap = CAPFile.from(zip);
-        byte[] loadData = cap.loadFileData();
-        int codeLen = cap.code().length;
-
-        assertThat(loadData[0] & 0xFF).isEqualTo(0xC4);
-
-        // BER length: 0x81 for 128-255
-        assertThat(loadData[1] & 0xFF).isEqualTo(0x81);
-        assertThat(loadData[2] & 0xFF).isEqualTo(codeLen);
-
-        // Total: tag(1) + length(2) + code
-        assertThat(loadData.length).isEqualTo(3 + codeLen);
-    }
-
-    @Test
-    void shouldGenerateCorrectBlocks() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 1, 0);
-        byte[] largeClass = new byte[500];
-        Arrays.fill(largeClass, (byte) 0xBB);
-
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Header.cap", "Class.cap"},
-                new byte[][]{header, largeClass});
-
-        CAPFile cap = CAPFile.from(zip);
-        List<byte[]> blocks = cap.loadBlocks(247);
-
-        assertThat(blocks).hasSizeGreaterThan(1);
-
-        // All blocks except last should be maxBlockSize
-        for (int i = 0; i < blocks.size() - 1; i++) {
-            assertThat(blocks.get(i).length).isEqualTo(247);
+            assertThatThrownBy(() -> CAPFile.from(zip))
+                    .isInstanceOf(GPException.class)
+                    .hasMessageContaining("Header");
         }
-        // Last block should be <= maxBlockSize
-        assertThat(blocks.get(blocks.size() - 1).length).isLessThanOrEqualTo(247);
-
-        // Concatenated blocks should equal loadFileData
-        ByteArrayOutputStream combined = new ByteArrayOutputStream();
-        for (byte[] block : blocks) {
-            combined.writeBytes(block);
-        }
-        assertThat(combined.toByteArray()).isEqualTo(cap.loadFileData());
     }
 
-    @Test
-    void shouldHandleMissingOptionalComponents() throws IOException {
-        byte[] header = createHeader(SAMPLE_AID, 2, 1);
-
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Header.cap"},
-                new byte[][]{header});
-
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap.componentNames()).containsExactly("Header");
-        assertThat(cap.code()).isEqualTo(header);
-        assertThat(cap.majorVersion()).isEqualTo(2);
-        assertThat(cap.minorVersion()).isEqualTo(1);
+    /** A fixture whose concatenated components are exactly {@code codeLength} bytes long. */
+    private static CapFixture fixtureWithCodeLength(int codeLength) {
+        CapFixture fixture = CapFixture.of(PACKAGE_AID).without("Export");
+        int current = fixture.components().values().stream().mapToInt(c -> c.length).sum();
+        int classInfo = fixture.components().get("Class").length - 3;
+        return fixture.fillerSize("Class", classInfo + codeLength - current);
     }
 
-    @Test
-    void shouldRejectInvalidZip() {
-        assertThatThrownBy(() -> CAPFile.from(new byte[]{0x01, 0x02, 0x03}))
-                .isInstanceOf(GPException.class);
-    }
-
-    @Test
-    void shouldRejectNullOrEmpty() {
-        assertThatThrownBy(() -> CAPFile.from(null))
-                .isInstanceOf(GPException.class);
-        assertThatThrownBy(() -> CAPFile.from(new byte[0]))
-                .isInstanceOf(GPException.class);
-    }
-
-    @Test
-    void shouldRejectMissingHeader() throws IOException {
-        byte[] zip = buildCapZip(PKG_DIR,
-                new String[]{"Class.cap"},
-                new byte[][]{new byte[]{0x01, 0x02}});
-
-        assertThatThrownBy(() -> CAPFile.from(zip))
-                .isInstanceOf(GPException.class)
-                .hasMessageContaining("Header");
-    }
-
-    @Test
-    void toStringShouldContainAidAndVersion() throws IOException {
-        byte[] zip = buildMinimalCap();
-        CAPFile cap = CAPFile.from(zip);
-
-        assertThat(cap.toString()).contains("A0000000031010");
-        assertThat(cap.toString()).contains("1.0");
+    private static String concat(Map<String, byte[]> components, List<String> names) {
+        StringBuilder hex = new StringBuilder();
+        names.forEach(name -> hex.append(Hex.encode(components.get(name))));
+        return hex.toString();
     }
 }

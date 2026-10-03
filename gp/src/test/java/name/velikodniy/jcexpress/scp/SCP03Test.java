@@ -1,514 +1,380 @@
 package name.velikodniy.jcexpress.scp;
 
-import name.velikodniy.jcexpress.crypto.CryptoException;
-
-import name.velikodniy.jcexpress.crypto.CryptoUtil;
-
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
-import org.junit.jupiter.api.BeforeEach;
+import name.velikodniy.jcexpress.gp.ScpTranscript;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
-import java.util.Arrays;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link SCP03}.
+ * Tests for {@link SCP03} (GlobalPlatform Card Specification Amendment D v1.1.2; S16 mode of v1.2).
+ *
+ * <p>Expected values come from outside javacard-express: the real NXP JCOP4 transcript
+ * {@code SCP03_real_JCOP4_i70}, the Samsung OpenSCP-Java transcripts (Apache-2.0, data only) and
+ * spec-derived vectors of the independent reference implementation (see {@link ScpTranscript}).</p>
  */
 class SCP03Test {
 
-    /**
-     * Synthetic INITIALIZE UPDATE response for SCP03.
-     *
-     * Structure:
-     *   [0..9]   Key diversification data
-     *   [10..11] Key information (key version + SCP03 identifier)
-     *   [12..19] Card challenge (8 bytes for SCP03 i=70)
-     *   [20..27] Card cryptogram (8 bytes, derived via AES-CMAC KDF)
-     */
-    private static final String DIVERSIFICATION = "00010203040506070809";
-    private static final String KEY_INFO = "0103"; // version 01, SCP03
+    private static final ScpTranscript JCOP4 = ScpTranscript.named("SCP03_real_JCOP4_i70");
+    private static final ScpTranscript SAMSUNG_128 = ScpTranscript.named("SCP03_Samsung_AES128_S8_level33");
 
-    private SCPKeys keys;
-    private byte[] hostChallenge;
-    private byte[] cardChallenge;
-
-    @BeforeEach
-    void setUp() {
-        keys = SCPKeys.defaultKeys();
-        hostChallenge = Hex.decode("AABBCCDDEEFF0011");
-        cardChallenge = Hex.decode("1122334455667788");
+    private static SCP03 jcop4(int level) {
+        return SCP03.from(JCOP4.keys(), JCOP4.hostChallenge(), JCOP4.initUpdate(), level);
     }
 
-    /**
-     * Builds a valid INITIALIZE UPDATE response with correct card cryptogram.
-     */
-    private byte[] buildInitUpdateResponse() {
-        // Context for derivation
-        byte[] context = new byte[16];
-        System.arraycopy(hostChallenge, 0, context, 0, 8);
-        System.arraycopy(cardChallenge, 0, context, 8, 8);
-
-        // Card cryptogram = first 8 bytes of KDF(staticMAC, context, CARD_CRYPTO_CONSTANT, 64)
-        byte[] cardCryptoFull = CryptoUtil.deriveSCP03SessionKey(
-                keys.mac(), context, GP.SCP03_DERIVE_CARD_CRYPTO, 64);
-        byte[] cardCryptogram = Arrays.copyOf(cardCryptoFull, 8);
-
-        String responseHex = DIVERSIFICATION + KEY_INFO
-                + Hex.encode(cardChallenge)
-                + Hex.encode(cardCryptogram);
-        return Hex.decode(responseHex);
+    private static SecureChannel opened(ScpTranscript t) {
+        SecureChannel channel = ScpChannelKnownAnswerTest.authenticate(t);
+        channel.externalAuthenticate();
+        return channel;
     }
 
     @Nested
-    class SessionCreation {
+    class InitializeUpdateResponseLayout {
 
         @Test
-        void shouldCreateFromInitUpdateResponse() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-            assertThat(scp.securityLevel()).isEqualTo(GP.SECURITY_C_MAC);
+        void table_7_3_keyInformationIsThreeBytesFollowedByChallengeCryptogramAndCounter() {
+            InitializeUpdateResponse r = InitializeUpdateResponse.parse(JCOP4.initUpdate());
+
+            assertThat(Hex.encode(r.diversificationData())).isEqualTo("00003244342976208448");
+            assertThat(r.keyVersion()).isEqualTo(0x01);
+            assertThat(r.scpIdentifier()).isEqualTo(3);
+            assertThat(r.option()).isEqualTo(0x70);
+            assertThat(Hex.encode(r.cardChallenge())).isEqualTo("734ECDCA19E446A3");
+            assertThat(Hex.encode(r.cardCryptogram())).isEqualTo("0BC253BCE97DB991");
+            assertThat(Hex.encode(r.sequenceCounter())).isEqualTo("000436");
+            assertThat(r.s16()).isFalse();
         }
 
         @Test
-        void shouldDeriveSessionKeys() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-            assertThat(scp.sessionMacKey()).hasSize(16);
-            assertThat(scp.sessionEncKey()).hasSize(16);
-            assertThat(scp.sessionMacKey()).isNotEqualTo(keys.mac());
+        void table_7_3_randomChallengeResponseHasNoSequenceCounter() {
+            ScpTranscript t = ScpTranscript.named("SCP03_AES128_i00_level01");
+            InitializeUpdateResponse r = InitializeUpdateResponse.parse(t.initUpdate());
+
+            assertThat(t.initUpdate()).hasSize(29);
+            assertThat(r.option()).isZero();
+            assertThat(r.sequenceCounter()).isEmpty();
         }
 
         @Test
-        void shouldRejectShortResponse() {
-            byte[] tooShort = new byte[20];
-            assertThatThrownBy(() -> SCP03.from(keys, hostChallenge, tooShort))
+        void amdD_v1_2_s16ResponseCarries16ByteChallengeAndCryptogram() {
+            ScpTranscript t = ScpTranscript.named("SCP03_Samsung_AES128_S16_level33");
+            InitializeUpdateResponse r = InitializeUpdateResponse.parse(t.initUpdate());
+
+            assertThat(r.s16()).isTrue();
+            assertThat(r.option()).isEqualTo(0x71);
+            assertThat(r.cardChallenge()).hasSize(16);
+            assertThat(r.cardCryptogram()).hasSize(16);
+            assertThat(Hex.encode(r.sequenceCounter())).isEqualTo("00082A");
+        }
+
+        @ParameterizedTest(name = "i={0}, {1} bytes")
+        @CsvSource({"00, 32", "10, 29", "70, 29", "60, 32", "71, 32"})
+        void table_7_3_lengthMustMatchTheIParameter(String option, int length) {
+            byte[] response = new byte[length];
+            response[11] = 0x03;
+            response[12] = (byte) Integer.parseInt(option, 16);
+
+            assertThatThrownBy(() -> InitializeUpdateResponse.parse(response))
                     .isInstanceOf(SCPException.class)
-                    .hasMessageContaining("too short");
+                    .hasMessageContaining("Table 7-3");
         }
 
         @Test
-        void shouldRejectInvalidCardCryptogram() {
-            byte[] response = buildInitUpdateResponse();
-            // Corrupt the card cryptogram
-            response[25] ^= 0xFF;
-            assertThatThrownBy(() -> SCP03.from(keys, hostChallenge, response))
+        void responseOfAnotherProtocolIsRejected() {
+            byte[] response = JCOP4.initUpdate().clone();
+            response[11] = 0x01;
+
+            assertThatThrownBy(() -> InitializeUpdateResponse.parse(response))
                     .isInstanceOf(SCPException.class)
-                    .hasMessageContaining("verification failed");
+                    .hasMessageContaining("Unsupported Secure Channel Protocol '01'");
         }
     }
 
     @Nested
-    class HostCryptogram {
+    class Cryptograms {
 
         @Test
-        void shouldComputeHostCryptogram() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-            byte[] hostCrypto = scp.hostCryptogram();
-            assertThat(hostCrypto).hasSize(8);
+        void amdD_6_2_2_2_cardCryptogramIsDerivedFromSessionMacKey() {
+            SCP03 scp = jcop4(GP.SECURITY_C_MAC);   // verifies the real card cryptogram 0BC253BCE97DB991
+
+            assertThat(Hex.encode(scp.sessionMacKey())).isEqualTo("F7062FB6554BB7B140A7336658C4178E");
+            assertThat(Hex.encode(scp.sessionEncKey())).isEqualTo("72790CA8EDDD33FF607B2EA804E25344");
+            assertThat(Hex.encode(scp.sessionRmacKey())).isEqualTo("D6E86D640A74CAF2DAB8894C64A358E8");
         }
 
         @Test
-        void hostCryptogramShouldBeDeterministic() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-            byte[] crypto1 = scp.hostCryptogram();
-            byte[] crypto2 = scp.hostCryptogram();
-            assertThat(crypto1).isEqualTo(crypto2);
-        }
-    }
+        void amdD_6_2_2_2_cryptogramDerivedFromTheStaticMacKeyIsRejected() {
+            byte[] response = JCOP4.initUpdate().clone();
+            System.arraycopy(Hex.decode("4FF696EF07718BEF"), 0, response, 21, 8);
 
-    @Nested
-    class Wrapping {
-
-        @Test
-        void shouldWrapCase1Apdu() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-
-            byte[] apdu = Hex.decode("80F20000");
-            byte[] wrapped = scp.wrap(apdu);
-
-            assertThat(wrapped).hasSize(4 + 1 + 8); // header + Lc + MAC
-            assertThat(wrapped[0] & 0xFF).isEqualTo(0x84); // secure messaging bit
-            assertThat(wrapped[4] & 0xFF).isEqualTo(8); // Lc = MAC only
-        }
-
-        @Test
-        void shouldWrapCase3Apdu() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-
-            byte[] apdu = Hex.decode("80E40000" + "07" + "4F05A000000003");
-            byte[] wrapped = scp.wrap(apdu);
-
-            assertThat(wrapped[0] & 0xFF).isEqualTo(0x84);
-            // Lc = 7 data + 8 MAC = 15
-            assertThat(wrapped[4] & 0xFF).isEqualTo(15);
-        }
-
-        @Test
-        void shouldWrapWithEncryption() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC_C_ENC);
-
-            byte[] apdu = Hex.decode("80E40000" + "07" + "4F05A000000003");
-            byte[] wrapped = scp.wrap(apdu);
-
-            // Data padded to 16-byte boundary: 7 + pad80 = 16, then + 8 MAC = 24
-            assertThat(wrapped[4] & 0xFF).isEqualTo(24);
-        }
-
-        @Test
-        void consecutiveWrapsShouldChain() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-
-            byte[] apdu = Hex.decode("80F20000");
-            byte[] wrapped1 = scp.wrap(apdu);
-            byte[] wrapped2 = scp.wrap(apdu);
-
-            // MACs should be different due to chaining
-            byte[] mac1 = Arrays.copyOfRange(wrapped1, 5, 13);
-            byte[] mac2 = Arrays.copyOfRange(wrapped2, 5, 13);
-            assertThat(mac1).isNotEqualTo(mac2);
-        }
-
-        @Test
-        void shouldPreserveLeAfterWrapping() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-
-            // Case 2: header + Le
-            byte[] apdu = Hex.decode("80CA00CF00"); // GET DATA with Le=0
-            byte[] wrapped = scp.wrap(apdu);
-
-            // Last byte should be Le=0x00
-            assertThat(wrapped[wrapped.length - 1]).isEqualTo((byte) 0x00);
-        }
-
-        @Test
-        void shouldRejectTooShortApdu() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response);
-
-            assertThatThrownBy(() -> scp.wrap(new byte[3]))
+            assertThatThrownBy(() -> SCP03.from(JCOP4.keys(), JCOP4.hostChallenge(), response, GP.SECURITY_C_MAC))
                     .isInstanceOf(SCPException.class)
-                    .hasMessageContaining("too short");
+                    .hasMessageContaining("Card cryptogram verification failed");
+        }
+
+        @Test
+        void amdD_6_2_2_3_hostCryptogramMatchesTheRealCard() {
+            assertThat(Hex.encode(jcop4(GP.SECURITY_C_MAC).hostCryptogram())).isEqualTo("A5E66CD1A836E3A4");
+        }
+
+        @Test
+        void amdD_6_2_1_aes192SessionKeysAre24Bytes() {
+            ScpTranscript t = ScpTranscript.named("SCP03_Samsung_AES192_S8_level33");
+            SCP03 scp = SCP03.from(t.keys(), t.hostChallenge(), t.initUpdate(), t.level());
+
+            assertThat(scp.sessionEncKey()).hasSize(24);
+            assertThat(scp.sessionMacKey()).hasSize(24);
+            assertThat(scp.sessionRmacKey()).hasSize(24);
         }
     }
 
     @Nested
-    class ResponseMac {
+    class ExternalAuthenticate {
 
-        private SCP03 createRmacSession() {
-            byte[] response = buildInitUpdateResponse();
-            return SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC_C_ENC_R_MAC);
-        }
-
-        /** Computes a valid R-MAC for the given plain data and SW using the session's R-MAC key. */
-        private byte[] computeRmac(SCP03 scp, byte[] plainData, int sw) {
-            byte[] rmacCh = scp.rmacChaining();
-            byte[] macInput = new byte[rmacCh.length + plainData.length + 2];
-            System.arraycopy(rmacCh, 0, macInput, 0, rmacCh.length);
-            System.arraycopy(plainData, 0, macInput, rmacCh.length, plainData.length);
-            macInput[macInput.length - 2] = (byte) ((sw >> 8) & 0xFF);
-            macInput[macInput.length - 1] = (byte) (sw & 0xFF);
-
-            byte[] fullMac = CryptoUtil.aesCmac(scp.sessionRmacKey(), macInput);
-            return Arrays.copyOf(fullMac, 8);
+        @Test
+        void table_7_5_externalAuthenticateMatchesTheRealCard() {
+            assertThat(Hex.encode(jcop4(GP.SECURITY_C_MAC).externalAuthenticate()))
+                    .isEqualTo("8482010010A5E66CD1A836E3A47CD3B3F7B689AE8F");
         }
 
         @Test
-        void shouldDeriveRmacSessionKey() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC_C_ENC_R_MAC);
+        void table_7_5_externalAuthenticateIsNeverEncryptedEvenAtLevel33() {
+            SCP03 scp = SCP03.from(SAMSUNG_128.keys(), SAMSUNG_128.hostChallenge(), SAMSUNG_128.initUpdate(), 0x33);
 
-            assertThat(scp.sessionRmacKey()).hasSize(16);
-            // R-MAC key should differ from session MAC key
-            assertThat(scp.sessionRmacKey()).isNotEqualTo(scp.sessionMacKey());
+            byte[] extAuth = scp.externalAuthenticate();
+
+            assertThat(Hex.encode(extAuth)).isEqualTo(Hex.encode(SAMSUNG_128.extAuth()));
+            assertThat(Hex.encode(extAuth)).startsWith("8482330010" + Hex.encode(scp.hostCryptogram()));
         }
 
         @Test
-        void shouldUnwrapValidRmacWithSw() {
-            SCP03 scp = createRmacSession();
+        void externalAuthenticateCanBeProducedOnlyOnceAndMustComeFirst() {
+            SCP03 scp = jcop4(GP.SECURITY_C_MAC);
+            assertThatThrownBy(() -> scp.wrap(Hex.decode("80CA006600")))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("first command");
 
-            byte[] plainData = Hex.decode("0102030405");
-            int sw = 0x9000;
-            byte[] rmac = computeRmac(scp, plainData, sw);
+            scp.externalAuthenticate();
+            assertThatThrownBy(scp::externalAuthenticate).isInstanceOf(SCPException.class);
+        }
+    }
 
-            // Build response data: plainData || R-MAC
-            byte[] responseData = new byte[plainData.length + 8];
-            System.arraycopy(plainData, 0, responseData, 0, plainData.length);
-            System.arraycopy(rmac, 0, responseData, plainData.length, 8);
+    @Nested
+    class SecureMessaging {
 
-            APDUResponse raw = new APDUResponse(responseData, sw);
-            APDUResponse unwrapped = scp.unwrap(raw);
+        @Test
+        void amdD_6_2_6_encryptionCounterAdvancesForCommandsWithoutData() {
+            ScpTranscript t = ScpTranscript.named("SCP03_AES128_i10_level03");
+            SecureChannel scp = opened(t);
+            ScpTranscript.Command getStatus = t.commands().get(0);
+            ScpTranscript.Command getData = t.commands().get(1);    // case 2, no data field
+            ScpTranscript.Command storeData = t.commands().get(2);  // encrypted with counter 3
 
-            assertThat(unwrapped.data()).isEqualTo(plainData);
-            assertThat(unwrapped.sw()).isEqualTo(sw);
+            scp.wrap(getStatus.plain());
+            assertThat(Hex.encode(scp.wrap(getData.plain()))).isEqualTo(Hex.encode(getData.wrapped()));
+            assertThat(Hex.encode(scp.wrap(storeData.plain()))).isEqualTo(Hex.encode(storeData.wrapped()));
         }
 
         @Test
-        void shouldRejectInvalidRmac() {
-            SCP03 scp = createRmacSession();
+        void amdD_6_2_5_rmacIsComputedOverTheCommandMacChainingValue() {
+            SCP03 scp = (SCP03) opened(SAMSUNG_128);
+            ScpTranscript.Command first = SAMSUNG_128.commands().getFirst();
+            scp.wrap(first.plain());
+            byte[] chaining = scp.macChaining();
 
-            byte[] plainData = Hex.decode("0102030405");
-            byte[] badMac = new byte[8];
+            APDUResponse response = scp.unwrap(new APDUResponse(first.cardResponse()));
 
-            byte[] responseData = new byte[plainData.length + 8];
-            System.arraycopy(plainData, 0, responseData, 0, plainData.length);
-            System.arraycopy(badMac, 0, responseData, plainData.length, 8);
+            assertThat(Hex.encode(response.data())).isEqualTo(Hex.encode(first.data()));
+            assertThat(scp.macChaining()).as("the response does not change the chaining value").isEqualTo(chaining);
+        }
 
-            APDUResponse raw = new APDUResponse(responseData, 0x9000);
+        @Test
+        void amdD_6_2_7_responseIcvIsTheEncryptedCounterBlockWithMsb80() {
+            SecureChannel scp = opened(SAMSUNG_128);
+            for (ScpTranscript.Command command : SAMSUNG_128.commands()) {
+                scp.wrap(command.plain());
+                APDUResponse response = scp.unwrap(new APDUResponse(command.cardResponse()));
+                assertThat(Hex.encode(response.data())).as("decrypted %s", command)
+                        .isEqualTo(Hex.encode(command.data()));
+            }
+        }
 
-            assertThatThrownBy(() -> scp.unwrap(raw))
+        @Test
+        void amdD_6_2_5_errorStatusWordsCarryNoRmacAndAreReturnedUnchanged() {
+            SecureChannel scp = opened(ScpTranscript.named("SCP03_AES128_i60_level33"));
+
+            scp.wrap(Hex.decode("80E40000094F07A000000001020300"));
+            APDUResponse response = scp.unwrap(new APDUResponse(Hex.decode("6A88")));
+
+            assertThat(response.sw()).isEqualTo(0x6A88);
+            assertThat(response.data()).isEmpty();
+        }
+
+        /**
+         * Unlike SCP02, SCP03 has no R-MAC chain: the R-MAC of a response is computed over the MAC chaining value
+         * of its command (6.2.5, Figure 6-3) and errors carry none, while the encryption counter counts every
+         * command (6.2.6). A bare error therefore leaves nothing to resynchronise: the next command and its
+         * encrypted response match the reference card.
+         */
+        @Test
+        void amdD_6_2_5_errorStatusWordLeavesChainingValueAndCounterToTheNextCommand() {
+            ScpTranscript t = ScpTranscript.named("SCP03_AES128_i70_level33_errorSW");
+            SCP03 scp = (SCP03) opened(t);
+            ScpTranscript.Command getStatus = t.commands().get(0);
+            ScpTranscript.Command delete = t.commands().get(1);
+            ScpTranscript.Command getData = t.commands().get(2);
+            scp.wrap(getStatus.plain());
+            scp.unwrap(new APDUResponse(getStatus.cardResponse()));
+
+            scp.wrap(delete.plain());
+            byte[] chaining = scp.macChaining();
+            APDUResponse error = scp.unwrap(new APDUResponse(delete.cardResponse()));
+
+            assertThat(Hex.encode(delete.cardResponse())).isEqualTo("6A88");
+            assertThat(error.sw()).isEqualTo(0x6A88);
+            assertThat(scp.macChaining()).isEqualTo(chaining);
+            assertThat(Hex.encode(scp.wrap(getData.plain()))).isEqualTo(Hex.encode(getData.wrapped()));
+            assertThat(Hex.encode(scp.unwrap(new APDUResponse(getData.cardResponse())).data()))
+                    .isEqualTo(Hex.encode(getData.data()));
+        }
+
+        /**
+         * "No R-MAC shall be generated and no protection shall be applied to a response that includes an error
+         * status word: in this case only the status word shall be returned" (6.2.5): response data next to an
+         * error status word would reach the caller unauthenticated in a session that requires R-MAC.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"01020304050607086A88", "016985", "000102030405060708090A0B0C0D0E0F6F00"})
+        void amdD_6_2_5_errorStatusWordWithResponseDataIsRejectedWhenResponsesAreProtected(String response) {
+            SecureChannel scp = opened(ScpTranscript.named("SCP03_AES128_i60_level33"));
+
+            scp.wrap(Hex.decode("80E40000094F07A000000001020300"));
+            assertThatThrownBy(() -> scp.unwrap(new APDUResponse(Hex.decode(response))))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining(response.substring(response.length() - 4));
+        }
+
+        @Test
+        void amdD_6_2_5_withoutRmacResponsesAreNotInterpreted() {
+            SecureChannel scp = opened(ScpTranscript.named("SCP03_AES128_i10_level03"));
+
+            scp.wrap(Hex.decode("80E40000094F07A000000001020300"));
+            APDUResponse response = scp.unwrap(new APDUResponse(Hex.decode("01026A88")));
+
+            assertThat(Hex.encode(response.data())).isEqualTo("0102");
+            assertThat(response.sw()).isEqualTo(0x6A88);
+        }
+
+        @Test
+        void amdD_6_2_5_successWithoutRmacIsRejected() {
+            SecureChannel scp = opened(ScpTranscript.named("SCP03_AES128_i60_level33"));
+
+            scp.wrap(Hex.decode("80CA006600"));
+            assertThatThrownBy(() -> scp.unwrap(new APDUResponse(Hex.decode("9000"))))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("R-MAC");
+        }
+
+        @Test
+        void amdD_6_2_5_tamperedResponseIsRejected() {
+            SecureChannel scp = opened(SAMSUNG_128);
+            ScpTranscript.Command first = SAMSUNG_128.commands().getFirst();
+            byte[] tampered = first.cardResponse().clone();
+            tampered[3] ^= 0x40;
+
+            scp.wrap(first.plain());
+            assertThatThrownBy(() -> scp.unwrap(new APDUResponse(tampered)))
                     .isInstanceOf(SCPException.class)
                     .hasMessageContaining("Response MAC verification failed");
         }
-
-        @Test
-        void shouldUpdateRmacChaining() {
-            SCP03 scp = createRmacSession();
-
-            byte[] initialChaining = scp.rmacChaining();
-            assertThat(initialChaining).isEqualTo(new byte[16]);
-
-            // First unwrap
-            byte[] plainData1 = Hex.decode("0102030405");
-            byte[] rmac1 = computeRmac(scp, plainData1, 0x9000);
-            byte[] responseData1 = new byte[plainData1.length + 8];
-            System.arraycopy(plainData1, 0, responseData1, 0, plainData1.length);
-            System.arraycopy(rmac1, 0, responseData1, plainData1.length, 8);
-            scp.unwrap(new APDUResponse(responseData1, 0x9000));
-
-            byte[] afterFirst = scp.rmacChaining();
-            assertThat(afterFirst).isNotEqualTo(new byte[16]);
-            // SCP03 chaining = full 16-byte CMAC (not just the truncated 8 bytes)
-            assertThat(afterFirst).hasSize(16);
-
-            // Second unwrap — uses updated chaining
-            byte[] plainData2 = Hex.decode("0A0B0C");
-            byte[] rmac2 = computeRmac(scp, plainData2, 0x9000);
-            byte[] responseData2 = new byte[plainData2.length + 8];
-            System.arraycopy(plainData2, 0, responseData2, 0, plainData2.length);
-            System.arraycopy(rmac2, 0, responseData2, plainData2.length, 8);
-            scp.unwrap(new APDUResponse(responseData2, 0x9000));
-
-            assertThat(scp.rmacChaining()).isNotEqualTo(afterFirst);
-        }
-
-        @Test
-        void shouldPassThroughWithoutRmac() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC);
-
-            byte[] plainData = Hex.decode("0102030405");
-            APDUResponse raw = new APDUResponse(plainData, 0x9000);
-            APDUResponse result = scp.unwrap(raw);
-
-            assertThat(result.data()).isEqualTo(plainData);
-            assertThat(result.sw()).isEqualTo(0x9000);
-        }
     }
 
     @Nested
-    class ResponseEncryption {
+    class Validation {
 
-        /** Creates an SCP03 session with R-MAC + R-ENC. */
-        private SCP03 createRencSession() {
-            byte[] response = buildInitUpdateResponse();
-            return SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC_C_ENC_R_MAC_R_ENC);
-        }
+        @ParameterizedTest(name = "level {0} with i={1}")
+        @CsvSource({"11, 00", "13, 00", "33, 20", "33, 00"})
+        void table_5_1_responseProtectionNeedsCardSupport(String level, String option) {
+            ScpTranscript t = ScpTranscript.named("SCP03_AES128_i00_level01");
+            byte[] response = t.initUpdate().clone();
+            response[12] = (byte) Integer.parseInt(option, 16);
+            int securityLevel = Integer.parseInt(level, 16);
 
-        /** Creates an SCP03 session with R-ENC only (no R-MAC). */
-        private SCP03 createRencOnlySession() {
-            byte[] response = buildInitUpdateResponse();
-            return SCP03.from(keys, hostChallenge, response, 0x21); // C-MAC + R-ENC
-        }
-
-        /** Computes a valid R-MAC for the given data and SW. */
-        private byte[] computeRmac(SCP03 scp, byte[] data, int sw) {
-            byte[] rmacCh = scp.rmacChaining();
-            byte[] macInput = new byte[rmacCh.length + data.length + 2];
-            System.arraycopy(rmacCh, 0, macInput, 0, rmacCh.length);
-            System.arraycopy(data, 0, macInput, rmacCh.length, data.length);
-            macInput[macInput.length - 2] = (byte) ((sw >> 8) & 0xFF);
-            macInput[macInput.length - 1] = (byte) (sw & 0xFF);
-
-            byte[] fullMac = CryptoUtil.aesCmac(scp.sessionRmacKey(), macInput);
-            return Arrays.copyOf(fullMac, 8);
-        }
-
-        @Test
-        void shouldDecryptAndUnpadResponse() {
-            SCP03 scp = createRencSession();
-            int sw = 0x9000;
-
-            byte[] plainData = Hex.decode("48656C6C6F"); // "Hello"
-            // Encrypt: pad80 + AES-CBC(sessionEncKey, zero IV)
-            byte[] padded = CryptoUtil.pad80(plainData, 16);
-            byte[] encrypted = CryptoUtil.aesCbcEncrypt(scp.sessionEncKey(), padded);
-            // R-MAC over encrypted data
-            byte[] rmac = computeRmac(scp, encrypted, sw);
-
-            // Wire: [encrypted] [R-MAC(8)]
-            byte[] responseData = new byte[encrypted.length + 8];
-            System.arraycopy(encrypted, 0, responseData, 0, encrypted.length);
-            System.arraycopy(rmac, 0, responseData, encrypted.length, 8);
-
-            APDUResponse result = scp.unwrap(new APDUResponse(responseData, sw));
-
-            assertThat(result.data()).isEqualTo(plainData);
-            assertThat(result.sw()).isEqualTo(sw);
-        }
-
-        @Test
-        void shouldHandleRencWithoutRmac() {
-            SCP03 scp = createRencOnlySession();
-
-            byte[] plainData = Hex.decode("0102030405");
-            byte[] padded = CryptoUtil.pad80(plainData, 16);
-            byte[] encrypted = CryptoUtil.aesCbcEncrypt(scp.sessionEncKey(), padded);
-
-            APDUResponse result = scp.unwrap(new APDUResponse(encrypted, 0x9000));
-
-            assertThat(result.data()).isEqualTo(plainData);
-            assertThat(result.sw()).isEqualTo(0x9000);
-        }
-
-        @Test
-        void shouldPassThroughEmptyDataWithRenc() {
-            SCP03 scp = createRencSession();
-
-            // R-MAC over empty encrypted data
-            byte[] emptyEncrypted = new byte[0];
-            byte[] rmac = computeRmac(scp, emptyEncrypted, 0x9000);
-
-            // Wire: just R-MAC (no encrypted data)
-            APDUResponse result = scp.unwrap(new APDUResponse(rmac, 0x9000));
-
-            assertThat(result.data()).isEmpty();
-            assertThat(result.sw()).isEqualTo(0x9000);
-        }
-
-        @Test
-        void shouldRejectBadPaddingAfterDecrypt() {
-            SCP03 scp = createRencSession();
-
-            // Encrypted data that decrypts to invalid padding (no 0x80 marker)
-            // Use raw AES-CBC encrypt of 16 zero bytes — will decrypt to zeros, no padding marker
-            byte[] badPlain = new byte[16]; // all zeros, no 0x80 padding marker
-            byte[] encrypted = CryptoUtil.aesCbcEncrypt(scp.sessionEncKey(), badPlain);
-            byte[] rmac = computeRmac(scp, encrypted, 0x9000);
-
-            byte[] responseData = new byte[encrypted.length + 8];
-            System.arraycopy(encrypted, 0, responseData, 0, encrypted.length);
-            System.arraycopy(rmac, 0, responseData, encrypted.length, 8);
-
-            APDUResponse raw = new APDUResponse(responseData, 0x9000);
-            assertThatThrownBy(() -> scp.unwrap(raw))
-                    .isInstanceOf(CryptoException.class)
-                    .hasMessageContaining("padding");
-        }
-
-        @Test
-        void shouldLeaveResponseUnchangedWithoutRenc() {
-            byte[] response = buildInitUpdateResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC);
-
-            byte[] plainData = Hex.decode("0102030405");
-            APDUResponse result = scp.unwrap(new APDUResponse(plainData, 0x9000));
-
-            assertThat(result.data()).isEqualTo(plainData);
-        }
-    }
-
-    @Nested
-    class PseudoRandomChallenge {
-
-        private static final String SEQ_COUNTER = "001234";
-        private static final String CARD_CHALLENGE_6 = "AABB11223344";
-
-        /**
-         * Builds a 29-byte INIT UPDATE response for SCP03 pseudo-random (i=60).
-         * Format: divData(10) || keyInfo(2) || seqCounter(3) || cardChallenge(6) || cryptogram(8)
-         */
-        private byte[] buildPseudoRandomResponse() {
-            byte[] seqCounter = Hex.decode(SEQ_COUNTER);
-            byte[] cardCh = Hex.decode(CARD_CHALLENGE_6);
-
-            // Context = hostChallenge(8) || seqCounter(3) || cardChallenge(6) = 17 bytes
-            byte[] context = new byte[17];
-            System.arraycopy(hostChallenge, 0, context, 0, 8);
-            System.arraycopy(seqCounter, 0, context, 8, 3);
-            System.arraycopy(cardCh, 0, context, 11, 6);
-
-            byte[] cardCryptoFull = CryptoUtil.deriveSCP03SessionKey(
-                    keys.mac(), context, GP.SCP03_DERIVE_CARD_CRYPTO, 64);
-            byte[] cardCryptogram = Arrays.copyOf(cardCryptoFull, 8);
-
-            // Build 29-byte response
-            String responseHex = DIVERSIFICATION + KEY_INFO
-                    + SEQ_COUNTER
-                    + CARD_CHALLENGE_6
-                    + Hex.encode(cardCryptogram);
-            return Hex.decode(responseHex);
-        }
-
-        @Test
-        void shouldCreateFromPseudoRandomResponse() {
-            byte[] response = buildPseudoRandomResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC, true);
-            assertThat(scp.securityLevel()).isEqualTo(GP.SECURITY_C_MAC);
-        }
-
-        @Test
-        void shouldDeriveSessionKeysForPseudoRandom() {
-            byte[] prResponse = buildPseudoRandomResponse();
-            SCP03 prScp = SCP03.from(keys, hostChallenge, prResponse, GP.SECURITY_C_MAC, true);
-
-            byte[] exResponse = buildInitUpdateResponse();
-            SCP03 exScp = SCP03.from(keys, hostChallenge, exResponse, GP.SECURITY_C_MAC, false);
-
-            // Different context → different session keys
-            assertThat(prScp.sessionMacKey()).isNotEqualTo(exScp.sessionMacKey());
-            assertThat(prScp.sessionEncKey()).isNotEqualTo(exScp.sessionEncKey());
-        }
-
-        @Test
-        void shouldComputeHostCryptogramForPseudoRandom() {
-            byte[] response = buildPseudoRandomResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC, true);
-            byte[] hostCrypto = scp.hostCryptogram();
-            assertThat(hostCrypto).hasSize(8);
-            // Should be deterministic
-            assertThat(scp.hostCryptogram()).isEqualTo(hostCrypto);
-        }
-
-        @Test
-        void shouldWrapCommandInPseudoRandomMode() {
-            byte[] response = buildPseudoRandomResponse();
-            SCP03 scp = SCP03.from(keys, hostChallenge, response, GP.SECURITY_C_MAC, true);
-
-            byte[] apdu = Hex.decode("80F20000");
-            byte[] wrapped = scp.wrap(apdu);
-
-            assertThat(wrapped).hasSize(4 + 1 + 8); // header + Lc + MAC
-            assertThat(wrapped[0] & 0xFF).isEqualTo(0x84); // secure messaging bit
-            assertThat(wrapped[4] & 0xFF).isEqualTo(8); // Lc = MAC only
-        }
-
-        @Test
-        void shouldRejectShortPseudoRandomResponse() {
-            byte[] tooShort = new byte[28]; // 28 < 29
-            assertThatThrownBy(() -> SCP03.from(keys, hostChallenge, tooShort, GP.SECURITY_C_MAC, true))
+            assertThatThrownBy(() -> SCP03.from(t.keys(), t.hostChallenge(), response, securityLevel))
                     .isInstanceOf(SCPException.class)
-                    .hasMessageContaining("pseudo-random");
+                    .hasMessageContaining("support");
         }
+
+        @ParameterizedTest(name = "level {0}")
+        @ValueSource(ints = {0x02, 0x10, 0x30, 0x31, 0x23})
+        void table_7_6_rejectsUndefinedSecurityLevels(int level) {
+            assertThatThrownBy(() -> jcop4(level))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("not defined");
+        }
+
+        @Test
+        void table_5_1_rejectsRfuBitsInTheIParameter() {
+            byte[] response = JCOP4.initUpdate().clone();
+            response[12] = 0x72;
+
+            assertThatThrownBy(() -> SCP03.from(JCOP4.keys(), JCOP4.hostChallenge(), response, GP.SECURITY_C_MAC))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("RFU");
+        }
+
+        @Test
+        void amdD_v1_2_s16CardsNeedA16ByteHostChallenge() {
+            ScpTranscript t = ScpTranscript.named("SCP03_Samsung_AES128_S16_level33");
+
+            assertThatThrownBy(() -> SCP03.from(t.keys(), new byte[8], t.initUpdate(), t.level()))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("16-byte host challenge");
+        }
+
+        @Test
+        void table_6_1_keysTypedAsTripleDesAreRejected() {
+            SCPKeys des = SCPKeys.des3(new byte[16], new byte[16], new byte[16]);
+
+            assertThatThrownBy(() -> SCP03.from(des, JCOP4.hostChallenge(), JCOP4.initUpdate(), 0x01))
+                    .isInstanceOf(SCPException.class)
+                    .hasMessageContaining("AES");
+        }
+    }
+
+    @Nested
+    class Lengths {
+
+        @ParameterizedTest(name = "{0}")
+        @CsvSource({
+                "SCP03_AES128_i00_level01, 247",
+                "SCP03_AES128_i10_level03, 239",
+                "SCP03_AES256_S16_i31_level11, 239",
+                "SCP03_AES192_S16_i61_level03, 223"})
+        void gpcs_11_1_5_maximumClearDataPerCommand(String transcript, int max) {
+            SecureChannel scp = opened(ScpTranscript.named(transcript));
+
+            assertThat(scp.maxCommandDataLength()).isEqualTo(max);
+            byte[] tooLong = new byte[5 + max + 1];
+            System.arraycopy(Hex.decode("80E28000"), 0, tooLong, 0, 4);
+            tooLong[4] = (byte) (max + 1);
+            assertThatThrownBy(() -> scp.wrap(tooLong)).isInstanceOf(SCPException.class);
+        }
+    }
+
+    @Test
+    void destroyZeroizesKeysIncludingTheStaticDek() {
+        SCP03 scp = jcop4(GP.SECURITY_C_MAC);
+        scp.destroy();
+
+        assertThat(scp.sessionMacKey()).containsOnly(0);
+        assertThat(scp.dek()).containsOnly(0);
+        assertThatThrownBy(scp::externalAuthenticate).isInstanceOf(SCPException.class);
     }
 }

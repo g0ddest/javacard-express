@@ -14,13 +14,16 @@ import java.util.Objects;
  *       all required components as defined by JCVM spec Chapter 6 (Header, Directory,
  *       Import, ConstantPool, Class, Method, StaticField, ReferenceLocation, Descriptor,
  *       and optionally Applet and Export).</li>
- *   <li>An <b>export file</b> ({@code .exp}) -- a binary file describing the package's
- *       public API tokens, enabling other packages to import and link against this package.</li>
+ *   <li>An <b>export file</b> ({@code .exp}, JCVM 3.1 Chapter 5) -- the package's public API
+ *       with its tokens, enabling other packages to import and link against this package. It is
+ *       generated for every conversion: a library package describes all its public classes and
+ *       interfaces, a package with applets only its public shareable interfaces (§5.5).</li>
  * </ul>
  *
  * <p>The {@link #warnings()} list may contain non-fatal messages about potential issues
- * detected during conversion (e.g., unused imports, missing optional metadata). An empty
- * list indicates a clean conversion.
+ * detected during conversion (e.g., a package AID generated from the package name, or a
+ * package AID equal to the AID of another known package). An empty list indicates a clean
+ * conversion.
  *
  * <h2>Usage</h2>
  * <pre>{@code
@@ -29,8 +32,10 @@ import java.util.Objects;
  * // Write CAP file to disk
  * Files.write(Path.of("output.cap"), result.capFile());
  *
- * // Write export file for downstream packages
- * Files.write(Path.of("output.exp"), result.exportFile());
+ * // Write the export file where an export path finds it: <package>/javacard/<last name>.exp
+ * // (JCVM 3.1 §4.1.1, §5.2), e.g. for package com.example
+ * Path exp = Files.createDirectories(Path.of("exports/com/example/javacard")).resolve("example.exp");
+ * Files.write(exp, result.exportFile());
  *
  * System.out.println("CAP size: " + result.capSize() + " bytes");
  * result.warnings().forEach(w -> System.err.println("WARN: " + w));

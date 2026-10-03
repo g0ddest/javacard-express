@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example.its</groupId>
+    <artifactId>multi-module</artifactId>
+    <version>1.0</version>
+    <packaging>pom</packaging>
+    <description>A library package module and an applet module that imports it through the library's export file.</description>
+
+    <modules>
+        <module>counter-lib</module>
+        <module>counter-app</module>
+    </modules>
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <version>@project.version@</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>name.velikodniy</groupId>
+                    <artifactId>javacard-express-maven-plugin</artifactId>
+                    <version>@project.version@</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>build</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

@@ -37,10 +37,16 @@ public final class Privileges {
     /** Bit 6: delegated management privilege. */
     public static final int DELEGATED_MANAGEMENT = 0x20;
 
-    /** Bit 5: can lock the card. */
+    /**
+     * Bit 5 (Card Lock, GPCS v2.3.1 Table 6-1): can lock and unlock the card, e.g. with SET STATUS P1 '80'
+     * (9.6.3, 11.10.2.2); see {@link Lifecycle#CARD_LOCKED}.
+     */
     public static final int CARD_LOCK = 0x10;
 
-    /** Bit 4: can terminate the card. */
+    /**
+     * Bit 4 (Card Terminate, GPCS v2.3.1 Table 6-1): can terminate the card, irreversibly (9.6.4, 11.10.2.2); see
+     * {@link Lifecycle#CARD_TERMINATED}.
+     */
     public static final int CARD_TERMINATE = 0x08;
 
     /** Bit 3: default selected / card reset. */

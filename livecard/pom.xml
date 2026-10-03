@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>name.velikodniy</groupId>
+        <artifactId>javacard-express</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>javacard-express-livecard</artifactId>
+
+    <name>JavaCard Express :: Live Card Tests</name>
+    <description>Safe tests of Java Card applets on a real card: a PC/SC session behind an independent APDU allow-list
+        guard (wrong keys never cost an authentication try), deployment with the converter, cleanup, and the JUnit 5
+        @LiveCardTest extension. The project's live-card suite (this module's tests) runs only on request on the
+        card owner's machine (profile livecard), never in CI</description>
+
+    <properties>
+        <!-- Test applets: src/applets/java, compiled for Java 8 against the API stubs -->
+        <applet.classes>${project.build.directory}/applet-classes</applet.classes>
+        <maven-dependency-plugin.version>3.8.1</maven-dependency-plugin.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Aligns junit-platform-* versions (test kit) with ${junit.version} -->
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-gp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-converter</artifactId>
+        </dependency>
+        <!-- LiveCardExtension / @LiveCardTest -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+        </dependency>
+
+        <!--
+            jCardSim, in compile scope: the simulated GlobalPlatform card (backend simulated-gp) runs applets on it.
+            Declared before the API stubs, which must not shadow it (see the surefire classpathDependencyExcludes).
+        -->
+        <dependency>
+            <groupId>com.klinec</groupId>
+            <artifactId>jcardsim</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.ow2.asm</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!--
+            The API stubs compile the test applets (and the SmartCardSession signatures); they must not shadow
+            jCardSim at test runtime, see the surefire classpathDependencyExcludes below.
+        -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <!-- The test applets, like an applet project would build them: Java 8 class files, API stubs.
+                         Bound to compile, as the simulator server execution of the container module: IntelliJ IDEA
+                         then imports src/applets/java as a module of its own with Java 8, and the main code keeps
+                         Java 25 (bound to process-classes, the release 8 of this execution became the language
+                         level of the whole main module, and records were errors in the IDE) -->
+                    <execution>
+                        <id>compile-applets</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <release>8</release>
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/src/applets/java</compileSourceRoot>
+                            </compileSourceRoots>
+                            <outputDirectory>${applet.classes}</outputDirectory>
+                            <generatedSourcesDirectory>${project.build.directory}/generated-sources/applets</generatedSourcesDirectory>
+                            <proc>none</proc>
+                            <createMissingPackageInfoClass>false</createMissingPackageInfoClass>
+                            <compilerArgs>
+                                <!-- javac 21+ warns that release 8 is obsolete; the old target is intentional -->
+                                <arg>-Xlint:-options</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!--
+                Sets ${name.velikodniy:javacard-express-api:jar} to the API stubs, which the tests compile the
+                third-party applets (git submodules in third_party/) against.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>${maven-dependency-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>api-stubs-path</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The live-card suite runs only with -Plivecard -->
+                    <excludedGroups>livecard</excludedGroups>
+                    <!-- XML reports of passing tests without the test JVM's system properties (no settings in them) -->
+                    <enablePropertiesElement>false</enablePropertiesElement>
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>name.velikodniy:javacard-express-api</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                    <additionalClasspathElements>
+                        <additionalClasspathElement>${applet.classes}</additionalClasspathElement>
+                    </additionalClasspathElements>
+                    <systemPropertyVariables>
+                        <!-- Without the profile, live-card tests are off whatever the settings files say -->
+                        <jcx.livecard.enabled>false</jcx.livecard.enabled>
+                        <!-- lets ./livecard.properties in the project root apply to runs of this module -->
+                        <maven.multiModuleProjectDirectory>${maven.multiModuleProjectDirectory}</maven.multiModuleProjectDirectory>
+                        <jcx.livecard.test.appletClasses>${applet.classes}</jcx.livecard.test.appletClasses>
+                        <!-- third-party applets: submodules, API stubs to compile them, where to build them -->
+                        <jcx.livecard.test.thirdParty>${project.basedir}/third_party</jcx.livecard.test.thirdParty>
+                        <jcx.livecard.test.apiStubs>${name.velikodniy:javacard-express-api:jar}</jcx.livecard.test.apiStubs>
+                        <jcx.livecard.test.buildDirectory>${project.build.directory}</jcx.livecard.test.buildDirectory>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+            ./mvnw -Plivecard verify -pl livecard -am   runs the live-card suite against the card in the reader.
+            Settings: LIVE_CARD_TESTING.md (system properties jcx.livecard.*, JCX_LIVECARD_* variables,
+            ./livecard.properties, ~/.jcx/livecard.properties).
+        -->
+        <profile>
+            <id>livecard</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>livecard</groups>
+                            <excludedGroups combine.self="override"/>
+                            <systemPropertyVariables>
+                                <jcx.livecard.enabled>true</jcx.livecard.enabled>
+                                <!-- @JavaCardTest classes of the live suite (LC-MODEL) use the card as well -->
+                                <jcx.backend>livecard</jcx.backend>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>

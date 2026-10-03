@@ -1,331 +1,147 @@
-# Binary Compatibility Status
-
-**Converter**: javacard-express-converter
-
-**Reference**: Oracle JavaCard SDK 3.0.5u3
-
-## Legal Context
-
-This converter is a **clean-room implementation** built entirely from the publicly available
-JCVM specification (§6 "CAP File Format"). No Oracle source code was examined or copied.
-
-Clean-room reimplementation of published specifications is well-established as legally
-protected under US case law:
-- **Google v. Oracle** (Supreme Court, 2021): reimplementing APIs for interoperability is fair use
-- **Sega v. Accolade** (9th Cir., 1992): intermediate use for interoperability is fair use
-- **Lotus v. Borland** (1st Cir., 1995): functional specifications are uncopyrightable methods of operation
-
-**Output comparison testing** (comparing our converter's output against Oracle's without
-examining Oracle's code) is black-box functional testing, analogous to verifying a clone
-BIOS boots the same way as the original.
-
-### Oracle Reference Files
-
-Oracle-generated reference CAP/EXP files are used for comparison tests and are produced
-locally by `build/generate-oracle-refs.sh`. These files require an Oracle JavaCard SDK
-installation, which is available under the Oracle Technology Network (OTN) Developer License.
-
-**Important**: OTN-licensed materials (SDK tools) are
-**not redistributable**. Reference files should be generated locally and not committed to
-the repository. Tests that require reference files use `Assumptions.assumeTrue()` and are
-skipped when references are not present.
-
-### API Stubs
-
-The `javacard-api` module provides clean-room API stubs (`javacard.framework`,
-`javacard.security`, `javacardx.crypto`) implemented from the JCVM specification. These
-stubs are used instead of Oracle's `api_classic.jar` to avoid any dependency on OTN-licensed
-materials. Token assignments match the specification (not Oracle's proprietary exports).
-
-## TestApplet (single-class baseline, JC 3.0.5)
-
-| Component | Tag | Size | Byte-Identical | Notes |
-|-----------|-----|------|----------------|-------|
-| Header | 1 | 21 = 21 | YES | |
-| Directory | 2 | 34 = 34 | YES | |
-| Applet | 3 | 16 = 16 | YES | |
-| Import | 4 | 24 = 24 | YES | |
-| ConstantPool | 5 | 61 = 61 | YES | |
-| Class | 6 | 15 = 15 | SIZE MATCH | Oracle dispatch table off-by-one (2 bytes) |
-| Method | 7 | 140 = 140 | YES | |
-| StaticField | 8 | 13 = 13 | YES | |
-| RefLocation | 9 | 27 = 27 | YES | |
-| Descriptor | 11 | 117 = 117 | YES | |
-
-**Result: 9/10 byte-identical, 1 size-match (Oracle dispatch table off-by-one bug only).**
-
-## Complex Applets (multi-class, inheritance, interfaces, exceptions)
-
-| Applet | BYTE-IDENTICAL | SIZE MATCH | Known Differences |
-|--------|---------------|------------|-------------------|
-| InheritanceApplet | 9 | 1 | Class (dispatch table) |
-| InterfaceApplet | 9 | 1 | Class (dispatch table) |
-| ExceptionApplet | 9 | 1 | Class (dispatch table) |
-| MultiClassApplet | 9 | 1 | Class (dispatch table) |
-
-## Known Oracle Converter Bug: Class.cap Dispatch Table Off-By-One
-
-### Description
-
-The Oracle converter has an off-by-one error in the `public_virtual_method_table` serialization
-within the Class component (JCVM spec §6.9, Table 6-16). For every class entry, Oracle writes
-a phantom `0x0000` as the first dispatch table entry and shifts all real method offset entries
-right by 2 bytes. The last real entry overflows into the adjacent `package_method_table_base`
-and `package_method_table_count` fields.
-
-### Evidence
-
-The bug is 100% consistent across all 7 classes in 4 test applets (verified on JC 3.0.5u3):
-
-```
-ExceptionApplet (1 class, pub_count=1):
-  OURS:   [0x0022, 0x0000]    ← process @34, then padding
-  ORACLE: [0x0000, 0x0022]    ← phantom 0, process @34 displaced
-
-InheritanceApplet (3 classes, each with dispatch table):
-  BaseApplet (pub_count=2):
-    OURS:   [0x0010, 0x000B] [pkg_base=0x00]
-    ORACLE: [0x0000, 0x0010] [0x000B displaced into pkg_base]
-
-  MiddleApplet (pub_count=2):
-    OURS:   [0x001C, 0x0024] [pkg_base=0x00]
-    ORACLE: [0x0000, 0x001C] [0x0024 displaced]
-
-  InheritanceApplet (pub_count=3):
-    OURS:   [0x003F, 0x001C, 0x0084] [0x0000]
-    ORACLE: [0x0000, 0x003F, 0x001C] [0x0084 displaced]
-```
-
-### Spec Reference
-
-JCVM 3.0.5 specification, §6.9 Table 6-16 defines the `class_info` structure:
-```
-u1 public_method_table_base    // first virtual method token in the table
-u1 public_method_table_count   // number of entries
-u2[public_method_table_count] public_virtual_method_table  // method offsets
-u1 package_method_table_base
-u1 package_method_table_count
-```
-
-The `public_virtual_method_table` array should contain exactly `public_method_table_count`
-entries, with `table[i]` being the method offset for token `(base + i)`. Oracle writes
-`count+1` values starting with `0x0000`, displacing the last entry into the subsequent
-`package_method_table_base`/`package_method_table_count` fields.
-
-### Impact
-
-This bug has **no runtime impact** on correctly implemented JCVMs because:
-1. The dispatch table size is still `pub_count`, so the extra entry is ignored
-2. The overflow into `pkg_base`/`pkg_count` only matters if package-visible virtual methods
-   exist (which is rare in practice — Java Card applets typically don't use package-private methods)
-3. All deployed Oracle-produced CAP files contain this bug, so JCVMs must be tolerant of it
-
-### Our Implementation
-
-By default, our converter produces the **spec-correct** format. The test suite verifies
-that all non-dispatch-table bytes are identical to Oracle, and that the dispatch table
-contains the same set of method offset values (just in different positions due to the
-off-by-one).
-
-### Oracle Compatibility Mode
-
-Enabling `oracleCompatibility(true)` replicates the Oracle dispatch table bug, producing
-**fully byte-identical** Class.cap output. This is useful for environments that validate
-CAP files against Oracle reference output.
-
-```java
-Converter converter = Converter.builder()
-    .classesDirectory(classesDir)
-    .packageName("com.example")
-    .oracleCompatibility(true)  // replicate Oracle dispatch table bug
-    .build();
-```
-
-Maven plugin:
-```xml
-<configuration>
-    <oracleCompatibility>true</oracleCompatibility>
-</configuration>
-```
-
-Or via property: `-Djavacard.oracleCompatibility=true`
-
-**Results with Oracle compatibility mode enabled:**
-
-| Applet | BYTE-IDENTICAL | SIZE MATCH | Notes |
-|--------|---------------|------------|-------|
-| TestApplet (all 8 JC versions) | 10 | 0 | Fully identical |
-| InheritanceApplet | 10 | 0 | Fully identical |
-| InterfaceApplet | 10 | 0 | Fully identical |
-| ExceptionApplet | 10 | 0 | Fully identical |
-| MultiClassApplet | 10 | 0 | Fully identical |
-
-## Per-Version Comparison Status (TestApplet)
-
-The converter supports 8 JavaCard specification versions. Binary compatibility is
-verified by comparing our output against Oracle SDK reference CAP files for each version.
-
-| JC Version | CAP Format | Reference File | Byte-Identical | Size-Match | Size-Diff |
-|------------|-----------|----------------|----------------|------------|-----------|
-| 2.1.2 | 2.1 | `oracle-TestApplet-jc212.cap` | 9 | 1 | 0 |
-| 2.2.1 | 2.1 | `oracle-TestApplet-jc221.cap` | 9 | 1 | 0 |
-| 2.2.2 | 2.1 | `oracle-TestApplet-jc222.cap` | 9 | 1 | 0 |
-| 3.0.3 | 2.1 | `oracle-TestApplet-jc303.cap` | 9 | 1 | 0 |
-| 3.0.4 | 2.1 | `oracle-TestApplet-jc304.cap` | 9 | 1 | 0 |
-| 3.0.5 | 2.1 | `oracle-TestApplet-jc305.cap` | 9 | 1 | 0 |
-| 3.1.0 | 2.3 | `oracle-TestApplet-jc310.cap` | 9 | 1 | 0 |
-| 3.2.0 | 2.3 | `oracle-TestApplet-jc320.cap` | 9 | 1 | 0 |
-
-**All 8 versions: 9/10 byte-identical, 1 size-match, 0 size-diff.**
-Class.cap is size-match due to the Oracle dispatch table off-by-one bug only.
-
-### PUTFIELD_x_THIS Version-Specific Optimization
-
-Oracle converters prior to JC 3.0.5 apply `GETFIELD_x_THIS` optimization
-(folds `ALOAD_0 + GETFIELD_x` → `GETFIELD_x_THIS`) but do **not** apply the
-analogous `PUTFIELD_x_THIS` optimization. Starting with JC 3.0.5, Oracle
-applies both optimizations.
-
-Our converter matches this behavior per version:
-- **JC 2.1.2–3.0.4**: Only `GETFIELD_x_THIS` optimization (no `PUTFIELD_x_THIS`)
-- **JC 3.0.5+**: Both `GETFIELD_x_THIS` and `PUTFIELD_x_THIS` optimizations
-
-### Import.cap Version-Specific Behavior
-
-- **JC 2.1.2, 2.2.1**: Import.cap contains 1 package (javacard.framework only,
-  14 bytes) — matching Oracle's reference output.
-- **JC 2.2.2+**: Import.cap contains 2 packages (javacard.framework + java.lang,
-  24 bytes) — matching Oracle's reference output.
-
-## Oracle JCVM Runtime Validation
-
-Our generated CAP files have been validated on Oracle's reference JCVM implementation
-using two independent Oracle tools.
-
-### Oracle `verifycap` — Structural Verification
-
-The `verifycap` tool from Oracle JavaCard SDK 3.0.5u3 performs static analysis of CAP
-file structure, verifying internal consistency, reference integrity, and spec compliance.
-
-| Applet | Errors | Warnings | Result |
-|--------|--------|----------|--------|
-| TestApplet | 0 | 0 | PASS |
-| MultiClassApplet | 0 | 0 | PASS |
-| InterfaceApplet | 0 | 0 | PASS |
-| ExceptionApplet | 0 | 0 | PASS |
-| InheritanceApplet | 0 | 0 | PASS |
-| VisibilityApplet | 0 | 0 | PASS |
-| CryptoApplet | 1 | 0 | FAIL (CP ordering — type mismatch in virtual method ref) |
-
-### Oracle `cref` — Runtime Execution on JCVM Emulator
-
-The `cref` (C-language Java Card Reference Implementation) from Oracle JavaCard SDK 2.2.2
-is Oracle's official card emulator. CAP files are loaded via the proprietary installer
-protocol (component-by-component download over TLP-224), then instantiated and selected.
-
-| Applet | Load (10 components) | CREATE | SELECT | APDU Test | Result |
-|--------|---------------------|--------|--------|-----------|--------|
-| TestApplet | All `9000` | `9000` | `9000` | PUT `DEADBEEF` → `9000` | PASS |
-| MultiClassApplet | All `9000` | `9000` | `9000` | — | PASS |
-| InterfaceApplet | All `9000` | `9000` | `9000` | — | PASS |
-| ExceptionApplet | All `9000` | `9000` | `9000` | — | PASS |
-| InheritanceApplet | All `9000` | `9000` | `9000` | — | PASS |
-
-**Setup**: cref runs in a Docker container (`i386/debian:bullseye-slim` + 32-bit ELF binary).
-Oracle `scriptgen` converts our CAP to APDU install scripts, `apdutool` sends them to cref
-via TCP on port 9025.
-
-### Validation Summary
-
-Three independent levels of validation confirm our CAP files are correct:
-
-1. **Static verification** (`verifycap`) — structural integrity of all 10 components (6/7 applets pass; CryptoApplet fails due to CP ordering)
-2. **JCVM loading** (`cref` installer) — component download, linking, and class resolution
-3. **Runtime execution** (`cref` APDU) — bytecode execution, object creation, method dispatch
-
-## Oracle Compatibility Mode: Implementation Details
-
-Achieving byte-identical output for multi-class packages (e.g., MultiClassApplet) required
-replicating three Oracle-specific behaviors beyond the dispatch table bug:
-
-### Depth-First Constructor Chaining
-
-Oracle processes constructors depth-first: when translating class A's `<init>` and
-encountering `invokespecial B.<init>`, Oracle immediately translates B's constructor
-before continuing with A's remaining bytecodes. This affects CP entry creation order.
-
-Our implementation uses a callback mechanism on `ReferenceResolver`: when an internal
-static method ref for `<init>` is created, the callback triggers immediate translation
-of the target class's constructor.
-
-### Instance Field Reference Ordering by Class Token
-
-Oracle orders instance field CP entries by the declaring class's token value, not by
-CP creation order. Our `reorderInstanceFieldsFirst()` accepts a `fieldClassTokens` map
-and sorts internal field refs by class token (external refs preserve original order).
-
-### Descriptor Type Table Registration Order
-
-Oracle registers type descriptors in a specific order: CP entry types first, then method
-parameter/return types, then field types. Our `buildTypeTable()` follows this same
-registration order to produce identical type_offset values.
-
-## Test Strategy
-
-The test suite enforces:
-
-1. **Default mode** (`OracleReferenceComparisonTest`): 9/10 components byte-identical for
-   all 5 applets across all 8 JC versions. Class.cap is size-match only due to Oracle's
-   dispatch table off-by-one bug.
-2. **Oracle compatibility mode** (`OracleCompatModeTest`): 10/10 components byte-identical
-   for all 5 applets. Also verifies all 8 JC versions for TestApplet.
-3. **Per-version comparison** (`PerVersionOracleComparisonTest`): 9/10 byte-identical for
-   TestApplet across all 8 JC versions (Class.cap size-match).
-
-Any difference beyond the documented Class.cap dispatch table bug will cause test failure.
-
-## Verification
-
-### Running Tests
-
-```bash
-# All converter tests (reference comparison tests are skipped if refs are absent)
-./mvnw test -pl converter
-
-# Primary comparison (JC 3.0.5) — requires Oracle reference files
-./mvnw test -pl converter -Dtest=OracleReferenceComparisonTest
-
-# Oracle compatibility mode (strict byte-identical)
-./mvnw test -pl converter -Dtest=OracleCompatModeTest
-
-# All 8 versions
-./mvnw test -pl converter -Dtest=PerVersionOracleComparisonTest
-```
-
-### Generating Oracle Reference Files
-
-Reference CAP files must be generated locally using the Oracle JavaCard SDK (OTN license).
-They are not distributed with the project.
-
-```bash
-# 1. Clone Oracle SDKs (maintained by community, use at your own discretion)
-git clone https://github.com/martinpaljak/oracle_javacard_sdks.git build/oracle-sdks
-
-# 2. Generate reference CAP files for all test applets and JC versions
-./build/generate-oracle-refs.sh
-
-# Generated files appear in converter/src/test/resources/reference/
-```
-
-### Oracle cref Runtime Validation (requires Docker)
-
-```bash
-# Build cref Docker image (one-time setup, uses JC 2.2.2 SDK cref binary)
-docker build --platform linux/386 -t jcref:2.2.2 /path/to/cref-docker/
-
-# Verify CAP files with Oracle verifycap (no Docker required)
-java -cp "$JC305_SDK/lib/*" com.sun.javacard.offcardverifier.Verifier \
-  "$JC305_SDK/api_export_files/java/lang/javacard/lang.exp" \
-  "$JC305_SDK/api_export_files/javacard/framework/javacard/framework.exp" \
-  /path/to/your.cap
-```
+# Converter verification and compatibility
+
+This page says how the CAP and export files written by the converter are checked, what was measured, and where
+the output differs from Oracle's converter. Provenance and the use of Oracle tools are described in
+[PROVENANCE.md](../PROVENANCE.md).
+
+**Short version.** The converter writes the CAP format (2.1 for Java Card 2.1.2 to 3.0.5, compact 2.3 for 3.1
+and 3.2) and export files (2.1, or 2.3 for 3.1/3.2) as the JCVM specification defines them. In the audit of
+October 2026 every expected-valid package of a 151-entry corpus, including seven real open-source applets,
+passed Oracle's off-card verifier, and all 47 packages run on Oracle's `cref` emulator behaved like the Oracle
+converter's CAP files. Byte identity with Oracle's converter is not a goal: where the specification leaves an
+order open the two converters may differ, and both results are valid.
+
+## Correction: there is no "Oracle dispatch table off-by-one bug"
+
+Versions up to 0.3.0 documented an "off-by-one bug" in Oracle's Class component and offered
+`oracleCompatibility(true)` to reproduce it. That was a misreading of the specification. JCVM 3.1 §6.9 orders
+`class_info` as `public_method_table_base`, `public_method_table_count`, `package_method_table_base`,
+`package_method_table_count`, then `public_virtual_method_table[]` and `package_virtual_method_table[]`. Oracle's
+converter follows that order. The old **default** output placed the package table base and count after the
+public table, so Oracle's verifier rejected every default-mode CAP (`Invalid method offset 0`) and cards could
+dispatch virtual methods wrongly.
+
+Since the 2026 fixes the converter always writes the §6.9 layout. `Converter.Builder.oracleCompatibility(boolean)`
+and the plugin parameter `oracleCompatibility` are deprecated and have no effect. **CAP files built with 0.3.0 or
+earlier in the default mode should be rebuilt.** The other defects fixed at the same time are listed in the
+[changelog](../CHANGELOG.md).
+
+## How the output is checked
+
+| Level | Runs | What it checks |
+|-------|------|----------------|
+| Spec-derived checks | every build, no SDK | `CapInvariantsTest` parses each CAP with an independent reader written from JCVM 3.1 Chapter 6 and checks structural invariants (`class_info` layout and tokens, public and package method tables, interface tables, constant pool entries and what they point to, static field image segments, exception handler indexes, the Export component and the header flags) for every test package in CAP 2.1 and 2.3. Component tests cite the spec sections they assert (`ClassComponentTest`, `DescriptorSpecTest`, `TokenAssignerSpecTest`, `StaticInitializationTest`, `ExportComponentSpecTest`, ...). `GeneratedExportFilesTest` checks generated export files against a checker of JCVM Chapter 5 that is calibrated on all API export files of eight SDKs. |
+| Oracle verifier | when `build/oracle-sdks/jc305u3_kit` exists | `OracleVerifycapTest`: all 23 converter test packages, converted in the default mode, verify with 0 errors and 0 warnings. The Maven plugin's integration tests run the verifier on every CAP they build (they report by default; `-Djcx.it.verifycap=strict` fails on an error). |
+| Oracle converter output | when reference CAPs were generated | `OracleByteIdentityTest`, `PerVersionOracleComparisonTest`, `OracleReferenceComparisonTest` compare the components of the test applets with Oracle's output (see below). |
+| Acceptance corpus | audit, external harness | 151 entries; see [Acceptance results](#acceptance-results-october-2026). |
+| Real card | lead engineer only | see [Real cards](#real-cards). |
+
+How to install the kits and generate the reference files: [tools/oracle/README.md](../tools/oracle/README.md).
+
+## Byte identity with Oracle's converter (test applets)
+
+With the reference files generated, these tests pass with every component byte-identical:
+
+| Package | Targets | Components compared byte for byte |
+|---------|---------|-----------------------------------|
+| `TestApplet` | 2.1.2, 2.2.1, 2.2.2, 3.0.3, 3.0.4, 3.0.5, 3.1.0, 3.2.0 | all |
+| `MultiClassApplet`, `InterfaceApplet`, `ExceptionApplet`, `InheritanceApplet` | 3.0.5 | all |
+| `CryptoApplet` | 3.0.5 | all except Constant Pool, Method and Descriptor, which hold the same constant pool entries in another order (§6.8: "There are no ordering constraints on constant pool entries") and are compared by size and content |
+
+Version-specific details that match Oracle's output:
+
+- `getfield_<t>_this` is used for every target; `putfield_<t>_this` from 3.0.5 on.
+- The Import component lists only the packages a CAP file references; from 2.2.2 on `java.lang` is imported
+  even when nothing references it, as Oracle's converter does. Package versions come from the target's API (for example
+  `javacard.framework` 1.3 for 2.2.2, 1.6 for 3.0.5, `javacard.security` 1.7 for 3.1 and 1.8 for 3.2).
+
+## Acceptance results (October 2026)
+
+The audit ran a corpus of 151 packages through the converter with an external harness (not part of this
+repository, because it drives Oracle tools and third-party applets). The corpus holds the converter's test
+packages, one or more cases for every audit finding, AID validation cases, a version matrix and seven open-source
+applets: IsoApplet, PivApplet, SmartPGP, status-keycard, ykneo-oath, ykneo-openpgp and GidsApplet. Applets were
+compiled with `javac --release 8` against the target SDK's API jar (variant A) and against this project's stubs
+(variant B). Results at the integrated converter (the state documented here):
+
+| Check | Result | Original 0.3.0 converter |
+|-------|--------|--------------------------|
+| Expected-valid packages, CAP passes the target SDK's verifier (A) | 108/108 | 0/108 |
+| Same, compiled against the project's API stubs (B) | 102/102 (the other 6 target 3.1/3.2 APIs, which the stubs do not cover) | 0/102 |
+| CAP(A) identical to CAP(B) | 103/103 | |
+| Invalid packages rejected with a clear `ConverterException` | 41/41 (none accepted silently, no crashes) | 6/41 |
+| Deterministic output (two conversions give identical JAR bytes) | 109/109 | |
+| `javac --release 11/17/21/25` variants (nestmates and similar) | 10/10 | 0/10 |
+| Oracle `cref` 2.2.2: load, install, select, scripted APDUs | 47/47, same as the Oracle converter's CAPs (47/47) | 0/47 |
+
+An independent review then ran a second corpus of 109 packages through the same harness: deep hierarchies,
+statics of every type, sparse switches, nested `try`/`finally`, 255 locals, long methods, `int` semantics with
+and without int support, libraries and clients, interfaces, multiselection and RMI, for targets 2.1.2 to 3.2.0.
+All 89 expected-valid packages pass the verifier, all 14 invalid ones are rejected cleanly, and 21 of 26 `cref`
+scripts pass; the other 5 fail in the same way with the Oracle converter's CAP files (limits of `cref` 2.2.2),
+or both converters reject the package. Eleven of those packages processed by ProGuard 7.6.1 with
+`-dontpreverify` (class files without `StackMapTable`) also verify and pass their `cref` scripts.
+
+Class files whose `finally` blocks are `jsr`/`ret` subroutines were checked the same way, compiled with ECJ 4.4.2
+`-source 1.3 -target 1.2` and `-source 1.4 -target 1.4`: two `try`/`finally` probe applets (nested `finally`,
+`finally` in `finally`, `return`, `break` and `continue` in and through `finally`, exceptions passing several
+`finally` levels, `try`/`catch` and `switch` in `finally`; 89 and 45 scripted APDUs) pass Oracle's verifier and
+answer on `cref` exactly as their `javac` build does on jCardSim, for both targets. So does a third probe applet
+with `try` statements nested in `finally` blocks (a `try`/`catch` around a nested `try`/`finally`, `continue`,
+`break` and `return` from a nested `finally` block; 64 scripted APDUs), whose inner subroutines leave for the code
+of the enclosing ones. ECJ builds of FIDO2Applet, OpenFIPS201 and ykneo-openpgp pass the verifier too. Oracle's
+converter rejects the first two probe applets (`continue`/`break` in a `finally` block inside a loop: "recursive
+subroutine call"). In a differential check of 3206 class files of random programs with nested
+`try`/`catch`/`finally` blocks, loops and switches, compiled by ECJ for `-target` 1.1, 1.2 and 1.4 and run on the
+JVM before and after inlining for 256 arguments each, every result and exception was the same. Of the class files
+whose inlined code is new or changed with the nested-`finally` support, the 328 that fit a Java Card method convert
+and pass Oracle's verifier; the others exceed the Method component's limits and are rejected with the reason.
+
+### Differences from Oracle's converter (same class files)
+
+On the 109 entries both converters accept, all components are byte-identical for 46 entries. Per component:
+Header 109/109, Directory 89, Import 96, Applet 98/107, Class 86, Method 50, Static Field 108, Constant Pool 48,
+Reference Location 86, Descriptor 46, Export 5/6.
+
+A semantic comparison that normalizes the orders the specification leaves open explains every remaining
+difference; no content difference was found:
+
+| Cause | Entries | Specification |
+|-------|---------|---------------|
+| Constant pool order (and therefore Method operands and Descriptor type tables) | 50 | §6.8: no ordering constraints |
+| Order of imported packages | 13 | §4.3.7.1: package token order not specified |
+| Order of methods in the Method component (Oracle puts abstract methods last), which moves install offsets, Class method tables and Reference Location | 12 | §6.10: no order |
+| Token order of classes, virtual methods, static members, instance fields, interface methods | 6 | §4.3.7.2 to §4.3.7.7: not specified |
+| Oracle keeps duplicate constant pool entries; we merge them | 6 | §6.8 |
+| Order of values inside a static field image segment | 1 | §6.11 fixes only the segments |
+| Method bodies: we keep an `s2b` before byte stores that Oracle drops when the value is already a byte (a no-op, 1 byte each); Oracle sometimes uses a wide branch where a 1-byte offset fits | 16 (42 of 823 methods) | both encodings are valid |
+
+Oracle orders virtual method tokens with final methods first and abstract methods last, which keeps subclass
+dispatch tables shorter. We assign tokens in declaration order. Both are valid; changing the order would
+change the export-file tokens of existing libraries.
+
+Where it costs nothing, the converter follows Oracle's observed choices for open orders (constructors
+translated depth-first, instance field references grouped by class, type descriptors registered constant pool
+first) so that test applets stay byte-comparable.
+
+## Real cards
+
+The lead engineer ran converted applets on an NXP JCOP4 card (Java Card 3.0.4, GlobalPlatform 2.1.1 card
+management, SCP03) during the audit, with converter snapshots from the fix branches: a HelloApplet (static array
+initializer, persistent counter, transient array) answered identically to jCardSim, install parameters and
+multiple instances worked, and the crypto test applet produced the known-answer results for AES, SHA, 3DES,
+ECDSA P-256 and RSA-2048 (HMAC is not supported by that card). The live-card suite later ran the converter
+features on that card; see [LIVE_CARD_TESTING.md](../LIVE_CARD_TESTING.md#verified-results). Agents and CI never
+access real cards.
+
+## Limitations
+
+- Output formats: CAP 2.1 and compact CAP 2.3. The extended CAP format, static resources and the Debug
+  component are not generated.
+- Java Card RMI is not supported: a package that defines a remote interface or class (§2.2.6) is rejected,
+  because its CAP file would need the remote information of CAP format 2.2 (§6.9.2.1 ACC_REMOTE, §6.9.2.6).
+- API: built-in linking data covers the standard packages of 2.1.2 to 3.2.0 with per-version checks. The
+  compile-only stubs (`javacard-express-api`) cover the 3.0.5 Classic API; compile 3.1/3.2-only APIs against
+  another API jar.
+- Compile-time constants introduced after the target version cannot be detected (javac inlines them).
+- Optimizations Oracle performs that we do not: dropping redundant `s2b`, Oracle's virtual token order.

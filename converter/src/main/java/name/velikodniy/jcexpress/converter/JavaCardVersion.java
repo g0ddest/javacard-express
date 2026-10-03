@@ -5,7 +5,7 @@ package name.velikodniy.jcexpress.converter;
  *
  * <p>Each enum constant maps a JavaCard platform version to the binary CAP format version
  * written into the {@code major_version} and {@code minor_version} fields of the
- * Header component (JCVM spec Section 6.3). The CAP format version determines which
+ * Header component (JCVM 3.1 §6.4). The CAP format version determines which
  * components and bytecodes are valid in the generated file and which API version numbers
  * are used for built-in import references (e.g., {@code javacard.framework}).
  *
@@ -44,8 +44,10 @@ package name.velikodniy.jcexpress.converter;
  * <p>The version affects:
  * <ul>
  *   <li>The {@code major_version} / {@code minor_version} fields in the CAP Header component</li>
- *   <li>The API package version numbers used for built-in import references
- *       (e.g., {@code javacard.framework} 1.3 for JC 3.0.5 vs. 1.6 for JC 3.1.0)</li>
+ *   <li>The built-in API: which packages, classes and members exist, and the package
+ *       versions recorded in the Import component (e.g., {@code javacard.framework} 1.3 for
+ *       JC 2.2.2, 1.6 for JC 3.0.5, 1.8 for JC 3.1.0), see
+ *       {@link name.velikodniy.jcexpress.converter.resolve.BuiltinExports BuiltinExports}</li>
  * </ul>
  *
  * @see Converter.Builder#javaCardVersion(JavaCardVersion)
@@ -55,7 +57,7 @@ public enum JavaCardVersion {
     /**
      * JavaCard 2.1.2 -- CAP format version 2.1.
      *
-     * <p>The oldest supported version. API package versions: framework 1.1,
+     * <p>The oldest supported version. API package versions: framework 1.0,
      * security 1.1, crypto 1.1, java.lang 1.0.
      */
     V2_1_2(2, 1),
@@ -111,7 +113,7 @@ public enum JavaCardVersion {
      *
      * <p>Introduces format 2.3 with extended API packages and updated
      * version numbers for built-in imports. Verified against Oracle SDK 3.1.0 output.
-     * API package versions: framework 1.8, security 1.8, crypto 1.6, java.lang 1.0.
+     * API package versions: framework 1.8, security 1.7, crypto 1.7, java.lang 1.0.
      */
     V3_1_0(2, 3),
 
@@ -120,7 +122,7 @@ public enum JavaCardVersion {
      *
      * <p>The latest supported specification version. Uses the same CAP format as JC 3.1.0
      * but with updated API version numbers for built-in import references.
-     * API package versions: framework 1.9, security 1.8, crypto 1.6, java.lang 1.0.
+     * API package versions: framework 1.9, security 1.8, crypto 1.8, java.lang 1.0.
      */
     V3_2_0(2, 3);
 
@@ -132,16 +134,18 @@ public enum JavaCardVersion {
     JavaCardVersion(int formatMajor, int formatMinor) {
         this.formatMajor = formatMajor;
         this.formatMinor = formatMinor;
-        // All Oracle SDKs (JC 2.1.2–3.2.0) produce export format 2.1
+        // Export file format (JCVM 3.1 §5.5): 2.1 up to Java Card 3.0.5, whose tools read only
+        // formats up to 2.2; 2.3 (referenced_packages, CAP22_inheritable_public_method_token_count)
+        // for Java Card 3.1 and later, like the API export files of those releases.
         this.exportFormatMajor = 2;
-        this.exportFormatMinor = 1;
+        this.exportFormatMinor = formatMinor >= 3 ? 3 : 1;
     }
 
     /**
      * Returns the CAP format major version number for this JavaCard version.
      *
      * <p>Written into the {@code major_version} field of the Header component
-     * (JCVM spec Section 6.3).
+     * (JCVM 3.1 §6.4).
      *
      * @return the major version (currently always {@code 2} for all supported versions)
      */
@@ -153,19 +157,28 @@ public enum JavaCardVersion {
      * Returns the CAP format minor version number for this JavaCard version.
      *
      * <p>Written into the {@code minor_version} field of the Header component
-     * (JCVM spec Section 6.3).
+     * (JCVM 3.1 §6.4).
      *
-     * @return the minor version ({@code 1} for JC 2.1.2-3.0.3/3.0.5, {@code 2} for JC 3.0.4, {@code 3} for JC 3.1.0/3.2.0)
+     * @return the minor version ({@code 1} for JC 2.1.2 to 3.0.5, {@code 3} for JC 3.1.0 and 3.2.0)
      */
     public int formatMinor() {
         return formatMinor;
     }
 
     /**
-     * Returns the export file format major version for this JavaCard version.
+     * Returns the Java Card specification version in dotted form, e.g. {@code "3.0.5"}.
+     *
+     * @return the version number of the platform specification
+     */
+    public String specVersion() {
+        return name().substring(1).replace('_', '.');
+    }
+
+    /**
+     * Returns the export file format major version written for this JavaCard version.
      *
      * <p>Written into the {@code major_version} field of the export file header
-     * (JCVM spec Section 4.4). All supported versions use export format 2.1.
+     * (JCVM 3.1 §5.5): always 2.
      *
      * @return the export format major version
      */
@@ -174,7 +187,8 @@ public enum JavaCardVersion {
     }
 
     /**
-     * Returns the export file format minor version for this JavaCard version.
+     * Returns the export file format minor version for this JavaCard version: 1 up to Java Card
+     * 3.0.5, 3 for Java Card 3.1 and later (JCVM 3.1 §5.5).
      *
      * @return the export format minor version
      */

@@ -1,313 +1,254 @@
 package name.velikodniy.jcexpress;
 
-import javacard.framework.Applet;
+import name.velikodniy.jcexpress.fakes.RecordingSession;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
-import java.util.ArrayList;
-import java.util.List;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link LogicalChannel}.
+ * Tests for {@link LogicalChannel}: CLA coding per ISO/IEC 7816-4:2005 5.1.1 (Tables 2 and 3) and
+ * GlobalPlatform Card Specification 2.3.1 11.1.4, MANAGE CHANNEL per ISO/IEC 7816-4:2005 7.1.2.
+ * {@link RecordingSession} records the bytes the shipped backends would transmit.
  */
 class LogicalChannelTest {
-
-    // ── CLA encoding ──
 
     @Nested
     class ClaEncoding {
 
         @Test
-        void channel0ShouldNotModifyCla() {
-            assertThat(LogicalChannel.encodeCla(0x00, 0)).isEqualTo(0x00);
-            assertThat(LogicalChannel.encodeCla(0x80, 0)).isEqualTo(0x80);
-            assertThat(LogicalChannel.encodeCla(0xFF, 0)).isEqualTo(0xFF);
-        }
-
-        @Test
-        void basicChannel1() {
+        void basicChannelsUseBitsTwoAndOne() {
             assertThat(LogicalChannel.encodeCla(0x00, 1)).isEqualTo(0x01);
-        }
-
-        @Test
-        void basicChannel2() {
-            assertThat(LogicalChannel.encodeCla(0x00, 2)).isEqualTo(0x02);
-        }
-
-        @Test
-        void basicChannel3() {
             assertThat(LogicalChannel.encodeCla(0x00, 3)).isEqualTo(0x03);
-        }
-
-        @Test
-        void shouldPreserveHighBits() {
-            // GP CLA 0x80 + channel 2 = 0x82
             assertThat(LogicalChannel.encodeCla(0x80, 2)).isEqualTo(0x82);
-            // CLA 0xC0 + channel 1 = 0xC1
-            assertThat(LogicalChannel.encodeCla(0xC0, 1)).isEqualTo(0xC1);
-        }
-
-        @Test
-        void shouldPreserveSecureMessagingBit() {
-            // Secure messaging bit (0x04) + channel 1 = 0x05
-            assertThat(LogicalChannel.encodeCla(0x04, 1)).isEqualTo(0x05);
-            // GP secure (0x84) + channel 3 = 0x87
             assertThat(LogicalChannel.encodeCla(0x84, 3)).isEqualTo(0x87);
         }
 
+        /** ISO/IEC 7816-4:2005 Table 3: b4-b1 code the channel number minus four. */
         @Test
-        void shouldOverwriteExistingChannelBits() {
-            // CLA 0x03 (channel 3) → recode to channel 1 = 0x01
-            assertThat(LogicalChannel.encodeCla(0x03, 1)).isEqualTo(0x01);
+        void channelsFourToNineteenUseTheFurtherInterindustryCoding() {
+            assertThat(LogicalChannel.encodeCla(0x00, 4)).isEqualTo(0x40);
+            assertThat(LogicalChannel.encodeCla(0x00, 19)).isEqualTo(0x4F);
+            assertThat(LogicalChannel.encodeCla(0x80, 4)).isEqualTo(0xC0);
+        }
+
+        /** Channel 0 means "clear the channel bits", the javadoc promises they are overwritten. */
+        @Test
+        void channelZeroClearsExistingChannelBits() {
+            assertThat(LogicalChannel.encodeCla(0x03, 0)).isEqualTo(0x00);
+            assertThat(LogicalChannel.encodeCla(0x41, 0)).isEqualTo(0x00);
+        }
+
+        /** 'C0' is the GlobalPlatform class on channel 4 (Table 11-12); on channel 1 it is '81' (Table 11-11). */
+        @Test
+        void globalPlatformFurtherClassMovesToTheFirstCoding() {
+            assertThat(LogicalChannel.encodeCla(0xC0, 1)).isEqualTo(0x81);
+        }
+
+        @Test
+        void secureMessagingIndicationIsKept() {
+            assertThat(LogicalChannel.encodeCla(0x04, 1)).isEqualTo(0x05);
+            assertThat(LogicalChannel.encodeCla(0x0C, 5)).isEqualTo(0x61);
+        }
+
+        @Test
+        void classBytesWithoutChannelCodingAreKeptOnChannelZero() {
+            assertThat(LogicalChannel.encodeCla(0xFF, 0)).isEqualTo(0xFF);
         }
     }
-
-    // ── Stub session for testing ──
-
-    /**
-     * Minimal stub that records transmitted APDUs and returns configurable responses.
-     */
-    static class StubSession implements SmartCardSession {
-        private final List<byte[]> transmitted = new ArrayList<>();
-        private final List<APDUResponse> responses = new ArrayList<>();
-        private int responseIdx = 0;
-
-        void queueResponse(byte[] data, int sw) {
-            responses.add(new APDUResponse(data, sw));
-        }
-
-        void queueResponse(int sw) {
-            responses.add(new APDUResponse(new byte[0], sw));
-        }
-
-        List<byte[]> transmitted() {
-            return transmitted;
-        }
-
-        byte[] lastTransmitted() {
-            return transmitted.get(transmitted.size() - 1);
-        }
-
-        @Override
-        public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data, int le) {
-            byte[] apdu = new byte[]{(byte) cla, (byte) ins, (byte) p1, (byte) p2};
-            transmitted.add(apdu);
-            if (responseIdx < responses.size()) {
-                return responses.get(responseIdx++);
-            }
-            return new APDUResponse(new byte[0], 0x9000);
-        }
-
-        @Override
-        public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data) {
-            return send(cla, ins, p1, p2, data, -1);
-        }
-
-        @Override
-        public APDUResponse send(int cla, int ins, int p1, int p2) {
-            return send(cla, ins, p1, p2, null, -1);
-        }
-
-        @Override
-        public APDUResponse send(int cla, int ins) {
-            return send(cla, ins, 0, 0, null, -1);
-        }
-
-        @Override
-        public byte[] transmit(byte[] rawApdu) {
-            transmitted.add(rawApdu.clone());
-            if (responseIdx < responses.size()) {
-                APDUResponse r = responses.get(responseIdx++);
-                byte[] result = new byte[r.data().length + 2];
-                System.arraycopy(r.data(), 0, result, 0, r.data().length);
-                result[result.length - 2] = (byte) (r.sw() >> 8);
-                result[result.length - 1] = (byte) (r.sw());
-                return result;
-            }
-            return new byte[]{(byte) 0x90, 0x00};
-        }
-
-        @Override public void install(Class<? extends Applet> c) {}
-        @Override public void install(Class<? extends Applet> c, AID a) {}
-        @Override public void install(Class<? extends Applet> c, AID a, byte[] p) {}
-        @Override public void select(Class<? extends Applet> c) {}
-        @Override public void select(AID a) {}
-        @Override public void reset() {}
-        @Override public void close() {}
-    }
-
-    // ── Basic channel ──
 
     @Nested
     class BasicChannel {
 
         @Test
-        void shouldEncodeClaDuringSend() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 2);
+        void sendEncodesTheChannelAndKeepsDataAndLe() {
+            RecordingSession card = new RecordingSession();
+            LogicalChannel ch = LogicalChannel.basic(card, 2);
 
             ch.send(0x00, 0xA4, 0x04, 0x00);
+            ch.send(0x00, 0xB0, 0x00, 0x00, null, 256);
+            ch.send(0x80, 0xCA, 0x00, 0x66, new byte[]{0x5C}, 256);
 
-            byte[] apdu = stub.lastTransmitted();
-            assertThat(apdu[0] & 0xFF).isEqualTo(0x02); // CLA with channel 2
-            assertThat(apdu[1] & 0xFF).isEqualTo(0xA4); // INS preserved
+            assertThat(card.wireHex(0)).isEqualTo("02 A4 04 00");
+            assertThat(card.wireHex(1)).isEqualTo("02 B0 00 00 00");
+            assertThat(card.wireHex(2)).isEqualTo("82 CA 00 66 01 5C 00");
         }
 
         @Test
-        void closeShouldBeNoop() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 1);
+        void channelFourUsesClass40() {
+            RecordingSession card = new RecordingSession();
+
+            LogicalChannel.basic(card, 4).send(0x00, 0xB0, 0x00, 0x00);
+
+            assertThat(card.wireHex(0)).isEqualTo("40 B0 00 00");
+        }
+
+        @Test
+        void channelZeroClearsChannelBitsOfTheCommand() {
+            RecordingSession card = new RecordingSession();
+
+            LogicalChannel.basic(card, 0).send(0x03, 0xB0, 0x00, 0x00);
+
+            assertThat(card.wire.get(0)[0]).isZero();
+        }
+
+        @Test
+        void closeSendsNothing() {
+            RecordingSession card = new RecordingSession();
+            LogicalChannel ch = LogicalChannel.basic(card, 1);
 
             ch.close();
 
-            assertThat(stub.transmitted()).isEmpty();
-        }
-
-        @Test
-        void shouldReturnChannelNumber() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 3);
-
-            assertThat(ch.channelNumber()).isEqualTo(3);
+            assertThat(card.wire).isEmpty();
             assertThat(ch.isManaged()).isFalse();
+            assertThat(ch.channelNumber()).isEqualTo(1);
         }
 
         @Test
-        void selectShouldEncodeChannel() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 1);
-            AID aid = AID.fromHex("A0000000031010");
+        void selectAndTransmitEncodeTheChannel() {
+            RecordingSession card = new RecordingSession();
+            LogicalChannel ch = LogicalChannel.basic(card, 1);
 
-            ch.select(aid);
+            ch.select(AID.fromHex("A0000000031010"));
+            ch.transmit(Hex.decode("00CA006600"));
 
-            byte[] apdu = stub.lastTransmitted();
-            assertThat(apdu[0] & 0xFF).isEqualTo(0x01); // CLA with channel 1
-            assertThat(apdu[1] & 0xFF).isEqualTo(0xA4); // SELECT
-        }
-
-        @Test
-        void transmitShouldEncodeChannel() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 2);
-
-            byte[] rawApdu = Hex.decode("00A40400");
-            ch.transmit(rawApdu);
-
-            byte[] sent = stub.lastTransmitted();
-            assertThat(sent[0] & 0xFF).isEqualTo(0x02); // CLA modified
+            assertThat(card.wireHex(0)).isEqualTo("01 A4 04 00 07 A0 00 00 00 03 10 10 00");
+            assertThat(card.wireHex(1)).isEqualTo("01 CA 00 66 00");
         }
     }
-
-    // ── Managed channel (MANAGE CHANNEL) ──
 
     @Nested
     class ManagedChannel {
 
+        /** ISO/IEC 7816-4:2005 7.1.2: with P2 = '00' the Le field shall be set to '01'. */
         @Test
-        void openShouldSendManageChannelOpen() {
-            StubSession stub = new StubSession();
-            // MANAGE CHANNEL OPEN response: data = channel number
-            stub.queueResponse(new byte[]{0x01}, 0x9000);
+        void openSendsManageChannelOpenWithLe01() {
+            RecordingSession card = new RecordingSession().reply("01 9000");
 
-            LogicalChannel ch = LogicalChannel.open(stub);
+            LogicalChannel ch = LogicalChannel.open(card);
 
+            assertThat(card.wireHex(0)).isEqualTo("00 70 00 00 01");
             assertThat(ch.channelNumber()).isEqualTo(1);
             assertThat(ch.isManaged()).isTrue();
-
-            byte[] apdu = stub.lastTransmitted();
-            assertThat(apdu[0] & 0xFF).isEqualTo(0x00); // CLA
-            assertThat(apdu[1] & 0xFF).isEqualTo(0x70); // INS = MANAGE CHANNEL
-            assertThat(apdu[2] & 0xFF).isEqualTo(0x00); // P1 = OPEN
-            assertThat(apdu[3] & 0xFF).isEqualTo(0x00); // P2 = card assigns
         }
 
+        /** The card may assign any channel from '01' to '13' (7.1.2); channel 4 must not alias channel 0. */
         @Test
-        void openSpecificChannelShouldSendP2() {
-            StubSession stub = new StubSession();
-            stub.queueResponse(0x9000);
+        void cardAssignedChannelFourIsUsedAsChannelFour() {
+            RecordingSession card = new RecordingSession().reply("04 9000");
 
-            LogicalChannel ch = LogicalChannel.open(stub, 2);
+            LogicalChannel ch = LogicalChannel.open(card);
+            ch.send(0x00, 0xB0, 0x00, 0x00);
 
-            assertThat(ch.channelNumber()).isEqualTo(2);
-            byte[] apdu = stub.lastTransmitted();
-            assertThat(apdu[3] & 0xFF).isEqualTo(0x02); // P2 = requested channel
+            assertThat(ch.channelNumber()).isEqualTo(4);
+            assertThat(card.wireHex(1)).isEqualTo("40 B0 00 00");
         }
 
-        @Test
-        void closeShouldSendManageChannelClose() {
-            StubSession stub = new StubSession();
-            stub.queueResponse(new byte[]{0x03}, 0x9000); // open → ch3
-            stub.queueResponse(0x9000); // close response
+        @ParameterizedTest(name = "response {0}")
+        @ValueSource(strings = {"9000", "00 9000", "14 9000", "01 02 9000"})
+        void openRejectsResponsesWithoutAValidChannelNumber(String response) {
+            RecordingSession card = new RecordingSession().reply(response);
 
-            LogicalChannel ch = LogicalChannel.open(stub);
-            assertThat(ch.channelNumber()).isEqualTo(3);
-
-            ch.close();
-
-            assertThat(stub.transmitted()).hasSize(2);
-            byte[] closeApdu = stub.transmitted().get(1);
-            assertThat(closeApdu[0] & 0xFF).isEqualTo(0x03); // CLA with channel 3
-            assertThat(closeApdu[1] & 0xFF).isEqualTo(0x70); // INS = MANAGE CHANNEL
-            assertThat(closeApdu[2] & 0xFF).isEqualTo(0x80); // P1 = CLOSE
-            assertThat(closeApdu[3] & 0xFF).isEqualTo(0x03); // P2 = channel number
-        }
-
-        @Test
-        void openShouldThrowOnFailure() {
-            StubSession stub = new StubSession();
-            stub.queueResponse(0x6985); // conditions not satisfied
-
-            assertThatThrownBy(() -> LogicalChannel.open(stub))
+            assertThatThrownBy(() -> LogicalChannel.open(card))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("MANAGE CHANNEL");
         }
 
         @Test
-        void openChannel0ShouldThrow() {
-            StubSession stub = new StubSession();
+        void openReportsTheStatusWordOfAFailure() {
+            RecordingSession card = new RecordingSession().reply("6881");
 
-            assertThatThrownBy(() -> LogicalChannel.open(stub, 0))
+            assertThatThrownBy(() -> LogicalChannel.open(card))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("6881");
+        }
+
+        /** ISO/IEC 7816-4:2005 7.1.2: P2 '01' to '13' opens that channel, the Le field shall be absent. */
+        @Test
+        void openGivenChannelSendsP2WithoutLe() {
+            RecordingSession card = new RecordingSession();
+
+            LogicalChannel ch = LogicalChannel.open(card, 7);
+
+            assertThat(card.wireHex(0)).isEqualTo("00 70 00 07");
+            assertThat(ch.channelNumber()).isEqualTo(7);
+        }
+
+        @Test
+        void openGivenChannelRejectsInvalidNumbers() {
+            RecordingSession card = new RecordingSession();
+
+            assertThatThrownBy(() -> LogicalChannel.open(card, 0))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("channel 0");
+            assertThatThrownBy(() -> LogicalChannel.open(card, 20))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(card.wire).isEmpty();
+        }
+
+        @Test
+        void closeSendsManageChannelCloseOnceOnTheChannel() {
+            RecordingSession card = new RecordingSession().reply("05 9000");
+            LogicalChannel ch = LogicalChannel.open(card);
+
+            ch.close();
+            ch.close();
+
+            assertThat(card.wire).hasSize(2);
+            assertThat(card.wireHex(1)).isEqualTo("41 70 80 05");
+        }
+
+        @Test
+        void closeReportsAFailure() {
+            RecordingSession card = new RecordingSession().reply("03 9000").reply("6881");
+            LogicalChannel ch = LogicalChannel.open(card);
+
+            assertThatThrownBy(ch::close)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("6881");
+        }
+
+        @Test
+        void aClosedChannelCannotBeUsed() {
+            RecordingSession card = new RecordingSession().reply("02 9000");
+            LogicalChannel ch = LogicalChannel.open(card);
+            ch.close();
+
+            assertThatThrownBy(() -> ch.send(0x00, 0xB0)).isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> ch.transmit(Hex.decode("00B00000"))).isInstanceOf(IllegalStateException.class);
+            assertThat(card.wire).hasSize(2);
         }
     }
-
-    // ── Validation ──
 
     @Nested
     class Validation {
 
         @Test
-        void shouldRejectChannelAbove3() {
-            StubSession stub = new StubSession();
+        void channelNumbersAboveNineteenAreRejected() {
+            RecordingSession card = new RecordingSession();
 
-            assertThatThrownBy(() -> LogicalChannel.basic(stub, 4))
+            assertThatThrownBy(() -> LogicalChannel.basic(card, 20))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("0-3");
-        }
-
-        @Test
-        void shouldRejectNegativeChannel() {
-            StubSession stub = new StubSession();
-
-            assertThatThrownBy(() -> LogicalChannel.basic(stub, -1))
+                    .hasMessageContaining("0-19");
+            assertThatThrownBy(() -> LogicalChannel.basic(card, -1))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
-        void shouldRejectNullSession() {
+        void nullSessionIsRejected() {
             assertThatThrownBy(() -> LogicalChannel.basic(null, 0))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("null");
+            assertThatThrownBy(() -> LogicalChannel.open(null))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
-        void transmitShouldRejectShortApdu() {
-            StubSession stub = new StubSession();
-            LogicalChannel ch = LogicalChannel.basic(stub, 1);
+        void transmitRejectsShortApdu() {
+            LogicalChannel ch = LogicalChannel.basic(new RecordingSession(), 1);
 
             assertThatThrownBy(() -> ch.transmit(new byte[]{0x00}))
                     .isInstanceOf(IllegalArgumentException.class)

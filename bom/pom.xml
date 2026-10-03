@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Bill of materials: the version of every JavaCard Express artifact. Import it into <dependencyManagement>
+  (type pom, scope import) to declare the toolkit's artifacts without versions; javacard-express-applet-parent
+  inherits from it. It also manages the version of the Maven plugin, for projects that inherit it.
+
+  The published POM is the flattened one (configuration below): the project information, the managed versions as
+  literals, nothing of the toolkit's own build.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>name.velikodniy</groupId>
+        <artifactId>javacard-express</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <groupId>name.velikodniy</groupId>
+    <artifactId>javacard-express-bom</artifactId>
+    <!-- Explicit, as in the root POM: javacard-express-applet-parent names this POM as its parent with the same
+         ${revision} text, and IDE importers (IntelliJ IDEA) match a parent found through relativePath by these
+         coordinates -->
+    <version>${revision}</version>
+    <packaging>pom</packaging>
+
+    <name>JavaCard Express :: BOM</name>
+    <description>Bill of materials of JavaCard Express: the versions of its artifacts and of its Maven plugin</description>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-api</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-core</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-gp</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-sm</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-pace</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-container</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-converter</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-livecard</artifactId>
+                <version>${revision}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>name.velikodniy</groupId>
+                    <artifactId>javacard-express-maven-plugin</artifactId>
+                    <version>${revision}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <configuration>
+                    <!-- bom: the project information (resolved) and the BOM's own managed versions, interpolated;
+                         nothing inherited from the root POM (its properties, dependency and plugin management) -->
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                    <updatePomFile>true</updatePomFile>
+                    <pomElements>
+                        <parent>remove</parent>
+                        <groupId>expand</groupId>
+                        <url>expand</url>
+                        <scm>expand</scm>
+                        <developers>expand</developers>
+                        <properties>remove</properties>
+                        <build>remove</build>
+                        <pluginManagement>interpolate</pluginManagement>
+                        <dependencyManagement>interpolate</dependencyManagement>
+                    </pomElements>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

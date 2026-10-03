@@ -1,6 +1,9 @@
 package name.velikodniy.jcexpress;
 
-import javacard.framework.*;
+import javacard.framework.APDU;
+import javacard.framework.Applet;
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
 
 /**
  * Test applet that maintains a persistent counter.

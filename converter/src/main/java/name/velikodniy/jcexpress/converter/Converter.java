@@ -14,17 +14,23 @@ import name.velikodniy.jcexpress.converter.cap.RefLocationComponent;
 import name.velikodniy.jcexpress.converter.cap.StaticFieldComponent;
 import name.velikodniy.jcexpress.converter.check.SubsetChecker;
 import name.velikodniy.jcexpress.converter.check.Violation;
+import name.velikodniy.jcexpress.converter.clinit.ClinitInterpreter;
+import name.velikodniy.jcexpress.converter.clinit.StaticValue;
 import name.velikodniy.jcexpress.converter.exp.ExportFileWriter;
+import name.velikodniy.jcexpress.converter.exp.ExportInput;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
 import name.velikodniy.jcexpress.converter.input.PackageInfo;
 import name.velikodniy.jcexpress.converter.input.PackageScanner;
-import name.velikodniy.jcexpress.converter.resolve.BuiltinExports;
+import name.velikodniy.jcexpress.converter.resolve.ClassReferences;
 import name.velikodniy.jcexpress.converter.resolve.CpReference;
+import name.velikodniy.jcexpress.converter.resolve.ExportedTypes;
+import name.velikodniy.jcexpress.converter.resolve.ImportLoader;
 import name.velikodniy.jcexpress.converter.resolve.ImportedPackage;
+import name.velikodniy.jcexpress.converter.resolve.LinkChecker;
 import name.velikodniy.jcexpress.converter.resolve.ReferenceResolver;
-import name.velikodniy.jcexpress.converter.token.ExportFile;
-import name.velikodniy.jcexpress.converter.token.ExportFileReader;
+import name.velikodniy.jcexpress.converter.resolve.StructuralReferences;
 import name.velikodniy.jcexpress.converter.token.TokenAssigner;
+import name.velikodniy.jcexpress.converter.token.TokenAssignmentException;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 import name.velikodniy.jcexpress.converter.translate.BytecodeTranslator;
 import name.velikodniy.jcexpress.converter.translate.JcvmConstantPool;
@@ -34,19 +40,16 @@ import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.MethodModel;
-import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 
@@ -64,8 +67,9 @@ import java.util.Set;
  *
  * <ol>
  *   <li><b>Load</b> -- Scans the classes directory for {@code .class} files belonging to the
- *       target package, reads them via the JDK ClassFile API ({@code java.lang.classfile}),
- *       and loads any import {@code .exp} files (including built-in JavaCard API exports).</li>
+ *       target package, reads them via the JDK ClassFile API ({@code java.lang.classfile}), inlines
+ *       {@code jsr}/{@code ret} subroutines (JCVM 3.1 §2.3.2.2) and loads any import {@code .exp}
+ *       files (including built-in JavaCard API exports).</li>
  *   <li><b>Subset check</b> -- Validates that all classes conform to the JavaCard language subset
  *       (JCVM spec Chapter 2). Disallowed constructs such as {@code long}, {@code float},
  *       {@code double}, multidimensional arrays, and threads are rejected as
@@ -119,26 +123,30 @@ public final class Converter {
     private final Path classesDirectory;
     private final String packageName;
     private final byte[] packageAid;
+    private final boolean packageAidGenerated;
     private final int pkgMajorVersion;
     private final int pkgMinorVersion;
     private final Map<String, byte[]> applets; // className -> AID
     private final List<Path> importExportFiles;
+    private final List<Path> exportPath;
     private final boolean supportInt32;
     private final boolean generateExport;
-    private final boolean oracleCompatibility;
     private final JavaCardVersion javaCardVersion;
 
     private Converter(Builder builder) {
         this.classesDirectory = builder.classesDirectory;
         this.packageName = builder.packageName;
-        this.packageAid = builder.packageAid;
+        // no AID configured: a deterministic one is generated from the package name (warned about)
+        this.packageAidGenerated = builder.packageAid == null;
+        this.packageAid = packageAidGenerated ? Builder.generateAid(builder.packageName) : builder.packageAid.clone();
         this.pkgMajorVersion = builder.pkgMajorVersion;
         this.pkgMinorVersion = builder.pkgMinorVersion;
-        this.applets = Map.copyOf(builder.applets);
+        // registration order is kept: it is the order of the Applet component (deterministic output)
+        this.applets = Collections.unmodifiableMap(new LinkedHashMap<>(builder.applets));
         this.importExportFiles = List.copyOf(builder.importExportFiles);
+        this.exportPath = List.copyOf(builder.exportPath);
         this.supportInt32 = builder.supportInt32;
         this.generateExport = builder.generateExport;
-        this.oracleCompatibility = builder.oracleCompatibility;
         this.javaCardVersion = builder.javaCardVersion;
     }
 
@@ -176,12 +184,14 @@ public final class Converter {
 
     // ── Internal records for passing data between pipeline stages ──
 
-    private record ScanResult(PackageInfo packageInfo, List<ImportedPackage> imports) {}
+    private record ScanResult(PackageInfo packageInfo, List<ImportedPackage> imports,
+                              List<ClassReferences.Reference> references,
+                              List<AppletRules.AppletDefinition> applets, List<String> warnings,
+                              Map<String, byte[]> classFiles) {}
 
     private record TranslationResult(
             List<TranslatedMethod> allMethods,
             List<CpReference> allCpRefs,
-            Map<String, Integer> installMethodIndices,
             Map<String, Integer> methodIndexMap,
             List<ClassInfo> sortedClasses,
             ReferenceResolver resolver,
@@ -195,69 +205,114 @@ public final class Converter {
         // Stage 3: Assign numeric tokens to packages, classes, methods, fields
         TokenMap tokenMap = assignTokens(scan);
 
+        // Stage 3b: Evaluate <clinit> methods into static field initial values (JCVM 3.1 §2.2.4.6)
+        Map<String, StaticValue> staticInit = interpretStaticInitializers(scan);
+
         // Stage 4-5: Resolve references and translate JVM bytecodes to JCVM
         TranslationResult translation = translateBytecodes(scan, tokenMap);
 
         // Stage 6: Assemble all CAP components into a ZIP archive
-        byte[] capFile = assembleCap(translation, tokenMap);
+        byte[] capFile = assembleCap(translation, tokenMap, scan, staticInit);
 
         // Stage 7: Generate binary export file
-        byte[] exportFile = generateExportFile(translation.sortedClasses(), tokenMap);
+        byte[] exportFile = generateExportFile(scan, tokenMap);
 
-        return new ConverterResult(capFile, exportFile, List.of(), capFile.length);
+        return new ConverterResult(capFile, exportFile, scan.warnings(), capFile.length);
     }
 
     /**
-     * Stages 1-2: Scans the classes directory for the target package, loads import
-     * export files, and validates JavaCard language subset compliance.
+     * Stages 1-2: Scans the classes directory for the target package, inlines jsr/ret subroutines (JCVM 3.1
+     * §2.3.2.2), loads import export files, and validates JavaCard language subset compliance.
      */
     @SuppressWarnings("java:S112") // Private method; Exception caught and wrapped by convert()
     private ScanResult scanAndValidate() throws Exception {
-        // Stage 1: Load
-        PackageInfo packageInfo = PackageScanner.scan(classesDirectory, packageName);
+        Map<String, byte[]> classFiles = SubroutineInliner.inline(
+                PackageScanner.classFiles(classesDirectory, packageName));
+        return scanAndValidate(checkSubset(PackageScanner.read(packageName, classFiles.values())), classFiles, true);
+    }
+
+    @SuppressWarnings("java:S112") // Private method; Exception caught and wrapped by convert()
+    private ScanResult scanAndValidate(PackageInfo packageInfo, Map<String, byte[]> classFiles,
+                                       boolean declareAbstractMethods) throws Exception {
+        // Imports: explicit export files, export path, built-in API of the target (JCVM 3.1 §4.3.3);
+        // every external reference must be linkable against them (§4.3.5, §4.5.2)
+        List<ClassReferences.Reference> references = ClassReferences.scan(List.copyOf(classFiles.values()));
+        Set<String> referencedPackages = ClassReferences.packages(references, packageInfo.internalName());
+        List<ImportedPackage> imports = ImportLoader.load(javaCardVersion, importExportFiles, exportPath,
+                referencedPackages);
+        // §6.9.2.5: abstract classes declare the interface methods they leave to subclasses; scan again
+        Map<String, byte[]> completed = declareAbstractMethods
+                ? AbstractMethodDeclarations.complete(packageInfo, classFiles, new ExportedTypes(imports)) : classFiles;
+        if (completed != classFiles) {
+            PackageInfo completedInfo = checkSubset(PackageScanner.read(packageName, completed.values()));
+            return scanAndValidate(completedInfo, completed, false);
+        }
+        LinkChecker.check(references, imports, packageInfo.classes(), javaCardVersion);
+        RemoteTypeRules.check(packageInfo, new PackageHierarchy(packageInfo, imports)); // §2.2.6: no RMI
+
+        // Applets and AIDs (JCVM 3.1 §4.2, §6.6)
+        List<String> warnings = new ArrayList<>(AidRules.check(
+                packageInfo.internalName(), packageAid, applets, imports, referencedPackages));
+        if (packageAidGenerated) warnings.add(AidRules.generatedAidWarning(packageAid));
+        List<AppletRules.AppletDefinition> appletDefinitions = AppletRules.check(applets, packageInfo, imports);
+
+        return new ScanResult(packageInfo, imports, references, appletDefinitions, List.copyOf(warnings),
+                classFiles);
+    }
+
+    /**
+     * Stage 2: Checks the classes of the package against the Java Card language subset (JCVM 3.1
+     * §2.2; the int rules of §2.2.3.1 depend on int support).
+     *
+     * @throws ConverterException if the package has no classes or violates the subset
+     */
+    private PackageInfo checkSubset(PackageInfo packageInfo) throws ConverterException {
         if (packageInfo.classes().isEmpty()) {
             throw new ConverterException("No classes found in package: " + packageName
                     + " (directory: " + classesDirectory + ")");
         }
-
-        List<ImportedPackage> imports = loadImports();
-
-        // Stage 2: Subset check
-        List<Violation> violations = SubsetChecker.check(packageInfo.classes());
+        List<Violation> violations = SubsetChecker.check(packageInfo.classes(), supportInt32);
         if (!violations.isEmpty()) {
             throw new ConverterException("JavaCard subset violations found", violations);
         }
-
-        return new ScanResult(packageInfo, imports);
+        return packageInfo;
     }
 
     /**
-     * Stage 3: Assigns numeric tokens to packages, classes, methods, and fields
-     * using inheritance-aware resolution of superclass virtual methods.
+     * Stage 3: Assigns the tokens of JCVM 3.1 §4.3.7 to the package's classes, methods and fields,
+     * using the export files of the imported packages for inherited virtual method tokens and
+     * superinterfaces.
+     *
+     * @throws ConverterException if the package cannot be represented with tokens (token ranges
+     *                            of Table 4-2, forbidden overrides, interfaces with code)
      */
-    private TokenMap assignTokens(ScanResult scan) {
-        return TokenAssigner.assign(scan.packageInfo(), className -> {
-            String pkg = className.contains("/")
-                    ? className.substring(0, className.lastIndexOf('/'))
-                    : "";
-            for (ImportedPackage imp : scan.imports()) {
-                String impPkg = imp.exportFile().packageName().replace('.', '/');
-                if (impPkg.equals(pkg)) {
-                    String simpleName = className.substring(className.lastIndexOf('/') + 1);
-                    try {
-                        ExportFile.ClassExport cls = imp.exportFile().findClass(simpleName);
-                        return cls.methods().stream()
-                                .filter(m -> (m.accessFlags() & 0x0008) == 0) // not ACC_STATIC
-                                .filter(m -> !INIT_METHOD.equals(m.name()) && !"<clinit>".equals(m.name()))
-                                .map(m -> new TokenMap.MethodEntry(m.name(), m.descriptor(), m.token()))
-                                .toList();
-                    } catch (NoSuchElementException e) {
-                        return List.of();
-                    }
-                }
-            }
-            return List.of();
-        });
+    private TokenMap assignTokens(ScanResult scan) throws ConverterException {
+        try {
+            return TokenAssigner.assign(scan.packageInfo(), new ExportedTypes(scan.imports()));
+        } catch (TokenAssignmentException e) {
+            throw new ConverterException("Token assignment failed (JCVM 3.1 §4.3.7)", e.violations());
+        }
+    }
+
+    /**
+     * Stage 3b: Evaluates every {@code <clinit>} method; a Java Card VM never runs them, so their
+     * effect becomes part of the Static Field component (JCVM 3.1 §2.2.4.6, §6.11).
+     *
+     * @return {@code "class:field"} to the value assigned by {@code <clinit>}
+     * @throws ConverterException if a static initializer does more than §2.2.4.6 allows
+     */
+    private Map<String, StaticValue> interpretStaticInitializers(ScanResult scan) throws ConverterException {
+        Map<String, StaticValue> values = new HashMap<>();
+        List<Violation> violations = new ArrayList<>();
+        for (ClassInfo ci : scan.packageInfo().classes()) {
+            ClassModel model = ClassFile.of().parse(scan.classFiles().get(ci.thisClass()));
+            ClinitInterpreter.interpret(model, applets.isEmpty(), violations)
+                    .forEach((field, value) -> values.put(ci.thisClass() + ":" + field, value));
+        }
+        if (!violations.isEmpty()) {
+            throw new ConverterException("Unsupported static field initialization", violations);
+        }
+        return values;
     }
 
     /**
@@ -270,7 +325,7 @@ public final class Converter {
         ReferenceResolver resolver = new ReferenceResolver(
                 tokenMap, scan.imports(), cp, scan.packageInfo().classes());
 
-        List<ClassInfo> sortedClasses = sortByTokenOrder(scan.packageInfo().classes(), tokenMap);
+        List<ClassInfo> sortedClasses = componentOrder(scan.packageInfo().classes(), tokenMap);
 
         // Oracle creates CP entries by processing the applet class first, then other classes
         // in token order. This produces different CP index assignments for multi-class packages.
@@ -289,7 +344,7 @@ public final class Converter {
         record ParsedClass(ClassInfo info, ClassModel model) {}
         Map<String, ParsedClass> parsedClassMap = new LinkedHashMap<>();
         for (ClassInfo ci : cpOrderClasses) {
-            byte[] classBytes = readClassFile(ci);
+            byte[] classBytes = scan.classFiles().get(ci.thisClass());
             parsedClassMap.put(ci.thisClass(), new ParsedClass(ci, ClassFile.of().parse(classBytes)));
         }
         // Translate and store results keyed by method signature
@@ -336,7 +391,7 @@ public final class Converter {
         // Pass 2: remaining methods of all classes (in CP order)
         for (ParsedClass pc : parsedClassMap.values()) {
             resolver.setCurrentClass(pc.info().thisClass());
-            for (MethodModel mm : pc.model().methods()) {
+            for (MethodModel mm : methodComponentMembers(pc.info(), pc.model())) {
                 if (INIT_METHOD.equals(mm.methodName().stringValue())) continue;
                 String name = mm.methodName().stringValue();
                 String desc = mm.methodType().stringValue();
@@ -350,7 +405,7 @@ public final class Converter {
         Map<String, List<MethodEntry>> methodsByClass = new LinkedHashMap<>();
         for (ParsedClass pc : parsedClassMap.values()) {
             List<MethodEntry> classMethods = new ArrayList<>();
-            for (MethodModel mm : pc.model().methods()) {
+            for (MethodModel mm : methodComponentMembers(pc.info(), pc.model())) {
                 String key = pc.info().thisClass() + ":" + mm.methodName().stringValue()
                         + ":" + mm.methodType().stringValue();
                 MethodEntry me = translatedByKey.get(key);
@@ -372,7 +427,6 @@ public final class Converter {
         // Phase 2: assemble method list in token order (for Method component layout)
         List<TranslatedMethod> allMethods = new ArrayList<>();
         List<CpReference> allCpRefs = new ArrayList<>();
-        Map<String, Integer> installMethodIndices = new HashMap<>();
         Map<String, Integer> methodIndexMap = new LinkedHashMap<>();
         int methodIndex = 0;
         for (ClassInfo ci : sortedClasses) {
@@ -381,17 +435,12 @@ public final class Converter {
                 methodIndexMap.put(me.key(), methodIndex);
                 allMethods.add(me.method());
                 allCpRefs.addAll(me.method().cpReferences());
-                if ("install".equals(me.methodName())
-                        && "([BSB)V".equals(me.methodDesc())
-                        && applets.containsKey(me.className().replace('/', '.'))) {
-                    installMethodIndices.put(me.className().replace('/', '.'), methodIndex);
-                }
                 methodIndex++;
             }
         }
 
         return new TranslationResult(
-                allMethods, allCpRefs, installMethodIndices, methodIndexMap,
+                allMethods, allCpRefs, methodIndexMap,
                 sortedClasses, resolver, cp);
     }
 
@@ -447,38 +496,29 @@ public final class Converter {
     }
 
     /**
-     * Reads the .class file bytes for the given class, trying the dot-to-slash path first
-     * and falling back to the raw internal name if the primary path does not exist.
-     */
-    private byte[] readClassFile(ClassInfo ci) throws IOException {
-        Path primaryPath = classesDirectory.resolve(
-                ci.thisClass().replace('.', '/') + ".class");
-        try {
-            return Files.readAllBytes(primaryPath);
-        } catch (NoSuchFileException e) {
-            // Fall back to slash notation (thisClass may already use slashes)
-            Path fallbackPath = classesDirectory.resolve(ci.thisClass() + ".class");
-            return Files.readAllBytes(fallbackPath);
-        }
-    }
-
-    /**
      * Stage 6: Assembles all CAP components (Header, Directory, Applet, Import,
      * ConstantPool, Class, Method, StaticField, ReferenceLocation, Export, Descriptor)
      * into a JAR/ZIP archive.
      */
     @SuppressWarnings("java:S3776") // Inherently complex CAP assembly with 11 components
-    private byte[] assembleCap(TranslationResult translation, TokenMap tokenMap) throws IOException {
-        // Finalize imports: remove unreferenced packages, reassign tokens, remap CP
-        List<ImportedPackage> finalImports = translation.resolver().finalizeImports(javaCardVersion);
+    private byte[] assembleCap(TranslationResult translation, TokenMap tokenMap, ScanResult scan,
+                               Map<String, StaticValue> staticInit) throws IOException {
+        // Finalize imports: remove unreferenced packages, reassign tokens, remap CP. Packages named
+        // only by superclass/interface lists or descriptors are kept (JCVM 3.1 §6.7, §6.9, §6.14).
+        List<ImportedPackage> finalImports = translation.resolver().finalizeImports(javaCardVersion,
+                StructuralReferences.classes(scan.references(), scan.imports()));
 
-        // Reorder CP entries: instance field refs first, sorted by class token
-        // (matches Oracle's ordering). Must happen before MethodComponent.generate()
-        // reads bytecode, and before patchInternalRefs() which uses CP indices.
-        Map<Integer, Integer> fieldClassTokens = translation.resolver().getInstanceFieldClassTokens();
-        int[] cpRemap = translation.cp().reorderInstanceFieldsFirst(fieldClassTokens);
+        // Reorder CP entries: instance field refs first, ordered by declaring class in Class
+        // component order (matches Oracle's ordering; getfield_<t>/putfield_<t> take a one-byte
+        // index, JCVM 3.1 §6.12), and no catch type at index 0 (JCVM 3.1 §6.10.3). Must happen
+        // before MethodComponent.generate() reads bytecode, and before patchInternalRefs() which
+        // uses CP indices. Methods are re-encoded with the final indices (instruction widths,
+        // branch offsets and catch types follow).
+        Map<Integer, Integer> fieldClassOrder = translation.resolver().instanceFieldClassOrder();
+        int[] cpRemap = translation.cp().reorderInstanceFieldsFirst(fieldClassOrder,
+                TranslatedMethod.catchTypeIndices(translation.allMethods()));
         if (cpRemap.length > 0) {
-            remapCpIndicesInBytecode(translation.allMethods(), cpRemap);
+            TranslatedMethod.remapAll(translation.allMethods(), cpRemap);
             translation.resolver().remapPendingCpIndices(cpRemap);
             translation.resolver().remapCpTypeDescriptors(cpRemap);
         }
@@ -488,18 +528,21 @@ public final class Converter {
         byte[] methodBytes = methodResult.bytes();
         int[] methodOffsets = methodResult.offsets();
 
-        // Generate StaticField component -- we need field offsets for CP patching
+        // Generate StaticField component (with the <clinit> initial values, JCVM 3.1 §6.11)
+        // -- we need field offsets for CP patching
         StaticFieldComponent.StaticFieldResult staticFieldResult =
-                StaticFieldComponent.generate(translation.sortedClasses());
+                StaticFieldComponent.generate(translation.sortedClasses(), staticInit);
         byte[] staticFieldBytes = staticFieldResult.bytes();
 
-        // Generate Class component -- returns class byte offsets for CP patching
+        // Generate Class component (JCVM 3.1 §6.9) -- its entry offsets are the internal class_refs
         ClassComponent.ClassResult classResult = ClassComponent.generate(
                 translation.sortedClasses(), tokenMap, methodOffsets,
-                translation.methodIndexMap(), translation.resolver(), javaCardVersion,
-                oracleCompatibility);
+                translation.methodIndexMap(), translation.resolver(), javaCardVersion);
         byte[] classBytes2 = classResult.bytes();
-        int[] classOffsets = classResult.classOffsets();
+        Map<String, Integer> classOffsets = new HashMap<>();
+        for (int i = 0; i < translation.sortedClasses().size(); i++) {
+            classOffsets.put(translation.sortedClasses().get(i).thisClass(), classResult.classOffsets()[i]);
+        }
 
         // Build method offset map: "className:name:desc" -> Method component offset
         Map<String, Integer> methodOffsetMap = new HashMap<>();
@@ -517,17 +560,11 @@ public final class Converter {
         // Now generate ConstantPool component (after patching!)
         byte[] cpBytes = ConstantPoolComponent.generate(translation.cp());
 
-        // Build Applet component
+        // Build Applet component: install_method_offset of each validated applet (JCVM 3.1 §6.6)
         byte[] appletBytes = null;
-        if (!applets.isEmpty()) {
-            List<AppletComponent.AppletEntry> appletEntries = new ArrayList<>();
-            for (var entry : applets.entrySet()) {
-                int installIdx = translation.installMethodIndices().getOrDefault(entry.getKey(), 0);
-                int installOffset = methodOffsets.length > installIdx
-                        ? methodOffsets[installIdx] : 0;
-                appletEntries.add(new AppletComponent.AppletEntry(entry.getValue(), installOffset));
-            }
-            appletBytes = AppletComponent.generate(appletEntries);
+        if (!scan.applets().isEmpty()) {
+            appletBytes = AppletComponent.generate(AppletRules.entries(
+                    scan.applets(), translation.methodIndexMap(), methodOffsets));
         }
 
         byte[] importBytes = ImportComponent.generate(finalImports);
@@ -539,50 +576,35 @@ public final class Converter {
                 translation.allMethods(), methodOffsets);
         byte[] refLocationBytes = RefLocationComponent.generate(absoluteRefs);
 
-        // Build class_ref resolver for Descriptor component type nibbles:
-        // Internal classes → ClassComponent byte offset; External → (0x80|pkg)<<8|class
-        java.util.function.Function<String, Integer> classRefResolver = className -> {
-            try {
-                int token = tokenMap.classToken(className);
-                if (token < classOffsets.length) {
-                    return classOffsets[token];
-                }
-            } catch (Exception ignored) {
-                // Not in current package — fall through to external resolution
-            }
-            return translation.resolver().resolveClassRefDirect(className);
-        };
+        // Descriptor component (JCVM 3.1 §6.14); class_refs in type descriptors: internal classes
+        // by Class component offset, external ones by (0x80|pkg)<<8|class token
+        byte[] descriptorBytes = DescriptorComponent.generate(new DescriptorComponent.Input(
+                translation.sortedClasses(), tokenMap, classOffsets, methodOffsets,
+                translation.methodIndexMap(), translation.allMethods(), translation.cp(),
+                translation.resolver().cpTypeDescriptors(), translation.resolver()::resolveClassRefDirect,
+                staticFieldResult.fieldOffsetMap(), translation.resolver().importedTypes()));
 
-        byte[] descriptorBytes = DescriptorComponent.generate(
-                translation.sortedClasses(), tokenMap, methodOffsets,
-                translation.methodIndexMap(), classOffsets,
-                translation.allMethods(), translation.cp(),
-                translation.resolver().cpTypeDescriptors(),
-                classRefResolver);
+        // Export component (optional, JCVM 3.1 §6.2, §6.13): omitted when the package exports nothing
+        byte[] exportComponentBytes = !generateExport ? null : ExportComponent.generate(new ExportComponent.Input(
+                translation.sortedClasses(), tokenMap, classOffsets, methodOffsetMap,
+                staticFieldResult.fieldOffsetMap(), !applets.isEmpty(), translation.resolver().importedTypes()))
+                .orElse(null);
 
-        // Build flags
+        // Build flags (ACC_EXPORT if and only if the Export component is present, §6.4)
         int flags = 0;
-        if (supportInt32) flags |= HeaderComponent.ACC_INT;
-        if (generateExport) flags |= HeaderComponent.ACC_EXPORT;
+        // JCVM 3.1 §6.4: ACC_INT reflects the use of int, not the supportInt32 option
+        if (HeaderComponent.usesInt(translation.sortedClasses(), translation.allMethods())) {
+            flags |= HeaderComponent.ACC_INT;
+        }
+        if (exportComponentBytes != null) flags |= HeaderComponent.ACC_EXPORT;
         if (!applets.isEmpty()) flags |= HeaderComponent.ACC_APPLET;
 
         String internalPkgName = packageName.replace('.', '/');
-        // Per JCVM spec 6.3, package_name_info is optional.
-        // Oracle's converter omits it; we do the same for binary compatibility.
-        byte[] headerBytes = HeaderComponent.generate(
-                packageAid, pkgMajorVersion, pkgMinorVersion, flags, null,
+        // Per JCVM spec 6.3, package_name_info is optional; Oracle's converter omits it, and so do we.
+        byte[] headerBytes = HeaderComponent.generate(packageAid, pkgMajorVersion, pkgMinorVersion, flags, null,
                 javaCardVersion);
 
-        // Export component (optional)
-        byte[] exportComponentBytes = null;
-        if (generateExport) {
-            exportComponentBytes = ExportComponent.generate(
-                    tokenMap, methodOffsets, classOffsets, translation.methodIndexMap(),
-                    staticFieldResult.fieldOffsetMap());
-        }
-
-        // Calculate component body sizes for Directory per JCVM spec 6.5:
-        // component_sizes stores the u2 size field value (body size, excluding 3-byte tag+size header)
+        // Directory component_sizes (JCVM 3.1 §6.5): u2 body sizes, without the 3-byte tag and size header
         int[] componentSizes = new int[11];
         componentSizes[0] = headerBytes.length - 3;     // Header (tag=1)
         // componentSizes[1] = Directory (tag=2) -- calculated below
@@ -597,11 +619,8 @@ public final class Converter {
         componentSizes[10] = descriptorBytes.length - 3; // Descriptor (tag=11)
 
         // First pass: generate directory to calculate its size
-        byte[] directoryBytes = DirectoryComponent.generate(
-                componentSizes,
-                staticFieldResult.imageSize(),
-                staticFieldResult.arrayInitCount(),
-                staticFieldResult.arrayInitSize(),
+        byte[] directoryBytes = DirectoryComponent.generate(componentSizes, staticFieldResult.imageSize(),
+                staticFieldResult.arrayInitCount(), staticFieldResult.arrayInitSize(),
                 finalImports.size(), applets.size(), javaCardVersion);
         // Second pass: now we know the directory size, regenerate with correct self-size
         componentSizes[1] = directoryBytes.length - 3;
@@ -630,35 +649,13 @@ public final class Converter {
     }
 
     /**
-     * Stage 7: Generates a binary export file (.exp) containing the package's
-     * public API tokens for downstream package linking.
+     * Stage 7: Generates the export file (.exp) of the package for downstream package linking
+     * (JCVM 3.1 Chapter 5): all public types of a library, the shareable interfaces of an applet
+     * package.
      */
-    private byte[] generateExportFile(List<ClassInfo> sortedClasses, TokenMap tokenMap) throws IOException {
-        return ExportFileWriter.write(
-                tokenMap, sortedClasses, packageAid,
-                pkgMajorVersion, pkgMinorVersion, javaCardVersion);
-    }
-
-    private List<ImportedPackage> loadImports() throws IOException {
-        List<ImportedPackage> result = new ArrayList<>();
-        int token = 0;
-
-        // Load built-in JavaCard API exports (version-aware API versions)
-        result.addAll(BuiltinExports.allBuiltinImports(token, javaCardVersion));
-        token = result.size();
-
-        // Load user-provided export files
-        for (Path expPath : importExportFiles) {
-            ExportFile ef = ExportFileReader.readFile(expPath);
-            result.add(new ImportedPackage(
-                    token++,
-                    ef.aid(),
-                    ef.majorVersion(),
-                    ef.minorVersion(),
-                    ef));
-        }
-
-        return result;
+    private byte[] generateExportFile(ScanResult scan, TokenMap tokenMap) throws ConverterException {
+        return ExportFileWriter.write(new ExportInput(packageName, packageAid, pkgMajorVersion, pkgMinorVersion,
+                applets.isEmpty(), scan.packageInfo().classes(), tokenMap, scan.imports(), javaCardVersion));
     }
 
     /**
@@ -715,35 +712,26 @@ public final class Converter {
     }
 
     /**
-     * Patches CP index operands in all translated method bytecodes after CP reordering.
-     * Uses each method's {@link CpReference} list to locate and rewrite CP indices.
-     *
-     * @param methods all translated methods
-     * @param remap   old CP index → new CP index mapping
+     * Returns the classes in Class component order, the order of {@link TokenMap#classes()}
+     * (JCVM 3.1 §6.9: interfaces first, supertypes before subtypes). The Method and Descriptor
+     * components list the classes' methods in the same order.
      */
-    private static void remapCpIndicesInBytecode(List<TranslatedMethod> methods, int[] remap) {
-        for (TranslatedMethod tm : methods) {
-            byte[] bytecode = tm.bytecode();
-            for (CpReference ref : tm.cpReferences()) {
-                int offset = ref.bytecodeOffset();
-                int oldIndex = ref.cpIndex();
-                int newIndex = remap[oldIndex];
-                if (oldIndex == newIndex) continue;
-
-                if (ref.indexSize() == 1) {
-                    bytecode[offset] = (byte) newIndex;
-                } else {
-                    bytecode[offset] = (byte) (newIndex >> 8);
-                    bytecode[offset + 1] = (byte) newIndex;
-                }
-            }
-        }
+    private static List<ClassInfo> componentOrder(List<ClassInfo> classes, TokenMap tokenMap) {
+        Map<String, ClassInfo> byName = new HashMap<>();
+        classes.forEach(ci -> byName.put(ci.thisClass(), ci));
+        return tokenMap.classes().stream().map(ce -> byName.get(ce.internalName())).toList();
     }
 
-    private static List<ClassInfo> sortByTokenOrder(List<ClassInfo> classes, TokenMap tokenMap) {
-        List<ClassInfo> sorted = new ArrayList<>(classes);
-        sorted.sort(Comparator.comparingInt(ci -> tokenMap.classToken(ci.thisClass())));
-        return sorted;
+    /**
+     * Returns the methods of a class that are represented in the Method component, in class file
+     * order: all methods except {@code <clinit>} (its effect is in the Static Field component) and
+     * interface method declarations (JCVM 3.1 §6.10).
+     */
+    private static List<MethodModel> methodComponentMembers(ClassInfo owner, ClassModel model) {
+        if (owner.isInterface()) {
+            return List.of();
+        }
+        return model.methods().stream().filter(mm -> !"<clinit>".equals(mm.methodName().stringValue())).toList();
     }
 
     // ── Builder ──
@@ -762,9 +750,10 @@ public final class Converter {
      *   <li>{@link #packageAid(String)} -- auto-generated from package name if omitted</li>
      *   <li>{@link #packageVersion(int, int)} -- defaults to 1.0</li>
      *   <li>{@link #applet(String, String)} -- at least one applet should be registered for installable packages</li>
-     *   <li>{@link #importExportFile(Path)} -- additional {@code .exp} files for external package imports</li>
+     *   <li>{@link #importExportFile(Path)} -- {@code .exp} files of imported packages</li>
+     *   <li>{@link #exportPath(Path...)} -- directories/JARs searched for {@code .exp} files of imported packages</li>
      *   <li>{@link #supportInt32(boolean)} -- defaults to {@code false}</li>
-     *   <li>{@link #generateExport(boolean)} -- defaults to {@code false}</li>
+     *   <li>{@link #generateExport(boolean)} -- defaults to {@code true}</li>
      *   <li>{@link #javaCardVersion(JavaCardVersion)} -- defaults to {@link JavaCardVersion#V3_0_5}</li>
      * </ul>
      */
@@ -776,9 +765,9 @@ public final class Converter {
         private int pkgMinorVersion = 0;
         private final Map<String, byte[]> applets = new LinkedHashMap<>();
         private final List<Path> importExportFiles = new ArrayList<>();
+        private final List<Path> exportPath = new ArrayList<>();
         private boolean supportInt32 = false;
-        private boolean generateExport = false;
-        private boolean oracleCompatibility = false;
+        private boolean generateExport = true;
         private JavaCardVersion javaCardVersion = JavaCardVersion.V3_0_5;
 
         private Builder() {}
@@ -792,10 +781,15 @@ public final class Converter {
         }
 
         /**
-         * Sets the Java package name (dot notation, e.g. "com.example").
+         * Sets the Java package name (dot notation, e.g. "com.example"; the internal form
+         * "com/example" is accepted and converted to dot notation).
+         *
+         * @throws IllegalArgumentException for the unnamed package, a name that is not a sequence
+         *                                  of Java identifiers, or one longer than 255 UTF-8 bytes
+         *                                  (JCVM 3.1 §4.1.3, §5.6.1, §2.2.4.1.3)
          */
         public Builder packageName(String name) {
-            this.packageName = name;
+            this.packageName = PackageRules.packageName(name);
             return this;
         }
 
@@ -817,8 +811,11 @@ public final class Converter {
 
         /**
          * Sets the package version.
+         *
+         * @throws IllegalArgumentException if a number is outside 0..255 (u1, JCVM 3.1 §4.5, §6.4)
          */
         public Builder packageVersion(int major, int minor) {
+            PackageRules.packageVersion(major, minor);
             this.pkgMajorVersion = major;
             this.pkgMinorVersion = minor;
             return this;
@@ -831,7 +828,7 @@ public final class Converter {
          * @param aid       applet AID bytes
          */
         public Builder applet(String className, byte[] aid) {
-            this.applets.put(className, aid.clone());
+            this.applets.put(Objects.requireNonNull(className, "className"), aid.clone());
             return this;
         }
 
@@ -839,15 +836,40 @@ public final class Converter {
          * Registers an applet with AID from hex string.
          */
         public Builder applet(String className, String hexAid) {
-            this.applets.put(className, hexToBytes(hexAid));
+            this.applets.put(Objects.requireNonNull(className, "className"), hexToBytes(hexAid));
             return this;
         }
 
         /**
-         * Adds an import export file (.exp) for resolving external references.
+         * Adds an export file (.exp) of an imported package (JCVM 3.1 §4.3.3).
+         *
+         * <p>An export file given here takes precedence over the export path and over the
+         * converter's built-in API data for the same package; the version it declares is the
+         * one recorded in the Import component (JCVM 3.1 §4.5.2).
+         *
+         * @param expFile path of the export file
+         * @return this builder
          */
         public Builder importExportFile(Path expFile) {
-            this.importExportFiles.add(expFile);
+            this.importExportFiles.add(Objects.requireNonNull(expFile));
+            return this;
+        }
+
+        /**
+         * Adds export path entries, searched in order for the export files of the packages the
+         * classes reference.
+         *
+         * <p>Each entry is a directory or a JAR/ZIP file that holds export files at
+         * {@code <package>/javacard/<last name component>.exp} (JCVM 3.1 §4.1.1, §5.1, §5.2), for
+         * example a kit's {@code api_export_files} directory, a directory of GlobalPlatform API
+         * export files, or the output of another package's conversion. Export files found here
+         * take precedence over the built-in API data.
+         *
+         * @param entries directories or JAR files
+         * @return this builder
+         */
+        public Builder exportPath(Path... entries) {
+            for (Path entry : entries) this.exportPath.add(Objects.requireNonNull(entry));
             return this;
         }
 
@@ -860,7 +882,14 @@ public final class Converter {
         }
 
         /**
-         * Enables generation of the Export component in the CAP file.
+         * Whether the CAP file gets the Export component (JCVM 3.1 §6.13), which other packages need to link
+         * against this one on the card. With {@code true}, the default, it is written when the package has
+         * something to export (§6.2): a library's public classes and interfaces, an applet package's public
+         * shareable interfaces; {@code false} omits it (a library converted so is private, §6.13, and no other
+         * package can use it). The export file ({@link ConverterResult#exportFile()}) is produced in any case.
+         *
+         * @param flag whether to write the Export component when the package exports something
+         * @return this builder
          */
         public Builder generateExport(boolean flag) {
             this.generateExport = flag;
@@ -879,21 +908,22 @@ public final class Converter {
         }
 
         /**
-         * Enables Oracle compatibility mode for the Class component dispatch table.
+         * Former switch between two Class component layouts; it has no effect.
          *
-         * <p>When {@code true}, replicates the Oracle converter's off-by-one behavior
-         * in the {@code public_virtual_method_table} serialization (JCVM spec §6.9
-         * Table 6-16), producing byte-identical Class component output. This is useful
-         * for environments that validate CAP files against Oracle reference output.
+         * <p>The Class component is always written in the {@code class_info} layout of JCVM 3.1
+         * §6.9.2 ({@code public_method_table_base}, {@code public_method_table_count},
+         * {@code package_method_table_base}, {@code package_method_table_count}, then both
+         * method tables), which is also what Oracle's converter produces. The non-compatible
+         * layout of earlier versions placed the package table items after the public table and
+         * could not be loaded or verified.
          *
-         * <p>Defaults to {@code false} (spec-correct output).
-         *
-         * @param flag {@code true} to enable Oracle compatibility mode
+         * @param flag ignored
          * @return this builder
-         * @see <a href="BINARY_COMPATIBILITY.md">Binary Compatibility documentation</a>
+         * @deprecated the output always follows the specification; remove the call
          */
+        @Deprecated(since = "0.4.0")
+        @SuppressWarnings("java:S1172") // parameter kept for source compatibility
         public Builder oracleCompatibility(boolean flag) {
-            this.oracleCompatibility = flag;
             return this;
         }
 
@@ -906,10 +936,6 @@ public final class Converter {
         public Converter build() {
             Objects.requireNonNull(classesDirectory, "classesDirectory is required");
             Objects.requireNonNull(packageName, "packageName is required");
-
-            if (packageAid == null) {
-                packageAid = generateAid(packageName);
-            }
 
             return new Converter(this);
         }
@@ -932,13 +958,19 @@ public final class Converter {
             }
         }
 
+        /**
+         * Parses an AID given as hex digits, optionally separated by spaces or colons.
+         *
+         * @throws IllegalArgumentException if the text is not an even number of hex digits
+         */
         static byte[] hexToBytes(String hex) {
-            hex = hex.replace(" ", "").replace(":", "");
-            byte[] bytes = new byte[hex.length() / 2];
-            for (int i = 0; i < bytes.length; i++) {
-                bytes[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            String digits = hex.replace(" ", "").replace(":", "");
+            try {
+                return java.util.HexFormat.of().parseHex(digits);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid AID '" + hex
+                        + "': expected an even number of hexadecimal digits", e);
             }
-            return bytes;
         }
     }
 }

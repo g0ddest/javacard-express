@@ -13,21 +13,22 @@ public class OwnerPIN implements PIN {
      * @param maxPINSize the maximum PIN length in bytes
      */
     public OwnerPIN(byte tryLimit, byte maxPINSize) {
+        throw new RuntimeException("stub");
     }
 
     @Override
     public boolean check(byte[] pin, short offset, byte length) throws PINException {
-        return false;
+        throw new RuntimeException("stub");
     }
 
     @Override
     public boolean isValidated() {
-        return false;
+        throw new RuntimeException("stub");
     }
 
     @Override
     public byte getTriesRemaining() {
-        return 0;
+        throw new RuntimeException("stub");
     }
 
     @Override
@@ -51,6 +52,26 @@ public class OwnerPIN implements PIN {
      * Resets the try counter and unblocks the PIN.
      */
     public void resetAndUnblock() {
+        throw new RuntimeException("stub");
+    }
+
+    /**
+     * Returns the value of the "validated" flag. Subclasses use this hook to keep the flag in storage of their
+     * choice (for example a transient array).
+     *
+     * @return the current value of the validated flag
+     */
+    protected boolean getValidatedFlag() {
+        throw new RuntimeException("stub");
+    }
+
+    /**
+     * Sets the value of the "validated" flag. Subclasses use this hook to keep the flag in storage of their
+     * choice (for example a transient array).
+     *
+     * @param value the new value of the validated flag
+     */
+    protected void setValidatedFlag(boolean value) {
         throw new RuntimeException("stub");
     }
 }

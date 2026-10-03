@@ -1,10 +1,10 @@
 package name.velikodniy.jcexpress.pace;
 
 /**
- * PACE password reference types (BSI TR-03110, Section 3).
+ * PACE password references, sent in tag {@code 0x83} of MSE:Set AT.
  *
- * <p>Identifies which shared secret is used for PACE authentication.
- * The reference value is encoded in tag 0x83 of MSE:Set AT.</p>
+ * <p>MRZ ({@code 0x01}) and CAN ({@code 0x02}) are defined by ICAO Doc 9303-11, 4.4.4.1; PIN ({@code 0x03}) and
+ * PUK ({@code 0x04}) by BSI TR-03110 for eID cards.</p>
  */
 public enum PasswordRef {
 

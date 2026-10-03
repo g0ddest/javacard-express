@@ -14,6 +14,7 @@ public class AID {
      * @param length length of the AID (5-16 bytes)
      */
     public AID(byte[] bArray, short offset, byte length) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -23,8 +24,25 @@ public class AID {
      * @param offset starting offset in dest
      * @return the length of the AID
      */
-    public byte getBytes(byte[] dest, short offset) {
-        return 0;
+    public final byte getBytes(byte[] dest, short offset) {
+        throw new RuntimeException("stub");
+    }
+
+    /**
+     * Copies part of the AID bytes into the destination array.
+     *
+     * @param aidOffset offset within this AID of the first byte to copy
+     * @param dest      destination byte array
+     * @param oOffset   starting offset in {@code dest}
+     * @param oLength   number of bytes to copy; 0 copies everything from {@code aidOffset} to the end of the AID
+     * @return the number of bytes copied
+     * @throws NullPointerException           if {@code dest} is {@code null}
+     * @throws ArrayIndexOutOfBoundsException if the copy would access outside {@code dest} or the AID
+     * @throws SecurityException              if {@code dest} is not accessible in the caller's context
+     */
+    public final byte getPartialBytes(short aidOffset, byte[] dest, short oOffset, byte oLength)
+            throws NullPointerException, ArrayIndexOutOfBoundsException, SecurityException {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -35,18 +53,13 @@ public class AID {
      * @param length length to compare
      * @return true if equal
      */
-    public boolean equals(byte[] bArray, short offset, byte length) {
-        return false;
+    public final boolean equals(byte[] bArray, short offset, byte length) {
+        throw new RuntimeException("stub");
     }
 
     @Override
-    public boolean equals(Object anObject) {
-        return false;
-    }
-
-    @Override
-    public int hashCode() {
-        return 0;
+    public final boolean equals(Object anObject) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -57,8 +70,8 @@ public class AID {
      * @param length length to compare
      * @return true if the partial match succeeds
      */
-    public boolean partialEquals(byte[] bArray, short offset, byte length) {
-        return false;
+    public final boolean partialEquals(byte[] bArray, short offset, byte length) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -67,7 +80,7 @@ public class AID {
      * @param otherAID the AID to compare with
      * @return true if RIDs match
      */
-    public boolean RIDEquals(AID otherAID) {
-        return false;
+    public final boolean RIDEquals(AID otherAID) {
+        throw new RuntimeException("stub");
     }
 }

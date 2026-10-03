@@ -5,6 +5,7 @@ import name.velikodniy.jcexpress.converter.ConverterResult;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
 import name.velikodniy.jcexpress.converter.input.FieldInfo;
 import name.velikodniy.jcexpress.converter.input.MethodInfo;
+import name.velikodniy.jcexpress.converter.token.ImportedTypes;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 import name.velikodniy.jcexpress.converter.translate.JcvmConstantPool;
 import name.velikodniy.jcexpress.converter.translate.TranslatedMethod;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -555,9 +557,10 @@ class DescriptorComponentTest {
     }
 
     @Test
-    void staticFieldHasZeroPaddingInFieldRef() {
+    void staticFieldRefIsPaddingAndStaticFieldImageOffset_6_14_3() {
         List<FieldInfo> fields = List.of(
-                new FieldInfo("buffer", "[B", 0x000A, null) // private static byte[]
+                new FieldInfo("buffer", "[B", 0x000A, null), // private static byte[]
+                new FieldInfo("count", "S", 0x000A, null)    // private static short
         );
         List<MethodInfo> methods = List.of(
                 new MethodInfo("<init>", "()V", 0x0001, 1, 1, new byte[3], List.of())
@@ -566,42 +569,33 @@ class DescriptorComponentTest {
                 "com/test/MyApplet", "javacard/framework/Applet",
                 List.of(), 0x0001, methods, fields
         );
-
         TokenMap tokenMap = new TokenMap("com.test", List.of(
                 new TokenMap.ClassEntry("com/test/MyApplet", 0,
                         List.of(),
                         List.of(new TokenMap.MethodEntry("<init>", "()V", 0)),
                         List.of(),
-                        List.of(new TokenMap.FieldEntry("buffer", "[B", 0)))
+                        List.of())
         ));
-
-        JcvmConstantPool cp = new JcvmConstantPool();
         TranslatedMethod tm = new TranslatedMethod(
                 new byte[]{0x70}, 1, 1, 1, List.of(), false, List.of()
         );
 
-        byte[] result = DescriptorComponent.generate(
-                List.of(ci), tokenMap,
-                new int[]{0},
-                Map.of("com/test/MyApplet:<init>:()V", 0),
-                new int[]{0},
-                List.of(tm),
-                cp,
-                Map.of(),
-                ZERO_RESOLVER
-        );
+        byte[] result = DescriptorComponent.generate(new DescriptorComponent.Input(
+                List.of(ci), tokenMap, Map.of("com/test/MyApplet", 0), new int[]{0},
+                Map.of("com/test/MyApplet:<init>:()V", 0), List.of(tm), new JcvmConstantPool(), Map.of(),
+                ZERO_RESOLVER, Map.of("com/test/MyApplet:buffer", 0, "com/test/MyApplet:count", 2),
+                ImportedTypes.of(n -> List.of())));
 
-        // Navigate to field_ref bytes in the first field descriptor
+        // Navigate to the field descriptors
         int pos = 4; // after tag + size + class_count
         pos += 5; // token + flags + this_class_ref + interface_count
         pos += 4; // field_count + method_count
-        // Now at field descriptor
-        pos += 2; // skip token + flags
-
-        // Static field_ref should be 0x00, 0x00, 0x00
-        assertThat(result[pos] & 0xFF).as("static field_ref[0]").isEqualTo(0);
-        assertThat(result[pos + 1] & 0xFF).as("static field_ref[1]").isEqualTo(0);
-        assertThat(result[pos + 2] & 0xFF).as("static field_ref[2]").isEqualTo(0);
+        // static_field_ref { u1 padding; u2 offset } (6.8.3): no token (0xFF) for private statics
+        assertThat(result[pos] & 0xFF).as("token of a private static field").isEqualTo(0xFF);
+        assertThat(HexFormat.of().formatHex(result, pos + 2, pos + 5)).as("buffer at image offset 0")
+                .isEqualTo("000000");
+        assertThat(HexFormat.of().formatHex(result, pos + 7 + 2, pos + 7 + 5)).as("count at image offset 2")
+                .isEqualTo("000002");
     }
 
     @Test

@@ -1,18 +1,23 @@
 package name.velikodniy.jcexpress.converter.cap;
 
+import name.velikodniy.jcexpress.converter.clinit.StaticValue;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
 import name.velikodniy.jcexpress.converter.input.FieldInfo;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link StaticFieldComponent} (CAP component tag 8).
+ * Tests for {@link StaticFieldComponent} (CAP component tag 8, JCVM 3.1 §6.11).
  * Validates static field image generation including field segmentation,
- * offset tracking, and binary format.
+ * offset tracking, and binary format. Initial values come from the {@code <clinit>} method
+ * (as javac compiles them), not from {@code ConstantValue} attributes, which javac emits only for
+ * compile-time constants that are not part of the image.
  */
 class StaticFieldComponentTest {
 
@@ -127,41 +132,86 @@ class StaticFieldComponentTest {
     }
 
     @Test
-    void nonDefaultPrimitives_shouldWriteExplicitValues() {
-        FieldInfo initByte = new FieldInfo("b", "B", ACC_STATIC, (int) 0x42);
-        FieldInfo initShort = new FieldInfo("s", "S", ACC_STATIC, (int) 0x1234);
+    void nonDefaultPrimitives_shouldWriteExplicitValues_6_11() {
+        FieldInfo initByte = new FieldInfo("b", "B", ACC_STATIC, null);
+        FieldInfo initShort = new FieldInfo("s", "S", ACC_STATIC, null);
         ClassInfo ci = new ClassInfo("com/example/Test", "java/lang/Object",
                 List.of(), ACC_PUBLIC, List.of(),
                 List.of(initByte, initShort));
 
-        var result = StaticFieldComponent.generate(List.of(ci));
+        var result = StaticFieldComponent.generate(List.of(ci), Map.of(
+                "com/example/Test:b", new StaticValue.Primitive(0x42),
+                "com/example/Test:s", new StaticValue.Primitive(0x1234)));
 
-        // byte (1) + short (2) = 3 bytes of non-default values
+        // byte (1) + short (2) = 3 bytes of non-default values, written big-endian in segment 4
         assertThat(result.imageSize()).isEqualTo(3);
+        assertThat(body(result)).endsWith("0000" + "0003" + "421234");
     }
 
     @Test
-    void nonDefaultInt_shouldWrite4Bytes() {
-        FieldInfo initInt = new FieldInfo("i", "I", ACC_STATIC, 0x12345678);
+    void nonDefaultInt_shouldWrite4Bytes_6_11() {
+        FieldInfo initInt = new FieldInfo("i", "I", ACC_STATIC, null);
         ClassInfo ci = new ClassInfo("com/example/Test", "java/lang/Object",
                 List.of(), ACC_PUBLIC, List.of(),
                 List.of(initInt));
 
-        var result = StaticFieldComponent.generate(List.of(ci));
+        var result = StaticFieldComponent.generate(List.of(ci),
+                Map.of("com/example/Test:i", new StaticValue.Primitive(0x12345678)));
 
         assertThat(result.imageSize()).isEqualTo(4);
+        assertThat(body(result)).endsWith("0004" + "12345678");
+    }
+
+    @Test
+    void primitiveInitializedToZeroAndNullReference_keepDefaultSegments_6_11() {
+        FieldInfo zero = new FieldInfo("z", "S", ACC_STATIC, null);
+        FieldInfo none = new FieldInfo("o", "Ljava/lang/Object;", ACC_STATIC, null);
+        ClassInfo ci = new ClassInfo("com/example/Test", "java/lang/Object",
+                List.of(), ACC_PUBLIC, List.of(), List.of(zero, none));
+
+        var result = StaticFieldComponent.generate(List.of(ci), Map.of(
+                "com/example/Test:z", new StaticValue.Primitive(0),
+                "com/example/Test:o", new StaticValue.Null()));
+
+        // image_size 4, reference_count 1, array_init_count 0, default 2, non-default 0
+        assertThat(body(result)).isEqualTo("0004" + "0001" + "0000" + "0002" + "0000");
+    }
+
+    @Test
+    void arrayInitializers_formSegmentOneBeforeOtherReferences_6_11() {
+        FieldInfo plain = new FieldInfo("plain", "[B", ACC_STATIC, null);
+        FieldInfo hello = new FieldInfo("HELLO", "[B", ACC_STATIC | ACC_FINAL, null);
+        FieldInfo shorts = new FieldInfo("S", "[S", ACC_STATIC, null);
+        ClassInfo ci = new ClassInfo("com/example/Test", "java/lang/Object",
+                List.of(), ACC_PUBLIC, List.of(), List.of(plain, hello, shorts));
+
+        var result = StaticFieldComponent.generate(List.of(ci), Map.of(
+                "com/example/Test:HELLO", new StaticValue.PrimitiveArray(StaticValue.PrimitiveArray.BYTE,
+                        new int[] {'H', 'i'}),
+                "com/example/Test:S", new StaticValue.PrimitiveArray(StaticValue.PrimitiveArray.SHORT,
+                        new int[] {1, -2})));
+
+        assertThat(result.fieldOffsetMap()).containsEntry("com/example/Test:HELLO", 0)
+                .containsEntry("com/example/Test:S", 2)
+                .containsEntry("com/example/Test:plain", 4);
+        assertThat(result.arrayInitCount()).isEqualTo(2);
+        assertThat(result.arrayInitSize()).as("sum of the count items (bytes)").isEqualTo(2 + 4);
+        // image_size, reference_count, array_init_count, array_init_info x2, default, non-default
+        assertThat(body(result)).isEqualTo("0006" + "0003" + "0002"
+                + "03" + "0002" + "4869" + "04" + "0004" + "0001fffe" + "0000" + "0000");
     }
 
     @Test
     void segmentOrdering_refBeforeDefaultBeforeNonDefault() {
         FieldInfo refField = new FieldInfo("buf", "[B", ACC_STATIC, null);         // Segment 2
         FieldInfo defaultField = new FieldInfo("x", "S", ACC_STATIC, null);        // Segment 3
-        FieldInfo nonDefaultField = new FieldInfo("y", "B", ACC_STATIC, (int) 10); // Segment 4
+        FieldInfo nonDefaultField = new FieldInfo("y", "B", ACC_STATIC, null);     // Segment 4
         ClassInfo ci = new ClassInfo("com/example/Test", "java/lang/Object",
                 List.of(), ACC_PUBLIC, List.of(),
                 List.of(refField, defaultField, nonDefaultField));
 
-        var result = StaticFieldComponent.generate(List.of(ci));
+        var result = StaticFieldComponent.generate(List.of(ci),
+                Map.of("com/example/Test:y", new StaticValue.Primitive(10)));
 
         Map<String, Integer> offsets = result.fieldOffsetMap();
         int refOffset = offsets.get("com/example/Test:buf");
@@ -209,7 +259,7 @@ class StaticFieldComponentTest {
     }
 
     @Test
-    void arrayInitCount_shouldBeZero() {
+    void withoutInitialValues_noArrayInitEntries() {
         var result = StaticFieldComponent.generate(List.of());
         assertThat(result.arrayInitCount()).isZero();
         assertThat(result.arrayInitSize()).isZero();
@@ -247,5 +297,11 @@ class StaticFieldComponentTest {
         var result = StaticFieldComponent.generate(List.of(ci));
 
         assertThat(result.imageSize()).isEqualTo(2);
+    }
+
+    /** Component body (after tag and size) as hex. */
+    private static String body(StaticFieldComponent.StaticFieldResult result) {
+        byte[] bytes = result.bytes();
+        return HexFormat.of().formatHex(Arrays.copyOfRange(bytes, 3, bytes.length));
     }
 }

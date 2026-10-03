@@ -13,6 +13,7 @@ public class ISOException extends CardRuntimeException {
      */
     public ISOException(short sw) {
         super(sw);
+        throw new RuntimeException("stub");
     }
 
     /**

@@ -99,14 +99,7 @@ public final class ClassFileReader {
                         .map(ClassFileReader::fromFieldModel)
                         .toList();
 
-        return new ClassInfo(
-                thisClass,
-                superClass,
-                interfaces,
-                cm.flags().flagsMask(),
-                methods,
-                fields
-        );
+        return new ClassInfo(thisClass, superClass, interfaces, cm.flags().flagsMask(), methods, fields, cm);
     }
 
     private static name.velikodniy.jcexpress.converter.input.MethodInfo fromMethodModel(MethodModel mm) {

@@ -1,5 +1,14 @@
 package name.velikodniy.jcexpress.converter.cap;
 
+import name.velikodniy.jcexpress.converter.input.ClassInfo;
+import name.velikodniy.jcexpress.converter.translate.TranslatedMethod;
+
+import java.lang.classfile.CodeModel;
+import java.lang.classfile.MethodModel;
+import java.lang.classfile.instruction.LocalVariable;
+import java.util.List;
+import java.util.Optional;
+
 /**
  * Generates the CAP Header component (tag 1) as defined in JCVM 3.0.5 spec section 6.3.
  *
@@ -50,6 +59,60 @@ public final class HeaderComponent {
     public static final int ACC_APPLET = 0x04;
 
     private HeaderComponent() {}
+
+    /**
+     * Returns whether the package uses the Java int type, which decides the ACC_INT flag
+     * (JCVM 3.1 §6.4: "The ACC_INT flag has the value of one if the Java int type is used by at
+     * least one of the packages in this CAP file"). The int type is used by a parameter, a local
+     * variable or a field of type int or int array, or an instruction of type int or int array.
+     * The flag follows from this use, not from whether int support was enabled: a CAP file
+     * that sets ACC_INT without using int cannot be loaded on cards without int support.
+     *
+     * @param classes the classes of the package (local variables are read from the
+     *                LocalVariableTable when the parsed class file is available)
+     * @param methods the translated methods of the package
+     * @return {@code true} if ACC_INT must be set
+     */
+    public static boolean usesInt(List<ClassInfo> classes, List<TranslatedMethod> methods) {
+        for (ClassInfo ci : classes) {
+            if (ci.fields().stream().anyMatch(f -> isIntType(f.descriptor()))
+                    || ci.methods().stream().anyMatch(m -> usesIntInSignature(m.descriptor()))
+                    || declaresIntLocal(ci)) {
+                return true;
+            }
+        }
+        return methods.stream().anyMatch(TranslatedMethod::usesInt);
+    }
+
+    private static boolean isIntType(String descriptor) {
+        return descriptor.equals("I") || descriptor.equals("[I");
+    }
+
+    private static boolean usesIntInSignature(String methodDescriptor) {
+        int close = methodDescriptor.indexOf(')');
+        int i = 1;
+        while (i < close) {
+            int start = i;
+            while (methodDescriptor.charAt(i) == '[') i++;
+            i = methodDescriptor.charAt(i) == 'L' ? methodDescriptor.indexOf(';', i) + 1 : i + 1;
+            if (isIntType(methodDescriptor.substring(start, i))) return true;
+        }
+        return isIntType(methodDescriptor.substring(close + 1));
+    }
+
+    private static boolean declaresIntLocal(ClassInfo ci) {
+        if (ci.model() == null) {
+            return false;
+        }
+        for (MethodModel m : ci.model().methods()) {
+            Optional<CodeModel> code = m.code();
+            if (code.isPresent() && code.get().elementStream().anyMatch(e -> e instanceof LocalVariable lv
+                    && isIntType(lv.typeSymbol().descriptorString()))) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * Generates the Header component bytes.

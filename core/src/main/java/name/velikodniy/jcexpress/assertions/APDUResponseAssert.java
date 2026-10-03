@@ -2,49 +2,32 @@ package name.velikodniy.jcexpress.assertions;
 
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
+import name.velikodniy.jcexpress.SW;
 import org.assertj.core.api.AbstractAssert;
+import org.assertj.core.api.AbstractByteArrayAssert;
+import org.assertj.core.api.AbstractIntegerAssert;
 import org.assertj.core.api.AbstractStringAssert;
 import org.assertj.core.api.Assertions;
 
-import java.util.Map;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 
 /**
  * AssertJ assertions for {@link APDUResponse}.
  *
- * <p>Provides fluent, descriptive assertions for APDU responses with
- * human-readable error messages including status word descriptions.</p>
+ * <p>Failure messages name status words with their meaning ({@link SW#describe(int)}). A mismatch of status word
+ * or data carries the expected and the actual value (hex), so IDEs show a diff. Status words can be given as ints
+ * ({@code 0x6982}), as {@link SW} constants or as the {@code short} constants of the Java Card API
+ * ({@code ISO7816.SW_NO_ERROR}).</p>
+ *
+ * <pre>
+ * assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+ * assertThat(card.send(DEBIT)).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED).hasNoData();
+ * assertThat(card.send(READ)).hasDataHex("01 02 03");
+ * assertThat(card.send(READ)).data().hasSize(3).startsWith((byte) 0x01);
+ * </pre>
  */
 public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUResponse> {
-
-    private static final Map<Integer, String> SW_DESCRIPTIONS = Map.ofEntries(
-            Map.entry(0x9000, "success"),
-            Map.entry(0x6100, "more data available"),
-            Map.entry(0x6283, "selected file invalidated"),
-            Map.entry(0x6300, "verification failed"),
-            Map.entry(0x6400, "execution error"),
-            Map.entry(0x6581, "memory failure"),
-            Map.entry(0x6700, "wrong length"),
-            Map.entry(0x6881, "logical channel not supported"),
-            Map.entry(0x6882, "secure messaging not supported"),
-            Map.entry(0x6982, "security status not satisfied"),
-            Map.entry(0x6983, "authentication method blocked"),
-            Map.entry(0x6984, "reference data not usable"),
-            Map.entry(0x6985, "conditions of use not satisfied"),
-            Map.entry(0x6986, "command not allowed"),
-            Map.entry(0x6999, "applet selection failed"),
-            Map.entry(0x6A80, "incorrect data parameters"),
-            Map.entry(0x6A81, "function not supported"),
-            Map.entry(0x6A82, "file not found"),
-            Map.entry(0x6A83, "record not found"),
-            Map.entry(0x6A84, "not enough memory"),
-            Map.entry(0x6A86, "incorrect P1/P2"),
-            Map.entry(0x6A88, "referenced data not found"),
-            Map.entry(0x6B00, "incorrect P1/P2"),
-            Map.entry(0x6C00, "wrong Le"),
-            Map.entry(0x6D00, "INS not supported"),
-            Map.entry(0x6E00, "CLA not supported"),
-            Map.entry(0x6F00, "unknown error")
-    );
 
     /**
      * Creates a new assertion for the given response.
@@ -63,8 +46,21 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
     public APDUResponseAssert isSuccess() {
         isNotNull();
         if (!actual.isSuccess()) {
-            failWithMessage("Expected success (SW=9000) but was SW=%04X (%s)",
-                    actual.sw(), describeStatusWord(actual.sw()));
+            failWithActualExpectedAndMessage(SW.format(actual.sw()), SW.format(SW.NO_ERROR),
+                    "Expected success (SW=9000) but was SW=%04X (%s)", actual.sw(), SW.describe(actual.sw()));
+        }
+        return this;
+    }
+
+    /**
+     * Verifies that the response status word is not 0x9000.
+     *
+     * @return this assertion for chaining
+     */
+    public APDUResponseAssert isNotSuccess() {
+        isNotNull();
+        if (actual.isSuccess()) {
+            failWithMessage("Expected a status word other than %s but was SW=9000", SW.format(SW.NO_ERROR));
         }
         return this;
     }
@@ -72,15 +68,92 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
     /**
      * Verifies that the response has the expected status word.
      *
-     * @param expectedSw the expected status word
+     * <p>The status word can be given as an int ({@code 0x6982}) or as a {@code short} constant of the Java Card API
+     * ({@code ISO7816.SW_NO_ERROR}, which reaches this method as {@code 0xFFFF9000}): SW1-SW2 are two bytes
+     * (ISO/IEC 7816-4 5.1.3), so the value counts modulo {@code 0x10000}.</p>
+     *
+     * @param expectedSw the expected status word, {@code -32768} to {@code 0xFFFF}
      * @return this assertion for chaining
+     * @throws IllegalArgumentException if {@code expectedSw} is not a two-byte value
+     * @see #hasStatusWord(int)
      */
     public APDUResponseAssert statusWord(int expectedSw) {
+        int expected = statusBytes("A status word", expectedSw, 0xFFFF);
         isNotNull();
-        if (actual.sw() != expectedSw) {
-            failWithMessage("Expected SW=%04X (%s) but was SW=%04X (%s)",
-                    expectedSw, describeStatusWord(expectedSw),
-                    actual.sw(), describeStatusWord(actual.sw()));
+        if (actual.sw() != expected) {
+            failWithActualExpectedAndMessage(SW.format(actual.sw()), SW.format(expected),
+                    "Expected SW=%04X (%s) but was SW=%04X (%s)",
+                    expected, SW.describe(expected), actual.sw(), SW.describe(actual.sw()));
+        }
+        return this;
+    }
+
+    /**
+     * Verifies that the response has the expected status word; the same as {@link #statusWord(int)}, under the
+     * name AssertJ users look for.
+     *
+     * @param expectedSw the expected status word: an int ({@code 0x6982}), an {@link SW} constant or a
+     *                   {@code short} constant of the Java Card API
+     * @return this assertion for chaining
+     * @throws IllegalArgumentException if {@code expectedSw} is not a two-byte value
+     */
+    public APDUResponseAssert hasStatusWord(int expectedSw) {
+        return statusWord(expectedSw);
+    }
+
+    /**
+     * Verifies that the response has one of the expected status words, e.g. {@code hasStatusWordIn(0x9000, 0x6310)}.
+     *
+     * @param expectedSws the accepted status words (ints, {@link SW} constants or Java Card {@code short} constants)
+     * @return this assertion for chaining
+     * @throws IllegalArgumentException if no status word is given or one is not a two-byte value
+     */
+    public APDUResponseAssert hasStatusWordIn(int... expectedSws) {
+        if (expectedSws.length == 0) {
+            throw new IllegalArgumentException("hasStatusWordIn needs at least one status word");
+        }
+        int[] expected = Arrays.stream(expectedSws).map(sw -> statusBytes("A status word", sw, 0xFFFF)).toArray();
+        isNotNull();
+        if (Arrays.stream(expected).noneMatch(sw -> sw == actual.sw())) {
+            String accepted = Arrays.stream(expected).mapToObj(SW::format).collect(Collectors.joining(", "));
+            failWithMessage("Expected SW in [%s] but was SW=%04X (%s)", accepted, actual.sw(),
+                    SW.describe(actual.sw()));
+        }
+        return this;
+    }
+
+    /**
+     * Verifies that SW1 has the expected value.
+     *
+     * @param expectedSw1 the expected SW1 byte, as an int ({@code 0x90}) or a {@code byte} ({@code (byte) 0x90}),
+     *                    {@code -128} to {@code 0xFF}
+     * @return this assertion for chaining
+     * @throws IllegalArgumentException if {@code expectedSw1} is not a one-byte value
+     */
+    public APDUResponseAssert hasSw1(int expectedSw1) {
+        int expected = statusBytes("SW1", expectedSw1, 0xFF);
+        isNotNull();
+        if (actual.sw1() != expected) {
+            failWithMessage("Expected SW1=%02X but was SW1=%02X (full SW=%04X, %s)",
+                    expected, actual.sw1(), actual.sw(), SW.describe(actual.sw()));
+        }
+        return this;
+    }
+
+    /**
+     * Verifies that SW2 has the expected value, e.g. the counter of {@code 63CX}.
+     *
+     * @param expectedSw2 the expected SW2 byte, as an int ({@code 0xC2}) or a {@code byte}, {@code -128} to
+     *                    {@code 0xFF}
+     * @return this assertion for chaining
+     * @throws IllegalArgumentException if {@code expectedSw2} is not a one-byte value
+     */
+    public APDUResponseAssert hasSw2(int expectedSw2) {
+        int expected = statusBytes("SW2", expectedSw2, 0xFF);
+        isNotNull();
+        if (actual.sw2() != expected) {
+            failWithMessage("Expected SW2=%02X but was SW2=%02X (full SW=%04X, %s)",
+                    expected, actual.sw2(), actual.sw(), SW.describe(actual.sw()));
         }
         return this;
     }
@@ -95,7 +168,8 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
         isNotNull();
         int actualLength = actual.data().length;
         if (actualLength != expectedLength) {
-            failWithMessage("Expected data length %d but was %d", expectedLength, actualLength);
+            failWithActualExpectedAndMessage(actualLength, expectedLength,
+                    "Expected data length %d but was %d", expectedLength, actualLength);
         }
         return this;
     }
@@ -103,21 +177,106 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
     /**
      * Verifies that the response data equals the expected bytes.
      *
-     * @param expectedBytes the expected data bytes
+     * @param expectedBytes the expected data bytes, as ints ({@code 0x80}) or bytes
      * @return this assertion for chaining
      */
     public APDUResponseAssert dataEquals(int... expectedBytes) {
-        isNotNull();
         byte[] expected = new byte[expectedBytes.length];
         for (int i = 0; i < expectedBytes.length; i++) {
             expected[i] = (byte) expectedBytes[i];
         }
+        return hasData(expected);
+    }
+
+    /**
+     * Verifies that the response data equals the expected bytes.
+     *
+     * @param expected the expected data
+     * @return this assertion for chaining
+     */
+    public APDUResponseAssert hasData(byte[] expected) {
+        isNotNull();
         byte[] actualData = actual.data();
-        if (!java.util.Arrays.equals(actualData, expected)) {
-            failWithMessage("Expected data [%s] but was [%s]",
-                    Hex.encode(expected), Hex.encode(actualData));
+        if (!Arrays.equals(actualData, expected)) {
+            failWithActualExpectedAndMessage(Hex.encode(actualData), Hex.encode(expected),
+                    "Expected data [%s] but was [%s]", Hex.encode(expected), Hex.encode(actualData));
         }
         return this;
+    }
+
+    /**
+     * Verifies that the response data equals the bytes written as hex.
+     *
+     * @param expectedHex the expected data as hex, spaces allowed ({@code "00 46"})
+     * @return this assertion for chaining
+     * @throws IllegalArgumentException if {@code expectedHex} is not hex
+     */
+    public APDUResponseAssert hasDataHex(String expectedHex) {
+        return hasData(Hex.decode(expectedHex));
+    }
+
+    /**
+     * Verifies that the response has no data (only a status word).
+     *
+     * @return this assertion for chaining
+     */
+    public APDUResponseAssert hasNoData() {
+        isNotNull();
+        byte[] actualData = actual.data();
+        if (actualData.length != 0) {
+            failWithActualExpectedAndMessage(Hex.encode(actualData), "", "Expected no data but was [%s] (%d bytes)",
+                    Hex.encode(actualData), actualData.length);
+        }
+        return this;
+    }
+
+    /**
+     * Returns an AssertJ assertion on the response data, for everything AssertJ checks on byte arrays.
+     *
+     * <pre>
+     * assertThat(response).data().hasSize(4).startsWith((byte) 0x6F);
+     * </pre>
+     *
+     * @return a byte array assertion on a copy of the data, described as the data of this response
+     */
+    public AbstractByteArrayAssert<?> data() {
+        isNotNull();
+        return Assertions.assertThat(actual.data()).as("data of %s", actual);
+    }
+
+    /**
+     * Returns an assertion on an unsigned byte of the response data ({@link APDUResponse#u8(int)}).
+     *
+     * @param offset the offset in the data
+     * @return an integer assertion on the byte, {@code 0} to {@code 255}
+     */
+    public AbstractIntegerAssert<?> u8(int offset) {
+        requireData("u8", offset, 1);
+        return Assertions.assertThat(actual.u8(offset)).as("u8 at offset %d of the data of %s", offset, actual);
+    }
+
+    /**
+     * Returns an assertion on an unsigned big-endian 16-bit number of the response data
+     * ({@link APDUResponse#u16(int)}): {@code assertThat(response).isSuccess().u16(0).isEqualTo(70)}.
+     *
+     * @param offset the offset of the high byte in the data
+     * @return an integer assertion on the number, {@code 0} to {@code 65535}
+     */
+    public AbstractIntegerAssert<?> u16(int offset) {
+        requireData("u16", offset, 2);
+        return Assertions.assertThat(actual.u16(offset)).as("u16 at offset %d of the data of %s", offset, actual);
+    }
+
+    /**
+     * Returns an assertion on a signed big-endian 16-bit number of the response data, the {@code short} an applet
+     * wrote with {@code Util.setShort} ({@link APDUResponse#s16(int)}).
+     *
+     * @param offset the offset of the high byte in the data
+     * @return an integer assertion on the number, {@code -32768} to {@code 32767}
+     */
+    public AbstractIntegerAssert<?> s16(int offset) {
+        requireData("s16", offset, 2);
+        return Assertions.assertThat(actual.s16(offset)).as("s16 at offset %d of the data of %s", offset, actual);
     }
 
     /**
@@ -198,21 +357,6 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
     }
 
     /**
-     * Verifies that SW1 has the expected value.
-     *
-     * @param expectedSw1 the expected SW1 byte
-     * @return this assertion for chaining
-     */
-    public APDUResponseAssert hasSw1(int expectedSw1) {
-        isNotNull();
-        if (actual.sw1() != expectedSw1) {
-            failWithMessage("Expected SW1=%02X but was SW1=%02X (full SW=%04X, %s)",
-                    expectedSw1, actual.sw1(), actual.sw(), describeStatusWord(actual.sw()));
-        }
-        return this;
-    }
-
-    /**
      * Parses the response data as BER-TLV and verifies that a tag is present.
      *
      * @param tag the expected TLV tag
@@ -228,6 +372,17 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
         return this;
     }
 
+    /** Fails (as an assertion) when the data has no {@code width} bytes at {@code offset}, naming the status word. */
+    private void requireData(String reader, int offset, int width) {
+        isNotNull();
+        int length = actual.data().length;
+        if (offset < 0 || offset > length - width) {
+            failWithMessage("Expected response data with %d byte%s at offset %d for %s, but the data has %d byte%s"
+                            + " (SW=%04X, %s)", width, width == 1 ? "" : "s", offset, reader, length,
+                    length == 1 ? "" : "s", actual.sw(), SW.describe(actual.sw()));
+        }
+    }
+
     private static String formatBytes(int... bytes) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < bytes.length; i++) {
@@ -237,13 +392,17 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
         return sb.toString();
     }
 
-    private static String describeStatusWord(int sw) {
-        String desc = SW_DESCRIPTIONS.get(sw);
-        if (desc != null) {
-            return desc;
+    /**
+     * A status word or byte given as an unsigned value or as a signed Java Card constant ({@code short} or
+     * {@code byte}), as the unsigned value.
+     */
+    private static int statusBytes(String what, int value, int mask) {
+        int signedMin = -(mask + 1) / 2;
+        if (value < signedMin || value > mask) {
+            throw new IllegalArgumentException(String.format("%s is %d byte%s (ISO/IEC 7816-4 5.1.3): 0x0 to 0x%X,"
+                    + " or a signed Java Card constant from %d; got 0x%X", what, mask == 0xFF ? 1 : 2,
+                    mask == 0xFF ? "" : "s", mask, signedMin, value));
         }
-        // Check for SW1-only matches (e.g. 61XX, 6CXX)
-        desc = SW_DESCRIPTIONS.get(sw & 0xFF00);
-        return desc != null ? desc : "unknown";
+        return value & mask;
     }
 }

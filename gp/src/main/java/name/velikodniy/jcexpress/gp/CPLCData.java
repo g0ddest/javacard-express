@@ -7,11 +7,12 @@ import java.util.Arrays;
 /**
  * Card Production Life Cycle (CPLC) data retrieved via GET DATA P1P2=9F7F.
  *
- * <p>CPLC is a fixed-format 38-42 byte structure (not TLV-encoded) that contains
- * the complete production history of the card: IC fabrication, module packaging,
- * card embedding, pre-personalization, and personalization details.</p>
+ * <p>CPLC is a fixed-format 42-byte structure (not TLV-encoded inside) with the production history of the
+ * card: IC fabrication, module packaging, card embedding, pre-personalization and personalization. The
+ * layout is not defined by GPCS v2.3.1; it is the de-facto standard layout (Visa GlobalPlatform card
+ * implementation requirements) returned by real cards, with 4-byte equipment identifiers.</p>
  *
- * <h2>Structure (GP Amendments B):</h2>
+ * <h2>Structure (42 bytes):</h2>
  * <pre>
  * Offset  Length  Field
  * 0       2       IC Fabricator
@@ -28,10 +29,10 @@ import java.util.Arrays;
  * 24      2       IC Embedding Date
  * 26      2       IC Pre-Personalizer
  * 28      2       IC Pre-Personalization Date
- * 30      2       IC Pre-Personalization Equipment Identifier
- * 32      2       IC Personalizer
- * 34      2       IC Personalization Date
- * 36      2       IC Personalization Equipment Identifier
+ * 30      4       IC Pre-Personalization Equipment Identifier
+ * 34      2       IC Personalizer
+ * 36      2       IC Personalization Date
+ * 38      4       IC Personalization Equipment Identifier
  * </pre>
  *
  * @param icFabricator                 IC fabricator code
@@ -48,10 +49,10 @@ import java.util.Arrays;
  * @param icEmbeddingDate              IC embedding date (raw 2-byte value)
  * @param icPrePersonalizer            IC pre-personalizer code
  * @param icPrePersonalizationDate     IC pre-personalization date (raw 2-byte value)
- * @param icPrePersonalizationEquipId  IC pre-personalization equipment identifier
+ * @param icPrePersonalizationEquipId  IC pre-personalization equipment identifier (raw 4-byte value)
  * @param icPersonalizer               IC personalizer code
  * @param icPersonalizationDate        IC personalization date (raw 2-byte value)
- * @param icPersonalizationEquipId     IC personalization equipment identifier
+ * @param icPersonalizationEquipId     IC personalization equipment identifier (raw 4-byte value)
  */
 public record CPLCData(
         int icFabricator,
@@ -74,26 +75,22 @@ public record CPLCData(
         int icPersonalizationEquipId
 ) {
 
-    /** Minimum CPLC data length (38 bytes for all mandatory fields). */
-    private static final int MIN_LENGTH = 38;
+    /** Length of the CPLC data. */
+    private static final int LENGTH = 42;
 
     /**
-     * Parses CPLC data from a GET DATA response.
-     *
-     * <p>Automatically strips the 9F7F tag wrapper if present.</p>
+     * Parses CPLC data from a GET DATA response: either the 42 bytes themselves or the data object
+     * {@code '9F7F' L data} (BER length, which must match the data).
      *
      * @param data the response data bytes
      * @return parsed CPLCData
-     * @throws GPException if the data is too short
+     * @throws GPException if the data is not 42 bytes long or the '9F7F' wrapper is malformed
      */
     public static CPLCData parse(byte[] data) {
-        byte[] cplc = stripTagWrapper(data);
-
-        if (cplc.length < MIN_LENGTH) {
-            throw new GPException(
-                    "CPLC data too short: " + cplc.length + " bytes (minimum " + MIN_LENGTH + ")");
+        byte[] cplc = unwrap(data);
+        if (cplc.length != LENGTH) {
+            throw new GPException("CPLC data must be " + LENGTH + " bytes, got " + cplc.length);
         }
-
         return new CPLCData(
                 readUint16(cplc, 0),
                 readUint16(cplc, 2),
@@ -109,10 +106,10 @@ public record CPLCData(
                 readUint16(cplc, 24),
                 readUint16(cplc, 26),
                 readUint16(cplc, 28),
-                readUint16(cplc, 30),
-                readUint16(cplc, 32),
+                readInt32(cplc, 30),
                 readUint16(cplc, 34),
-                readUint16(cplc, 36)
+                readUint16(cplc, 36),
+                readInt32(cplc, 38)
         );
     }
 
@@ -138,32 +135,27 @@ public record CPLCData(
         return String.format("%04X", dateValue & 0xFFFF);
     }
 
-    /**
-     * Strips the 9F7F TLV tag wrapper if present.
-     *
-     * <p>Some cards return CPLC data wrapped in the 9F7F tag,
-     * others return the raw bytes directly.</p>
-     */
-    private static byte[] stripTagWrapper(byte[] data) {
-        if (data.length > 2 && (data[0] & 0xFF) == 0x9F && (data[1] & 0xFF) == 0x7F) {
-            // Tag 9F7F is 2 bytes; next byte(s) = length
-            int offset = 2;
-            int len = data[offset] & 0xFF;
-            if (len <= 0x7F) {
-                offset++;
-            } else if (len == 0x81) {
-                offset++;
-                len = data[offset] & 0xFF;
-                offset++;
-            } else {
-                // Unlikely for CPLC (42 bytes max)
-                return data;
-            }
-            if (offset + len <= data.length) {
-                return Arrays.copyOfRange(data, offset, offset + len);
-            }
+    /** Returns the CPLC bytes: raw 42-byte data, or the value of a well-formed '9F7F' data object. */
+    private static byte[] unwrap(byte[] data) {
+        if (data.length == LENGTH || data.length < 3 || (data[0] & 0xFF) != 0x9F || (data[1] & 0xFF) != 0x7F) {
+            return data;
         }
-        return data;
+        int offset = 2;
+        int length = data[offset++] & 0xFF;
+        if (length == 0x81 && data.length > offset) {
+            length = data[offset++] & 0xFF;
+        } else if (length > 0x7F) {
+            throw new GPException(String.format("Unsupported CPLC data object length byte %02X", length));
+        }
+        if (offset + length != data.length) {
+            throw new GPException("CPLC data object '9F7F' declares " + length + " bytes, but "
+                    + (data.length - offset) + " follow");
+        }
+        return Arrays.copyOfRange(data, offset, data.length);
+    }
+
+    private static int readInt32(byte[] data, int offset) {
+        return (readUint16(data, offset) << 16) | readUint16(data, offset + 2);
     }
 
     private static int readUint16(byte[] data, int offset) {

@@ -4,9 +4,13 @@ import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.memory.MemoryInfo;
 import name.velikodniy.jcexpress.tlv.TLV;
 import name.velikodniy.jcexpress.tlv.TLVList;
+import org.assertj.core.api.Assertions;
 
 /**
- * Entry point for JavaCard Express custom assertions.
+ * Entry point for the assertions of JavaCard Express, and of AssertJ: the class extends AssertJ's
+ * {@link Assertions}, so one static import gives {@code assertThat} for APDU responses, TLV data and memory
+ * information as well as for everything AssertJ asserts on ({@code byte[]}, numbers, strings, collections, ...),
+ * and {@code assertThatThrownBy}, {@code fail} and the other entry points of AssertJ.
  *
  * <p>Usage:</p>
  * <pre>
@@ -15,9 +19,11 @@ import name.velikodniy.jcexpress.tlv.TLVList;
  * assertThat(response).isSuccess();
  * assertThat(response).dataAsString().isEqualTo("Hello");
  * assertThat(response).tlv().containsTag(0x6F);
+ * assertThat(response.u16(0)).isEqualTo(70);        // AssertJ's assertThat(int), same import
+ * assertThat(response.data()).hasSize(2);            // AssertJ's assertThat(byte[])
  * </pre>
  */
-public final class JCXAssertions {
+public final class JCXAssertions extends Assertions {
 
     private JCXAssertions() {
     }

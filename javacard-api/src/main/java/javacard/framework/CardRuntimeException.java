@@ -6,15 +6,13 @@ package javacard.framework;
 @SuppressWarnings({"java:S1172", "java:S112"}) // API stubs: params are contractual, RuntimeException is intentional
 public class CardRuntimeException extends RuntimeException {
 
-    private short reason;
-
     /**
      * Constructs a CardRuntimeException with the given reason code.
      *
      * @param reason the reason code
      */
     public CardRuntimeException(short reason) {
-        this.reason = reason;
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -23,7 +21,7 @@ public class CardRuntimeException extends RuntimeException {
      * @return the reason code
      */
     public short getReason() {
-        return reason;
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -32,7 +30,7 @@ public class CardRuntimeException extends RuntimeException {
      * @param reason the new reason code
      */
     public void setReason(short reason) {
-        this.reason = reason;
+        throw new RuntimeException("stub");
     }
 
     /**

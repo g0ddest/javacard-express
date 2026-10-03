@@ -7,12 +7,12 @@ import java.util.Arrays;
 /**
  * Algorithm suites for ISO 7816-4 Secure Messaging.
  *
- * <p>Two suites are defined:</p>
+ * <p>Two suites are defined (ICAO Doc 9303-11, 9.8.6 and 9.8.7):</p>
  * <ul>
- *   <li><b>DES3</b> — ePassport BAC: retail MAC (ISO 9797-1 Algorithm 3) + 3DES-CBC,
- *       8-byte blocks, 8-byte SSC</li>
- *   <li><b>AES</b> — PACE/EAC: AES-CMAC (truncated to 8 bytes) + AES-CBC,
- *       16-byte blocks, 16-byte SSC</li>
+ *   <li><b>DES3</b> — ePassport BAC: retail MAC (ISO 9797-1 Algorithm 3) + two-key 3DES-CBC with
+ *       zero IV, 8-byte blocks, 8-byte SSC</li>
+ *   <li><b>AES</b> — PACE: AES-CMAC (truncated to 8 bytes) + AES-CBC with
+ *       {@code IV = E(KSEnc, SSC)}, 16-byte blocks, 16-byte SSC</li>
  * </ul>
  *
  * <p>Each enum constant delegates to the appropriate {@link CryptoUtil} methods.</p>
@@ -40,6 +40,12 @@ public enum SMAlgorithm {
         public byte[] mac(byte[] key, byte[] data) {
             return CryptoUtil.retailMac(key, data, new byte[8]);
         }
+
+        /** ICAO 9303-11 9.8.6.1: two-key 3DES in CBC mode with zero IV. */
+        @Override
+        public byte[] iv(byte[] encKey, byte[] ssc) {
+            return new byte[8];
+        }
     },
 
     /**
@@ -63,6 +69,15 @@ public enum SMAlgorithm {
         public byte[] mac(byte[] key, byte[] data) {
             byte[] full = CryptoUtil.aesCmac(key, data);
             return Arrays.copyOf(full, 8); // truncate to 8 bytes
+        }
+
+        /** ICAO 9303-11 9.8.7.1: AES in CBC mode with key KSEnc and IV = E(KSEnc, SSC). */
+        @Override
+        public byte[] iv(byte[] encKey, byte[] ssc) {
+            if (ssc.length != 16) {
+                throw new SMException("AES SSC must be 16 bytes, got " + ssc.length);
+            }
+            return CryptoUtil.aesEcbEncrypt(encKey, ssc);
         }
     };
 
@@ -100,6 +115,19 @@ public enum SMAlgorithm {
      * @return decrypted data
      */
     public abstract byte[] decrypt(byte[] key, byte[] data, byte[] iv);
+
+    /**
+     * Returns the CBC initialisation vector used to encrypt or decrypt the data object of one APDU.
+     *
+     * <p>For DES3 this is the zero block (ICAO Doc 9303-11, 9.8.6.1). For AES it is
+     * {@code E(KSEnc, SSC)} (9.8.7.1), where SSC is the value of the Send Sequence Counter for the APDU
+     * being protected, i.e. after its increment (9.8.2).</p>
+     *
+     * @param encKey the session encryption key KSEnc
+     * @param ssc    the current Send Sequence Counter
+     * @return a new IV array of {@link #blockSize()} bytes
+     */
+    public abstract byte[] iv(byte[] encKey, byte[] ssc);
 
     /**
      * Computes a MAC using the suite's algorithm.

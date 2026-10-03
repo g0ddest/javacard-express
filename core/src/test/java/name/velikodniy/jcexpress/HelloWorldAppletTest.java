@@ -35,14 +35,15 @@ class HelloWorldAppletTest {
         assertThat(response).statusWord(0x6D00);
     }
 
+    /** A card reset keeps installed applets (SmartCardSession.reset(): remove and reinsert the card). */
     @Test
-    void shouldWorkAfterResetAndReinstall() {
+    void shouldWorkAfterResetAndReselect() {
         card.install(HelloWorldApplet.class);
         APDUResponse first = card.send(0x80, 0x01);
         assertThat(first).isSuccess();
 
         card.reset();
-        card.install(HelloWorldApplet.class);
+        card.select(HelloWorldApplet.class);
 
         APDUResponse second = card.send(0x80, 0x01);
         assertThat(second).isSuccess();

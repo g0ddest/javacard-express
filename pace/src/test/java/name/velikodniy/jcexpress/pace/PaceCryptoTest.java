@@ -1,11 +1,14 @@
 package name.velikodniy.jcexpress.pace;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
+import java.security.spec.ECFieldFp;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
 import java.security.spec.EllipticCurve;
@@ -46,6 +49,29 @@ class PaceCryptoTest {
     void decodeEmptyShouldThrow() {
         assertThatThrownBy(() -> PaceCrypto.decodePoint(new byte[0], ecParams().getCurve()))
                 .isInstanceOf(PaceException.class);
+    }
+
+    /** ICAO 9303-11 9.4.5 / Table 13: ephemeral public keys are validated as in BSI TR-03111. */
+    @Test
+    void decodePointRejectsAPointOffTheCurve() {
+        ECParameterSpec params = ecParams();
+        byte[] encoded = PaceCrypto.encodePoint(params.getGenerator(), 32);
+        encoded[64] ^= 0x01;
+
+        assertThatThrownBy(() -> PaceCrypto.decodePoint(encoded, params.getCurve()))
+                .isInstanceOf(PaceException.class)
+                .hasMessageContaining("not on the curve");
+    }
+
+    @Test
+    void decodePointRejectsCoordinatesOutsideTheField() {
+        ECParameterSpec params = ecParams();
+        BigInteger p = ((ECFieldFp) params.getCurve().getField()).getP();
+        byte[] encoded = PaceCrypto.encodePoint(new ECPoint(p, BigInteger.ONE), 32);
+
+        assertThatThrownBy(() -> PaceCrypto.decodePoint(encoded, params.getCurve()))
+                .isInstanceOf(PaceException.class)
+                .hasMessageContaining("field");
     }
 
     @Test
@@ -152,6 +178,24 @@ class PaceCryptoTest {
         assertThat(pub.getW()).isNotEqualTo(ECPoint.POINT_INFINITY);
         assertThat(priv.getS()).isPositive();
         assertThat(priv.getS()).isLessThan(params.getOrder());
+    }
+
+    /**
+     * Ephemeral keys are generated without the JCA provider: the JDK's SunEC provider rejects the Brainpool curves
+     * of ICAO 9303-11 Table 12 ("Curve not supported"), although brainpoolP256r1 is the curve of App. G.1.
+     */
+    @ParameterizedTest
+    @EnumSource(PaceParameterId.class)
+    void keyPairGenerationWorksOnEveryStandardizedCurve(PaceParameterId parameterId) {
+        ECParameterSpec params = parameterId.ecParameterSpec();
+
+        KeyPair kp = PaceCrypto.generateKeyPair(params);
+
+        BigInteger s = ((ECPrivateKey) kp.getPrivate()).getS();
+        assertThat(s).isPositive().isLessThan(params.getOrder());
+        assertThat(((ECPublicKey) kp.getPublic()).getW())
+                .isEqualTo(PaceCrypto.scalarMultiply(s, params.getGenerator(), params.getCurve()));
+        assertThat(((ECPublicKey) kp.getPublic()).getParams()).isSameAs(params);
     }
 
     @Test

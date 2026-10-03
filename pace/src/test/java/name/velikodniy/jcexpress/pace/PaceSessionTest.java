@@ -3,28 +3,23 @@ package name.velikodniy.jcexpress.pace;
 import javacard.framework.Applet;
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDUResponse;
+import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.SmartCardSession;
-import name.velikodniy.jcexpress.crypto.CryptoUtil;
 import name.velikodniy.jcexpress.sm.SMContext;
 import name.velikodniy.jcexpress.sm.SMSession;
-import name.velikodniy.jcexpress.tlv.TLVBuilder;
-import name.velikodniy.jcexpress.tlv.Tags;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigInteger;
-import java.security.KeyPair;
-import java.security.interfaces.ECPrivateKey;
-import java.security.interfaces.ECPublicKey;
-import java.security.spec.ECParameterSpec;
-import java.security.spec.ECPoint;
 import java.util.ArrayList;
 import java.util.List;
+
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link PaceSession}.
+ * Tests for {@link PaceSession} builder and error handling. Protocol runs are tested against the ICAO transcript
+ * ({@link IcaoAppendixG1PaceTest}) and an independent chip simulator ({@link PaceEndToEndTest}).
  */
 class PaceSessionTest {
 
@@ -32,8 +27,7 @@ class PaceSessionTest {
     private static final PaceParameterId PARAM = PaceParameterId.NIST_P256;
 
     /**
-     * Stub session that simulates a card performing PACE.
-     * Pre-computes all cryptographic values so the protocol succeeds.
+     * Stub session that records the command data and answers with queued responses (then 9000).
      */
     private static class PaceCardStub implements SmartCardSession {
         final List<APDUResponse> responses = new ArrayList<>();
@@ -144,157 +138,6 @@ class PaceSessionTest {
     }
 
     @Test
-    void performShouldExecuteFullProtocol() {
-        // Set up a full PACE simulation
-        ECParameterSpec ecParams = PARAM.ecParameterSpec();
-        int fieldSize = PaceCrypto.fieldSize(ecParams.getCurve());
-        byte[] password = new byte[16]; // K_π
-
-        // Card generates a random nonce
-        byte[] nonce = new byte[16];
-        nonce[0] = 0x42;
-
-        // Card encrypts nonce with K_π
-        byte[] encryptedNonce = CryptoUtil.aesCbcEncrypt(password, nonce);
-
-        // Card generates mapping key pair
-        KeyPair cardMappingKp = PaceCrypto.generateKeyPair(ecParams);
-        ECPublicKey cardMappingPub = (ECPublicKey) cardMappingKp.getPublic();
-        ECPrivateKey cardMappingPriv = (ECPrivateKey) cardMappingKp.getPrivate();
-
-        PaceCardStub stub = new PaceCardStub() {
-            private byte[] termMappingPub;
-            private ECPoint mappedG;
-            private byte[] termEphPub;
-            private byte[] sessionMacKey;
-
-            @Override
-            public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data, int le) {
-                callIndex++;
-                if (data != null) sentData.add(data.clone());
-
-                if (ins == 0x22) {
-                    // MSE:Set AT
-                    return new APDUResponse(new byte[]{(byte) 0x90, 0x00});
-                }
-
-                if (ins == 0x86) {
-                    return handleGA(data);
-                }
-
-                return new APDUResponse(new byte[]{(byte) 0x6D, 0x00});
-            }
-
-            private APDUResponse handleGA(byte[] data) {
-                int step = determineStep(data);
-
-                return switch (step) {
-                    case 1 -> {
-                        // Return encrypted nonce
-                        byte[] resp = TLVBuilder.create()
-                                .addConstructed(Tags.DYNAMIC_AUTH_DATA, b ->
-                                        b.add(Tags.PACE_NONCE, encryptedNonce))
-                                .build();
-                        yield new APDUResponse(resp, 0x9000);
-                    }
-                    case 2 -> {
-                        // Extract terminal mapping pubkey, compute ECDH, return card mapping pubkey
-                        termMappingPub = extractPubKey(data, Tags.PACE_MAP_DATA);
-                        ECPoint termPoint = PaceCrypto.decodePoint(termMappingPub, ecParams.getCurve());
-
-                        // Card computes ECDH shared secret
-                        byte[] sharedSecret = PaceCrypto.ecdh(cardMappingPriv, termPoint, ecParams);
-                        ECPoint sharedPoint = PaceCrypto.scalarMultiply(
-                                new BigInteger(1, sharedSecret),
-                                ecParams.getGenerator(), ecParams.getCurve());
-
-                        // Generic Mapping
-                        BigInteger s = new BigInteger(1, nonce);
-                        mappedG = PaceCrypto.genericMapping(s, ecParams.getGenerator(),
-                                sharedPoint, ecParams.getCurve());
-
-                        byte[] cardPubEncoded = PaceCrypto.encodePoint(cardMappingPub.getW(), fieldSize);
-                        byte[] resp = TLVBuilder.create()
-                                .addConstructed(Tags.DYNAMIC_AUTH_DATA, b ->
-                                        b.add(Tags.PACE_MAP_RESPONSE, cardPubEncoded))
-                                .build();
-                        yield new APDUResponse(resp, 0x9000);
-                    }
-                    case 3 -> {
-                        // Extract terminal ephemeral pubkey, generate card's, compute session keys
-                        termEphPub = extractPubKey(data, Tags.PACE_EPHEMERAL_PK);
-
-                        KeyPair cardEphKp = PaceCrypto.generateKeyPairOnGenerator(mappedG, ecParams);
-                        ECPublicKey cardEphPub = (ECPublicKey) cardEphKp.getPublic();
-                        ECPrivateKey cardEphPriv = (ECPrivateKey) cardEphKp.getPrivate();
-
-                        ECPoint termEphPoint = PaceCrypto.decodePoint(termEphPub, ecParams.getCurve());
-                        byte[] sharedFinal = PaceCrypto.ecdh(cardEphPriv, termEphPoint, ecParams);
-                        var keys = PaceMrz.deriveKeys(sharedFinal, ALG.keyLength());
-                        sessionMacKey = keys.macKey();
-
-                        byte[] cardPubEncoded = PaceCrypto.encodePoint(cardEphPub.getW(), fieldSize);
-                        byte[] resp = TLVBuilder.create()
-                                .addConstructed(Tags.DYNAMIC_AUTH_DATA, b ->
-                                        b.add(Tags.PACE_EPHEMERAL_PK_RESPONSE, cardPubEncoded))
-                                .build();
-                        yield new APDUResponse(resp, 0x9000);
-                    }
-                    case 4 -> {
-                        // Verify terminal token, return card token
-                        byte[] oidBytes = ALG.oidBytes();
-                        byte[] cardToken = PaceCrypto.authToken(sessionMacKey, oidBytes, termEphPub);
-
-                        byte[] resp = TLVBuilder.create()
-                                .addConstructed(Tags.DYNAMIC_AUTH_DATA, b ->
-                                        b.add(Tags.PACE_AUTH_TOKEN_RESPONSE, cardToken))
-                                .build();
-                        yield new APDUResponse(resp, 0x9000);
-                    }
-                    default -> new APDUResponse(new byte[]{(byte) 0x69, (byte) 0x85});
-                };
-            }
-
-            private int determineStep(byte[] data) {
-                if (data == null || data.length <= 4) return 1; // empty 7C 00
-                // Parse TLV properly to find the tag inside 7C
-                var parsed = name.velikodniy.jcexpress.tlv.TLVParser.parse(data);
-                var outer = parsed.find(Tags.DYNAMIC_AUTH_DATA);
-                if (outer.isEmpty()) return 1;
-                var children = outer.get().children();
-                if (children.contains(Tags.PACE_MAP_DATA)) return 2;
-                if (children.contains(Tags.PACE_EPHEMERAL_PK)) return 3;
-                if (children.contains(Tags.PACE_AUTH_TOKEN)) return 4;
-                return 1;
-            }
-
-            private byte[] extractPubKey(byte[] data, int tag) {
-                var parsed = name.velikodniy.jcexpress.tlv.TLVParser.parse(data);
-                var outer = parsed.find(Tags.DYNAMIC_AUTH_DATA);
-                if (outer.isPresent()) {
-                    var child = outer.get().find(tag);
-                    if (child.isPresent()) return child.get().value();
-                }
-                throw new PaceException("Missing tag " + String.format("%02X", tag));
-            }
-        };
-
-        PaceSession session = PaceSession.builder()
-                .algorithm(ALG)
-                .parameterId(PARAM)
-                .password(PasswordRef.CAN, password)
-                .build();
-
-        PaceResult result = session.perform(stub);
-
-        assertThat(result).isNotNull();
-        assertThat(result.encKey()).hasSize(16);
-        assertThat(result.macKey()).hasSize(16);
-        assertThat(result.cardToken()).hasSize(8);
-        assertThat(result.termToken()).hasSize(8);
-    }
-
-    @Test
     void resultShouldCreateSMContext() {
         PaceResult result = new PaceResult(
                 new byte[16], new byte[16], new byte[8], new byte[8]);
@@ -312,6 +155,91 @@ class PaceSessionTest {
         SMSession smSession = result.toSMSession(stub);
         assertThat(smSession).isNotNull();
         assertThat(smSession.delegate()).isSameAs(stub);
+    }
+
+    @Test
+    void resultDoesNotPrintTheSessionKeys() {
+        // session keys of ICAO App. G.1; the authentication tokens are exchanged in the clear and may be shown
+        PaceResult result = new PaceResult(Hex.decode("F5F0E35C0D7161EE6724EE513A0D9A7F"),
+                Hex.decode("FE251C7858B356B24514B3BD5F4297D1"), Hex.decode("3ABB9674BCE93C08"),
+                Hex.decode("C2B0BD78D94BA866"));
+
+        assertThat(result.toString())
+                .doesNotContainIgnoringCase("F5F0E35C")
+                .doesNotContainIgnoringCase("FE251C78")
+                .containsIgnoringCase("3ABB9674BCE93C08");
+    }
+
+    @Test
+    void destroyedSessionCannotBePerformed() {
+        PaceCardStub stub = new PaceCardStub();
+        PaceSession session = PaceSession.builder().algorithm(ALG).parameterId(PARAM)
+                .password(PasswordRef.CAN, new byte[16]).build();
+
+        session.destroy();
+
+        assertThat(session.isDestroyed()).isTrue();
+        assertThatThrownBy(() -> session.perform(stub)).isInstanceOf(IllegalStateException.class);
+        assertThat(stub.callIndex).isZero();
+    }
+
+    @Test
+    void rawPasswordKeyIsUsedAsGivenEvenForMrz() {
+        // password(ref, bytes) takes K_pi itself; it must not be derived a second time (K_pi of ICAO App. G)
+        byte[] kPi = Hex.decode("89DED1B26624EC1E634C1989302849DD");
+        IcaoPaceChipSimulator chip = IcaoPaceChipSimulator.random(PARAM, ALG, PasswordRef.MRZ, kPi);
+
+        PaceSession.builder().algorithm(ALG).parameterId(PARAM).password(PasswordRef.MRZ, kPi).build().perform(chip);
+
+        assertThat(chip.authenticated).isTrue();
+    }
+
+    @Test
+    void canIsEncodedAsIso8859StringAndDerivedWithCounter3() {
+        // ICAO 9303-11 9.7.3: K_pi = KDF(f(pi), 3), Table 14: f(CAN) = ISO/IEC 8859-1 encoded character string
+        byte[] kPi = PaceMrz.kdf("123456".getBytes(ISO_8859_1), 3, ALG.keyLength());
+        IcaoPaceChipSimulator chip = IcaoPaceChipSimulator.random(
+                PaceParameterId.BRAINPOOL_P256R1, ALG, PasswordRef.CAN, kPi);
+
+        PaceSession.builder().algorithm(ALG).parameterId(PaceParameterId.BRAINPOOL_P256R1)
+                .canPassword("123456").build().perform(chip);
+
+        assertThat(chip.authenticated).isTrue();
+        assertThat(Hex.encode(chip.commands.getFirst().data())).contains("830102");
+    }
+
+    @Test
+    void pinAndPukUseTheirPasswordReferences() {
+        // BSI TR-03110: PIN (3) and PUK (4) are encoded like the CAN
+        byte[] pinKey = PaceMrz.kdf("4711".getBytes(ISO_8859_1), 3, ALG.keyLength());
+        IcaoPaceChipSimulator pinChip = IcaoPaceChipSimulator.random(PARAM, ALG, PasswordRef.PIN, pinKey);
+        byte[] pukKey = PaceMrz.kdf("1234567890".getBytes(ISO_8859_1), 3, ALG.keyLength());
+        IcaoPaceChipSimulator pukChip = IcaoPaceChipSimulator.random(PARAM, ALG, PasswordRef.PUK, pukKey);
+
+        PaceSession.builder().algorithm(ALG).parameterId(PARAM).pinPassword("4711").build().perform(pinChip);
+        PaceSession.builder().algorithm(ALG).parameterId(PARAM).pukPassword("1234567890").build().perform(pukChip);
+
+        assertThat(pinChip.authenticated).isTrue();
+        assertThat(pukChip.authenticated).isTrue();
+    }
+
+    @Test
+    void passwordKeyMustHaveTheSessionKeyLength() {
+        assertThatThrownBy(() -> PaceSession.builder()
+                .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_256)
+                .parameterId(PARAM)
+                .password(PasswordRef.CAN, new byte[16])
+                .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("32");
+    }
+
+    @Test
+    void emptyOrNonLatin1SecretsAreRejected() {
+        assertThatThrownBy(() -> PaceSession.builder().canPassword(""))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PaceSession.builder().pinPassword("\u20AC123"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

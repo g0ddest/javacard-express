@@ -4,7 +4,9 @@ import name.velikodniy.jcexpress.converter.Converter;
 import name.velikodniy.jcexpress.converter.ConverterException;
 import name.velikodniy.jcexpress.converter.ConverterResult;
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
+import org.apache.maven.artifact.DependencyResolutionRequiredException;
 import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecution;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
@@ -12,33 +14,48 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
+import org.apache.maven.project.MavenProjectHelper;
 
+import javax.inject.Inject;
 import java.io.File;
-import java.io.IOException;
-import java.lang.classfile.ClassFile;
-import java.lang.classfile.ClassModel;
-import java.lang.classfile.constantpool.ClassEntry;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * Compiles JavaCard applet sources into a CAP file.
+ * Converts the compiled classes of one Java package into a CAP file, and into an export file
+ * when the package is exported (JCVM 3.1 chapters 4 to 6).
  * <p>
- * Binds to the {@code package} phase by default. Uses the built-in
- * clean-room converter — no Oracle SDK or proprietary tools required.
+ * The goal runs in the {@code process-classes} phase once it is bound with an {@code <execution>}
+ * (a default phase alone does not make Maven run a goal): code outside the Java Card subset fails
+ * the build before the tests run, and the CAP file, the export file and the build descriptor are
+ * in the classes directory when the tests and the other modules of a reactor need them
+ * ({@code classesOutput}). Uses the built-in clean-room converter — no Oracle SDK or proprietary
+ * tools required. Maven must run on JDK 25+.
+ * <p>
+ * Before converting, the goal selects the package (one per CAP file), finds or checks the
+ * applets, assigns AIDs that keep the package RID, decides about the export, and collects the
+ * export files of imported packages; problems are reported with the source lines they come from.
  * <p>
  * Minimal configuration example (auto-discovers applets):
  * <pre>{@code
  * <plugin>
  *   <groupId>name.velikodniy</groupId>
  *   <artifactId>javacard-express-maven-plugin</artifactId>
- *   <version>0.1.0</version>
+ *   <version>${jcexpress.version}</version>
+ *   <executions>
+ *     <execution>
+ *       <goals>
+ *         <goal>build</goal>
+ *       </goals>
+ *     </execution>
+ *   </executions>
  *   <configuration>
  *     <packageAid>A00000006212</packageAid>
  *   </configuration>
@@ -60,75 +77,167 @@ import java.util.List;
  */
 @Mojo(
         name = "build",
-        defaultPhase = LifecyclePhase.PACKAGE,
-        requiresDependencyResolution = ResolutionScope.COMPILE
+        defaultPhase = LifecyclePhase.PROCESS_CLASSES,
+        requiresDependencyResolution = ResolutionScope.COMPILE,
+        threadSafe = true
 )
 public class JavaCardBuildMojo extends AbstractMojo {
 
-    /** Directory containing compiled .class files. */
-    @Parameter(defaultValue = "${project.build.outputDirectory}", readonly = true)
+    private final MavenProjectHelper projectHelper;
+
+    /** Directory containing the compiled .class files to convert. */
+    @Parameter(property = "javacard.classesDirectory", defaultValue = "${project.build.outputDirectory}")
     private File classesDirectory;
 
     /** Output directory for the generated .cap and .exp files. */
-    @Parameter(defaultValue = "${project.build.directory}", readonly = true)
+    @Parameter(property = "javacard.outputDirectory", defaultValue = "${project.build.directory}")
     private File outputDirectory;
 
+    /** Base name of the generated files: {@code <finalName>[-<classifier>].cap} and {@code .exp}. */
+    @Parameter(property = "javacard.finalName", defaultValue = "${project.build.finalName}")
+    private String finalName;
+
     /**
-     * Package AID as hex string (e.g. "A00000006212").
-     * If omitted, a deterministic AID is generated from the package name.
+     * Classifier of the generated files, both in their names and as attached artifacts. Needed
+     * when one module builds several CAP files (one plugin execution per package).
+     */
+    @Parameter(property = "javacard.classifier")
+    private String classifier;
+
+    /**
+     * Attach the CAP file (type {@code cap}) and the export file (type {@code exp}) to the project,
+     * so that {@code install}/{@code deploy} publish them and other modules can depend on them.
+     */
+    @Parameter(property = "javacard.attach", defaultValue = "true")
+    private boolean attach;
+
+    /**
+     * Package AID as hex string (e.g. "A00000006212"), 5 to 16 bytes (JCVM 3.1 &sect;4.2.1). If
+     * omitted, a development AID {@code F0 || SHA-1(package name)[0..6]} is used (with a warning).
+     * Applet AIDs without a configured {@code <aid>} are this AID followed by the applet's 1-based
+     * position, so they keep the package RID (&sect;4.2.2.2, &sect;6.6).
      */
     @Parameter(property = "javacard.packageAid")
     private String packageAid;
 
     /**
-     * Java package name (dot notation). Auto-detected from classesDirectory if omitted.
+     * The Java package to convert (dot notation). A CAP file holds one package (JCVM 3.1
+     * &sect;4.1.2). May be omitted when all classes are in one package; with classes in several
+     * packages the build fails unless this names one of them.
      */
     @Parameter(property = "javacard.packageName")
     private String packageName;
 
     /**
-     * Package version string (e.g. "1.0"). Defaults to "1.0".
+     * Package version {@code <major>.<minor>}, each number 0 to 255 (JCVM 3.1 &sect;4.5); written to
+     * the Header component (&sect;6.4).
      */
     @Parameter(property = "javacard.packageVersion", defaultValue = "1.0")
     private String packageVersion;
 
-    /** Applet configurations. If empty, applets are auto-discovered. */
+    /**
+     * The applets to register, each with {@code <className>} and an optional {@code <aid>}. If
+     * omitted, every non-abstract direct or indirect subclass of {@code javacard.framework.Applet}
+     * of the package that declares {@code static install(byte[], short, byte)} is registered
+     * (JCVM 3.1 &sect;6.6). Configured classes that are not such applets fail the build.
+     */
     @Parameter
     private List<AppletConfig> applets;
 
-    /** Enable 32-bit integer support (ACC_INT flag). */
+    /** Enable 32-bit integer support (ACC_INT flag of the Header component, JCVM 3.1 &sect;6.4). */
     @Parameter(property = "javacard.supportInt32", defaultValue = "false")
     private boolean supportInt32;
 
-    /** Generate export component in the CAP file. */
-    @Parameter(property = "javacard.generateExport", defaultValue = "true")
-    private boolean generateExport;
+    /**
+     * Whether to generate the Export component in the CAP file and write the export file
+     * ({@code .exp}). When not configured, the package is exported if it has something to export
+     * (JCVM 3.1 &sect;6.13): a library package exports its public classes and interfaces, an applet
+     * package only its public shareable interfaces; an applet package without them is not exported.
+     */
+    @Parameter(property = "javacard.generateExport")
+    private Boolean generateExport;
 
     /**
-     * Enable Oracle compatibility mode. When true, replicates the Oracle converter's
-     * dispatch table off-by-one behavior in Class.cap for byte-identical output.
+     * Former Oracle compatibility mode of the Class component.
+     *
+     * @deprecated The Class component is written as JCVM 3.1 &sect;6.9 specifies; the value is
+     *             only passed on to the converter's deprecated option of the same name and the
+     *             parameter will be removed.
      */
+    @Deprecated
     @Parameter(property = "javacard.oracleCompatibility", defaultValue = "false")
     private boolean oracleCompatibility;
 
     /**
-     * Target JavaCard specification version.
-     * Controls the CAP format version and API import versions.
-     * Valid values: "2.2.2", "3.0.5" (default), "3.1.0", "3.2.0".
+     * Target Java Card platform version. Controls the CAP format version in the Header
+     * component (JCVM 3.1 &sect;6.4) and the versions of the imported API packages
+     * (&sect;6.7). Valid values: 2.1.2, 2.2.1, 2.2.2, 3.0.3, 3.0.4, 3.0.5 (default), 3.1.0, 3.2.0;
+     * any other value fails the build. The old element name {@code <javaCardVersionStr>} is
+     * accepted as an alias.
      */
-    @Parameter(property = "javacard.version", defaultValue = "3.0.5")
-    private String javaCardVersionStr;
+    @Parameter(property = "javacard.version", alias = "javaCardVersionStr", defaultValue = "3.0.5")
+    private String javaCardVersion;
 
-    /** Import export files (.exp) for external package resolution. */
+    /**
+     * Export files ({@code .exp}) of imported packages, one by one. Export files are also taken
+     * from dependencies of type {@code exp}, from {@code <exportPath>}, and from dependency jars
+     * that contain them at {@code <package directory>/javacard/<name>.exp} (JCVM 3.1 &sect;5.2).
+     */
     @Parameter
     private List<File> importExportFiles;
 
-    /** Skip plugin execution. */
+    /**
+     * Directories and jars searched for the export files of imported packages, each at
+     * {@code <package directory>/javacard/<last package name component>.exp} (JCVM 3.1 &sect;5.1,
+     * &sect;5.2), e.g. the {@code api_export_files} directory of a Java Card development kit or a
+     * directory of GlobalPlatform export files.
+     */
+    @Parameter
+    private List<File> exportPath;
+
+    /**
+     * Also write the CAP file and the export file into the classes directory, at
+     * {@code <package directory>/javacard/<name>.cap} and {@code .exp} (JCVM 3.1 &sect;5.2), with the build
+     * descriptor {@code META-INF/javacard/<package>.properties} (package, AIDs, conversion settings,
+     * {@code groupId:artifactId}). They go into the jar: modules and projects that import the package find its
+     * export file on their class path (no dependency of type {@code exp}), and the card test backends of
+     * {@code javacard-express-core} convert the package with the settings of this build.
+     */
+    @Parameter(property = "javacard.classesOutput", defaultValue = "true")
+    private boolean classesOutput;
+
+    /** Skip the goal. */
     @Parameter(property = "javacard.skip", defaultValue = "false")
     private boolean skip;
 
+    /**
+     * Fail the build when the project's {@code javacard-express-api} or {@code javacard-express-core}
+     * dependency has another version than this plugin: the converter in the plugin, the API stubs
+     * javac compiles against and the toolkit the tests run on must come from one release.
+     */
+    @Parameter(property = "javacard.checkVersions", defaultValue = "true")
+    private boolean checkVersions;
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
+
+    /** How Maven started this execution (lifecycle or command line) and the plugin version. */
+    @Parameter(defaultValue = "${mojoExecution}", readonly = true)
+    private MojoExecution mojoExecution;
+
+    /** The {@code -D} properties of the command line. */
+    @Parameter(defaultValue = "${session.userProperties}", readonly = true)
+    private Properties userProperties;
+
+    /**
+     * Creates the Mojo; Maven injects the project helper used to attach the generated files.
+     *
+     * @param projectHelper Maven's project helper
+     */
+    @Inject
+    public JavaCardBuildMojo(MavenProjectHelper projectHelper) {
+        this.projectHelper = projectHelper;
+    }
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
@@ -136,283 +245,212 @@ public class JavaCardBuildMojo extends AbstractMojo {
             getLog().info("Skipping JavaCard build (javacard.skip=true)");
             return;
         }
-
-        Path classesDir = classesDirectory.toPath();
-        if (!Files.isDirectory(classesDir)) {
-            getLog().warn("Classes directory does not exist: " + classesDirectory
-                    + " (has the project been compiled?)");
+        if ("pom".equals(project.getPackaging())) {
+            getLog().info("Skipping JavaCard build: " + project.getArtifactId() + " has packaging pom, no classes");
             return;
         }
-
-        // Auto-detect package name if not configured
-        String pkgName = resolvePackageName(classesDir);
-        if (pkgName == null) {
-            throw new MojoExecutionException(
-                    "Cannot determine package name. Set <packageName> in plugin configuration.");
+        Invocation invocation = Invocation.of(mojoExecution);
+        if (checkVersions) {
+            ToolkitVersions.check(project.getDependencies(), invocation.pluginVersion());
         }
+        Path classesDir = classesDirectory.toPath();
+        if (!Files.isDirectory(classesDir)) {
+            noClasses(invocation);
+            return;
+        }
+        List<Path> classPath = compileClassPath();
+        try (ClassIndex index = ClassIndex.scan(classesDir, classPath)) {
+            build(classesDir, index, classPath, invocation);
+        }
+    }
+
+    /**
+     * Without compiled classes a bound execution only warns (a module may have no sources), but a goal
+     * named on the command line has nothing to do: {@code mvn javacard-express:build} after
+     * {@code mvn clean} reported success without a CAP file.
+     */
+    private void noClasses(Invocation invocation) throws MojoFailureException {
+        if (invocation.commandLine()) {
+            throw new MojoFailureException("javacard-express:build converts compiled classes, but " + classesDirectory
+                    + " does not exist. Run mvn package (the goal runs in the process-classes phase when the POM binds"
+                    + " it, as in the Quick Start), or compile first: mvn compile javacard-express:build");
+        }
+        getLog().warn("Classes directory does not exist: " + classesDirectory + " (has the project been compiled?)");
+    }
+
+    private void build(Path classesDir, ClassIndex index, List<Path> classPath, Invocation invocation)
+            throws MojoExecutionException, MojoFailureException {
+        String pkgName = new PackageSelection(index, classesDir).select(packageName, getLog());
         getLog().info("Package: " + pkgName);
-
-        // Parse version
-        int majorVersion = 1;
-        int minorVersion = 0;
-        if (packageVersion != null && packageVersion.contains(".")) {
-            String[] parts = packageVersion.split("\\.", 2);
-            majorVersion = Integer.parseInt(parts[0]);
-            minorVersion = Integer.parseInt(parts[1]);
+        Converter.Builder builder = converter(classesDir, pkgName);
+        Aid pkgAid = resolvePackageAid(pkgName);
+        builder.packageAid(pkgAid.bytes());
+        List<AppletAids.Assigned> assigned = registerApplets(builder, index, pkgName, pkgAid);
+        boolean appletPackage = !assigned.isEmpty();
+        boolean export = ExportPolicy.decide(generateExport, pkgName, appletPackage,
+                exportableTypes(index, pkgName, appletPackage), getLog());
+        builder.generateExport(export);
+        BuildOutputs outputs = BuildOutputs.of(outputDirectory.toPath(), finalName, classifier);
+        OutputClaims.claim(project, invocation, outputs.capFile(), attach, outputs.classifier());
+        new ExportFileLookup(outputs.workDirectory(), getLog())
+                .collect(importExportFiles, project.getArtifacts(), exportPath, classPath,
+                        importedPackages(index, pkgName))
+                .forEach(builder::importExportFile);
+        ConverterResult result = convert(builder, index, pkgName);
+        outputs.write(result, export, getLog());
+        if (attach) {
+            outputs.attach(project, projectHelper, export);
         }
+        if (classesOutput) {
+            writeIntoClasses(classesDir, invocation, result, descriptor(pkgName, pkgAid, export, assigned,
+                    invocation));
+        }
+    }
 
-        // Resolve JavaCard version
-        JavaCardVersion jcVersion = parseJavaCardVersion(javaCardVersionStr);
-        getLog().info("JavaCard version: " + javaCardVersionStr + " (format "
+    /** What the build descriptor in the classes directory says about this build. */
+    private ClassesOutput.Descriptor descriptor(String pkgName, Aid pkgAid, boolean export,
+                                                List<AppletAids.Assigned> assigned, Invocation invocation)
+            throws MojoExecutionException {
+        return new ClassesOutput.Descriptor(pkgName, pkgAid, PackageVersion.parse(packageVersion).toString(),
+                JavaCardVersions.display(JavaCardVersions.parse(javaCardVersion)), supportInt32, export, assigned,
+                project.getGroupId() + ":" + project.getArtifactId(), invocation.pluginVersion());
+    }
+
+    private void writeIntoClasses(Path classesDir, Invocation invocation, ConverterResult result,
+                                  ClassesOutput.Descriptor descriptor) throws MojoExecutionException {
+        Optional<String> writer = OutputClaims.classesWriter(project, invocation, descriptor.packageName());
+        if (writer.isPresent()) {
+            getLog().info("Classes directory: execution '" + writer.get() + "' already wrote the files of package "
+                    + descriptor.packageName() + "; this execution leaves them");
+            return;
+        }
+        new ClassesOutput(classesDir, descriptor).write(result, getLog());
+    }
+
+    /** The converter with the package and target platform settings. */
+    @SuppressWarnings("deprecation") // oracleCompatibility is passed on while the parameter exists
+    private Converter.Builder converter(Path classesDir, String pkgName) throws MojoExecutionException {
+        PackageVersion version = PackageVersion.parse(packageVersion);
+        JavaCardVersion jcVersion = JavaCardVersions.parse(javaCardVersion);
+        getLog().info("Target: Java Card " + JavaCardVersions.display(jcVersion) + " (CAP format "
                 + jcVersion.formatMajor() + "." + jcVersion.formatMinor() + ")");
-
-        // Build converter
+        JavaCardVersions.reportIgnoredCommandLine(userProperties, javaCardVersion, jcVersion, getLog());
         Converter.Builder builder = Converter.builder()
                 .classesDirectory(classesDir)
                 .packageName(pkgName)
-                .packageVersion(majorVersion, minorVersion)
+                .packageVersion(version.major(), version.minor())
                 .supportInt32(supportInt32)
-                .generateExport(generateExport)
-                .oracleCompatibility(oracleCompatibility)
                 .javaCardVersion(jcVersion);
-
-        if (packageAid != null && !packageAid.isBlank()) {
-            builder.packageAid(packageAid);
-            getLog().info("Package AID: " + packageAid);
-        } else {
-            getLog().info("Package AID: auto-generated from package name");
+        if (oracleCompatibility) {
+            getLog().warn("<oracleCompatibility> is deprecated and will be removed: the Class component is"
+                    + " written as JCVM 3.1 §6.9 specifies. Remove the parameter from the configuration.");
+            builder.oracleCompatibility(true);
         }
-
-        // Register applets
-        if (applets != null && !applets.isEmpty()) {
-            for (AppletConfig ac : applets) {
-                validateAppletConfig(ac);
-                builder.applet(ac.getClassName(), ac.getAid());
-                getLog().info("Applet: " + ac.getClassName() + " [" + ac.getAid() + "]");
-            }
-        } else {
-            // Auto-discover applets
-            List<AppletConfig> discovered = discoverApplets(classesDir, pkgName);
-            if (discovered.isEmpty()) {
-                getLog().warn("No applets found in " + pkgName
-                        + ". Configure <applets> explicitly if your applets are in a sub-package.");
-            }
-            for (AppletConfig ac : discovered) {
-                builder.applet(ac.getClassName(), ac.getAid());
-                getLog().info("Discovered applet: " + ac.getClassName()
-                        + " [AID auto-generated]");
-            }
-        }
-
-        // Add import export files
-        if (importExportFiles != null) {
-            for (File expFile : importExportFiles) {
-                if (!expFile.isFile()) {
-                    throw new MojoExecutionException(
-                            "Export file not found: " + expFile.getAbsolutePath());
-                }
-                builder.importExportFile(expFile.toPath());
-                getLog().debug("Import: " + expFile.getName());
-            }
-        }
-
-        // Convert
-        ConverterResult result;
-        try {
-            result = builder.build().convert();
-        } catch (ConverterException e) {
-            if (e.violations() != null && !e.violations().isEmpty()) {
-                getLog().error("JavaCard subset violations:");
-                for (var v : e.violations()) {
-                    getLog().error("  " + v);
-                }
-            }
-            throw new MojoFailureException("JavaCard conversion failed: " + e.getMessage(), e);
-        }
-
-        // Write output files
-        Path outDir = outputDirectory.toPath();
-        try {
-            Files.createDirectories(outDir);
-
-            String baseName = project.getArtifactId() + "-" + project.getVersion();
-            Path capPath = outDir.resolve(baseName + ".cap");
-            Path expPath = outDir.resolve(baseName + ".exp");
-
-            Files.write(capPath, result.capFile());
-            getLog().info("CAP file: " + capPath + " (" + result.capSize() + " bytes)");
-
-            if (result.exportFile() != null && result.exportFile().length > 0) {
-                Files.write(expPath, result.exportFile());
-                getLog().info("Export file: " + expPath + " (" + result.exportFile().length + " bytes)");
-            }
-
-            // Report warnings
-            for (String warning : result.warnings()) {
-                getLog().warn(warning);
-            }
-
-        } catch (IOException e) {
-            throw new MojoExecutionException("Failed to write output files: " + e.getMessage(), e);
-        }
+        return builder;
     }
 
-    /**
-     * Resolves the package name: uses explicit config, or auto-detects from classesDirectory.
-     */
-    String resolvePackageName(Path classesDir) {
-        if (packageName != null && !packageName.isBlank()) {
-            return packageName;
+    /** Registers the applets with their AIDs; returns them (none for a library package). */
+    private List<AppletAids.Assigned> registerApplets(Converter.Builder builder, ClassIndex index, String pkgName,
+                                                      Aid pkgAid) throws MojoExecutionException {
+        List<AppletAids.Assigned> assigned = AppletAids.assign(pkgAid, appletRequests(index, pkgName));
+        for (AppletAids.Assigned applet : assigned) {
+            builder.applet(applet.className(), applet.aid().bytes());
+            getLog().info("Applet: " + applet.className() + " (AID " + applet.aid()
+                    + (applet.derived() ? ", derived from the package AID)" : ")"));
         }
+        if (applets == null || applets.isEmpty()) {
+            AppletAids.orderWarning(assigned).ifPresent(getLog()::warn);
+        }
+        return assigned;
+    }
 
-        // Auto-detect: find deepest directory that contains .class files
-        // and derive the package from the path
+    private ConverterResult convert(Converter.Builder builder, ClassIndex index, String pkgName)
+            throws MojoFailureException {
         try {
-            Path found = findPackageDir(classesDir, classesDir);
-            if (found != null) {
-                return classesDir.relativize(found).toString().replace(File.separatorChar, '.');
-            }
-        } catch (IOException e) {
-            getLog().debug("Auto-detection failed: " + e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * Recursively finds the first directory (DFS) containing .class files.
-     */
-    private Path findPackageDir(Path root, Path current) throws IOException {
-        boolean hasClassFiles = false;
-        List<Path> subdirs = new ArrayList<>();
-
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(current)) {
-            for (Path entry : stream) {
-                if (Files.isDirectory(entry)) {
-                    subdirs.add(entry);
-                } else if (entry.toString().endsWith(".class")) {
-                    hasClassFiles = true;
-                }
-            }
-        }
-
-        if (hasClassFiles) {
-            return current;
-        }
-
-        for (Path subdir : subdirs) {
-            Path result = findPackageDir(root, subdir);
-            if (result != null) return result;
-        }
-        return null;
-    }
-
-    /**
-     * Auto-discovers Applet subclasses by scanning .class files.
-     */
-    List<AppletConfig> discoverApplets(Path classesDir, String pkgName) {
-        List<AppletConfig> result = new ArrayList<>();
-        String pkgPath = pkgName.replace('.', '/');
-        Path pkgDir = classesDir.resolve(pkgPath);
-
-        if (!Files.isDirectory(pkgDir)) {
+            ConverterResult result = builder.build().convert();
+            result.warnings().forEach(getLog()::warn);
             return result;
+        } catch (ConverterException e) {
+            List<Path> sourceRoots = project.getCompileSourceRoots().stream().map(Path::of).toList();
+            throw new ConversionErrors(new SourceLocations(index, sourceRoots),
+                    new PackageOrigins(index, project.getArtifacts()), pkgName, getLog()).report(e);
         }
+    }
 
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(pkgDir, "*.class")) {
-            for (Path classFile : stream) {
-                if (isAppletClass(classFile)) {
-                    String simpleName = classFile.getFileName().toString()
-                            .replace(".class", "");
-                    String fqcn = pkgName + "." + simpleName;
+    /** Packages other than the converted one that its classes refer to (dot notation, sorted). */
+    private static Set<String> importedPackages(ClassIndex index, String pkgName) {
+        Set<String> packages = new TreeSet<>();
+        index.classesOf(pkgName).forEach(c -> packages.addAll(c.referencedPackages()));
+        packages.remove(pkgName);
+        packages.remove("");
+        return packages;
+    }
 
-                    AppletConfig ac = new AppletConfig();
-                    ac.setClassName(fqcn);
-                    // AID will be auto-generated by the converter (package AID + applet index)
-                    ac.setAid(generateAppletAid(fqcn));
-                    result.add(ac);
-                }
+    /**
+     * Types the package can export (JCVM 3.1 &sect;6.13): public shareable interfaces of an applet
+     * package, public classes and interfaces of a library package.
+     */
+    private static List<String> exportableTypes(ClassIndex index, String pkgName, boolean appletPackage) {
+        return index.classesOf(pkgName).stream()
+                .filter(ClassSummary::isPublic)
+                .filter(c -> !c.isSynthetic())
+                .filter(c -> !appletPackage || index.isShareableInterface(c))
+                .map(ClassSummary::javaName)
+                .toList();
+    }
+
+    private List<Path> compileClassPath() throws MojoExecutionException {
+        try {
+            Path own = classesDirectory.toPath().toAbsolutePath().normalize();
+            return project.getCompileClasspathElements().stream()
+                    .filter(Objects::nonNull)
+                    .map(e -> Path.of(e).toAbsolutePath().normalize())
+                    .filter(e -> !e.equals(own))
+                    .toList();
+        } catch (DependencyResolutionRequiredException e) {
+            throw new MojoExecutionException("Cannot resolve the compile class path: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Returns the configured package AID, or derives a development AID from the package name.
+     */
+    private Aid resolvePackageAid(String pkgName) throws MojoExecutionException {
+        if (packageAid != null && !packageAid.isBlank()) {
+            Aid aid = Aid.parse("packageAid", packageAid);
+            getLog().info("Package AID: " + aid);
+            return aid;
+        }
+        Aid aid = Aid.derivedFromPackageName(pkgName);
+        getLog().warn("No <packageAid> configured: using the development AID " + aid + " derived from the"
+                + " package name. AIDs starting with F are unregistered proprietary AIDs (ISO/IEC 7816-5);"
+                + " configure <packageAid> with your registered RID for real cards.");
+        return aid;
+    }
+
+    /**
+     * Returns the applets to register: the configured ones (checked against the compiled classes),
+     * or the discovered ones in class-name order.
+     */
+    private List<AppletAids.Request> appletRequests(ClassIndex index, String pkgName) throws MojoExecutionException {
+        AppletClasses appletClasses = new AppletClasses(index, pkgName);
+        if (applets == null || applets.isEmpty()) {
+            List<String> discovered = appletClasses.discover(getLog());
+            if (discovered.isEmpty()) {
+                getLog().info("No applet classes in package " + pkgName + ": building a library package.");
             }
-        } catch (IOException e) {
-            getLog().debug("Applet discovery failed: " + e.getMessage());
+            return discovered.stream().map(name -> new AppletAids.Request(name, null)).toList();
         }
-
-        return result;
-    }
-
-    /**
-     * Checks if a .class file extends {@code javacard.framework.Applet} (directly or transitively).
-     */
-    private boolean isAppletClass(Path classFile) {
-        try {
-            byte[] bytes = Files.readAllBytes(classFile);
-            ClassModel model = ClassFile.of().parse(bytes);
-            String superName = model.superclass()
-                    .map(ClassEntry::asInternalName)
-                    .orElse("");
-            // Direct check — covers most cases
-            return "javacard/framework/Applet".equals(superName);
-        } catch (IOException | IllegalArgumentException e) {
-            getLog().debug("Cannot check class file: " + classFile + " - " + e.getMessage());
-            return false;
+        List<AppletAids.Request> requests = new ArrayList<>();
+        for (AppletConfig ac : applets) {
+            if (ac.getClassName() == null || ac.getClassName().isBlank()) {
+                throw new MojoExecutionException("Every <applet> in <applets> needs a <className>.");
+            }
+            requests.add(new AppletAids.Request(ac.getClassName().trim().replace('/', '.'), ac.getAid()));
         }
-    }
-
-    /**
-     * Generates a deterministic applet AID from class name.
-     * Uses the package AID (if set) + sequential byte, or hash-based generation.
-     */
-    @SuppressWarnings("java:S4790") // SHA-1 used for deterministic AID generation, not security
-    private String generateAppletAid(String className) {
-        // Use SHA-1 hash of class name, prefix with 0xF0
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-1");
-            byte[] hash = md.digest(className.getBytes(StandardCharsets.UTF_8));
-            byte[] aid = new byte[9]; // 9 bytes for applet AID
-            aid[0] = (byte) 0xF0;
-            System.arraycopy(hash, 0, aid, 1, 8);
-            return bytesToHex(aid);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-1 not available", e);
-        }
-    }
-
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02X", b & 0xFF));
-        }
-        return sb.toString();
-    }
-
-    static JavaCardVersion parseJavaCardVersion(String version) {
-        if (version == null) return JavaCardVersion.V3_0_5;
-        return switch (version.trim()) {
-            case "2.1.2", "2.1" -> JavaCardVersion.V2_1_2;
-            case "2.2.1" -> JavaCardVersion.V2_2_1;
-            case "2.2.2", "2.2" -> JavaCardVersion.V2_2_2;
-            case "3.0.3" -> JavaCardVersion.V3_0_3;
-            case "3.0.4" -> JavaCardVersion.V3_0_4;
-            case "3.0.5", "3.0" -> JavaCardVersion.V3_0_5;
-            case "3.1.0", "3.1" -> JavaCardVersion.V3_1_0;
-            case "3.2.0", "3.2" -> JavaCardVersion.V3_2_0;
-            default -> JavaCardVersion.V3_0_5;
-        };
-    }
-
-    private static void validateAppletConfig(AppletConfig ac) throws MojoExecutionException {
-        if (ac.getClassName() == null || ac.getClassName().isBlank()) {
-            throw new MojoExecutionException("Applet className is required");
-        }
-        if (ac.getAid() == null || ac.getAid().isBlank()) {
-            throw new MojoExecutionException(
-                    "Applet AID is required for: " + ac.getClassName());
-        }
-        // Validate AID length (5-16 bytes = 10-32 hex chars)
-        String hex = ac.getAid().replace(" ", "").replace(":", "");
-        if (hex.length() < 10 || hex.length() > 32) {
-            throw new MojoExecutionException(
-                    "Invalid AID length for " + ac.getClassName()
-                            + ": expected 5-16 bytes, got " + (hex.length() / 2));
-        }
+        List<String> classNames = requests.stream().map(AppletAids.Request::className).toList();
+        appletClasses.check(classNames);
+        appletClasses.reportUnlisted(classNames, getLog());
+        return requests;
     }
 }

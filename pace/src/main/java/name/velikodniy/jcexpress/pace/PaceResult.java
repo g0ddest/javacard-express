@@ -83,12 +83,16 @@ public record PaceResult(byte[] encKey, byte[] macKey, byte[] cardToken, byte[] 
         return result;
     }
 
+    /**
+     * Shows the authentication tokens, which are exchanged in the clear, but not the session keys.
+     *
+     * @return a description without key material
+     */
     @Override
     public String toString() {
         HexFormat hex = HexFormat.of();
-        return "PaceResult[encKey=" + hex.formatHex(encKey)
-                + ", macKey=" + hex.formatHex(macKey)
-                + ", cardToken=" + hex.formatHex(cardToken)
+        return "PaceResult[encKey=<" + encKey.length + " bytes, redacted>, macKey=<" + macKey.length
+                + " bytes, redacted>, cardToken=" + hex.formatHex(cardToken)
                 + ", termToken=" + hex.formatHex(termToken) + "]";
     }
 

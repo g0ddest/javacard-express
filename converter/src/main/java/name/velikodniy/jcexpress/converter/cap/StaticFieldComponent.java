@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.converter.cap;
 
+import name.velikodniy.jcexpress.converter.clinit.StaticValue;
 import name.velikodniy.jcexpress.converter.input.ClassInfo;
 import name.velikodniy.jcexpress.converter.input.FieldInfo;
 
@@ -11,43 +12,34 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Generates the CAP StaticField component (tag 8) as defined in JCVM 3.0.5 spec section 6.10.
+ * Generates the CAP Static Field component (tag 8) as defined in JCVM 3.1 §6.11.
  *
- * <p>The StaticField component contains the initialization image for all static fields
- * in the package. When the JCVM loads a package, it copies this image into the
- * persistent (EEPROM) static field area, providing initial values for all static
- * fields without requiring {@code <clinit>} execution for simple cases.
- *
- * <p>Fields are organized into segments in a specific order mandated by the spec:
+ * <p>The component describes the static field image of the package and how to initialize it.
+ * A Java Card VM never executes {@code <clinit>}; the values it assigns (evaluated at conversion
+ * time, see {@link name.velikodniy.jcexpress.converter.clinit.ClinitInterpreter}) are represented
+ * here. The image is laid out in the four segments of §6.11 Table 6-13:
  * <ol>
- *   <li><b>Segment 1:</b> Reference fields initialized to arrays (from array_init).
- *       Not yet implemented in this converter.</li>
- *   <li><b>Segment 2:</b> Other reference fields (initialized to {@code null} = 2 zero
- *       bytes each, since references are 2 bytes on the JCVM)</li>
- *   <li><b>Segment 3:</b> Primitive fields with default (zero) values (size depends on type:
- *       1 byte for byte/boolean, 2 bytes for short/char, 4 bytes for int)</li>
- *   <li><b>Segment 4:</b> Primitive fields with explicit non-default initial values
- *       (from {@code ConstantValue} attributes in the class file)</li>
+ *   <li>reference fields holding arrays of primitive types created by {@code <clinit>}
+ *       (one {@code array_init_info} each, in segment order);</li>
+ *   <li>other reference fields (initialized to {@code null});</li>
+ *   <li>primitive fields with the default value (zero);</li>
+ *   <li>primitive fields with a non-default value ({@code non_default_values}).</li>
  * </ol>
+ * Within a segment, fields appear in the order of the class list and, per class, in declaration
+ * order. Field sizes follow Table 6-14 (boolean/byte 1, short 2, int 4, reference 2 bytes).
+ * Compile-time constants ({@code static final} primitives with a {@code ConstantValue}) are not
+ * part of the image.
  *
- * <p>Compile-time constants ({@code static final} primitives with a {@code ConstantValue}
- * attribute) are excluded from the image because javac inlines them at all use sites.
- *
- * <p>The component also tracks a {@code fieldOffsetMap} that maps each static field
- * (by {@code "className:fieldName"}) to its byte offset within the image, which is
- * needed by the ConstantPool component for {@code CONSTANT_StaticFieldref} entries
- * and by the Export component for exported static field offsets.
- *
- * <p>Binary format (JCVM 3.0.5 spec section 6.10, Table 6-10):
  * <pre>
  * u1  tag = 8
  * u2  size
- * u2  image_size              (total bytes in the static field image)
- * u2  reference_count         (number of reference-type fields)
- * u2  array_init_count        (number of array initializers; currently 0)
- * u2  default_value_count     (bytes of default-value primitive fields)
- * u2  non_default_value_count (bytes of non-default primitive init data)
- * u1  non_default_values[]    (explicit initial values for Segment 4 fields)
+ * u2  image_size
+ * u2  reference_count
+ * u2  array_init_count
+ * array_init_info { u1 type; u2 count; u1 values[count] } array_init[array_init_count]
+ * u2  default_value_count
+ * u2  non_default_value_count
+ * u1  non_default_values[non_default_value_count]
  * </pre>
  *
  * @see ExportComponent
@@ -61,102 +53,128 @@ public final class StaticFieldComponent {
     private StaticFieldComponent() {}
 
     /**
-     * Generates the StaticField component bytes.
+     * Generates the component without {@code <clinit>} information: every static field gets its
+     * default value unless its class file carries a {@code ConstantValue} for it.
      *
      * @param classes all classes in the package
      * @return result containing component bytes and image statistics
      */
-    @SuppressWarnings("java:S3776") // Inherently complex static field image generation
     public static StaticFieldResult generate(List<ClassInfo> classes) {
-        // Track field offsets within the static field image.
-        // §6.10: Image layout segments (in order):
-        //   Segment 1: array-init reference fields (not yet implemented)
-        //   Segment 2: other reference fields (2 bytes each, null = 0x0000)
-        //   Segment 3: default-value primitive fields (zero-initialized)
-        //   Segment 4: non-default-value primitive fields (explicit values)
-        Map<String, Integer> fieldOffsetMap = new HashMap<>();
+        return generate(classes, Map.of());
+    }
 
-        // First pass: count segments and track per-field assignment
-        int referenceCount = 0;
-        int defaultValueCount = 0;
-        var nonDefaultValues = new BinaryWriter();
-
-        // Track fields for offset computation (separate lists per segment)
-        record FieldRef(String className, String fieldName, int segmentOffset) {}
-        var refFields = new ArrayList<FieldRef>();
-        var defaultFields = new ArrayList<FieldRef>();
-        var nonDefaultFields = new ArrayList<FieldRef>();
-
+    /**
+     * Generates the component (§6.11).
+     *
+     * @param classes       all classes and interfaces of the package, in Class component order
+     * @param initialValues {@code "class:field"} to the value assigned by the class's
+     *                      {@code <clinit>}; fields without an entry keep their default value
+     * @return result containing component bytes, image statistics and the image offset of every
+     *         static field
+     */
+    public static StaticFieldResult generate(List<ClassInfo> classes, Map<String, StaticValue> initialValues) {
+        Segments segments = new Segments();
         for (ClassInfo ci : classes) {
             for (FieldInfo fi : ci.fields()) {
-                if (!fi.isStatic()) continue;
-
-                // Skip compile-time constants — javac inlines these at use sites,
-                // so they don't need storage in the static field image (JCVM 3.0.5 §6.10).
-                if (fi.isCompileTimeConstant()) continue;
-
-                String desc = fi.descriptor();
-                if (desc.startsWith("L") || desc.startsWith("[")) {
-                    refFields.add(new FieldRef(ci.thisClass(), fi.name(), referenceCount * 2));
-                    referenceCount++;
-                } else if (fi.constantValue() != null) {
-                    nonDefaultFields.add(new FieldRef(ci.thisClass(), fi.name(), nonDefaultValues.size()));
-                    writeConstantValue(nonDefaultValues, desc, fi.constantValue());
-                } else {
-                    defaultFields.add(new FieldRef(ci.thisClass(), fi.name(), defaultValueCount));
-                    defaultValueCount += fieldSize(desc);
+                if (fi.isStatic() && !fi.isCompileTimeConstant()) {
+                    segments.add(ci.thisClass() + ":" + fi.name(), fi, initialValues.get(ci.thisClass() + ":" + fi.name()));
                 }
             }
         }
-
-        byte[] nonDefaults = nonDefaultValues.toByteArray();
-        int imageSize = (referenceCount * 2) + defaultValueCount + nonDefaults.length;
-
-        // Compute absolute offsets within the image
-        int refBase = 0;
-        int defaultBase = referenceCount * 2;
-        int nonDefaultBase = defaultBase + defaultValueCount;
-
-        for (FieldRef f : refFields) {
-            fieldOffsetMap.put(f.className + ":" + f.fieldName, refBase + f.segmentOffset);
-        }
-        for (FieldRef f : defaultFields) {
-            fieldOffsetMap.put(f.className + ":" + f.fieldName, defaultBase + f.segmentOffset);
-        }
-        for (FieldRef f : nonDefaultFields) {
-            fieldOffsetMap.put(f.className + ":" + f.fieldName, nonDefaultBase + f.segmentOffset);
-        }
-
-        // --- static_field_component (§6.10 Table 6-10) ---
-        var info = new BinaryWriter();
-        info.u2(imageSize);          // §6.10: u2 image_size (total static field image bytes)
-        info.u2(referenceCount);     // §6.10: u2 reference_count (reference-type fields)
-        info.u2(0);                  // §6.10: u2 array_init_count (not yet implemented)
-        info.u2(defaultValueCount);  // §6.10: u2 default_value_count (zero-init primitive bytes)
-        info.u2(nonDefaults.length); // §6.10: u2 non_default_value_count (explicit init bytes)
-        info.bytes(nonDefaults);     // §6.10: u1[] non_default_values (Segment 4 init data)
-
-        byte[] bytes = HeaderComponent.wrapComponent(TAG, info.toByteArray());
-        return new StaticFieldResult(bytes, imageSize, 0, 0, fieldOffsetMap);
+        return segments.toResult();
     }
 
-    private static void writeConstantValue(BinaryWriter out, String desc, Object value) {
-        if (value instanceof Number n) {
-            switch (desc.charAt(0)) {
-                case 'B', 'Z' -> out.u1(n.intValue());
-                case 'S', 'C' -> out.u2(n.intValue());
-                case 'I' -> { out.u2((n.intValue() >> 16) & 0xFFFF); out.u2(n.intValue() & 0xFFFF); }
-                default -> out.u2(n.intValue());
+    /** Fields per segment of Table 6-13, with the data of segments 1 and 4. */
+    private static final class Segments {
+        private final List<String> arrays = new ArrayList<>();
+        private final List<String> references = new ArrayList<>();
+        private final Map<String, Integer> defaults = new HashMap<>();
+        private final Map<String, Integer> nonDefaults = new HashMap<>();
+        private final BinaryWriter arrayInits = new BinaryWriter();
+        private final BinaryWriter nonDefaultValues = new BinaryWriter();
+        private int defaultValueCount;
+        private int arrayInitSize;
+
+        void add(String key, FieldInfo fi, StaticValue value) {
+            String desc = fi.descriptor();
+            if (desc.startsWith("L") || desc.startsWith("[")) {
+                if (value instanceof StaticValue.PrimitiveArray array) {
+                    arrays.add(key);
+                    writeArrayInit(array);
+                } else {
+                    references.add(key);
+                }
+            } else if (value instanceof StaticValue.Primitive(int v) && v != 0) {
+                nonDefaults.put(key, nonDefaultValues.size());
+                writeValue(nonDefaultValues, fieldSize(desc), v);
+            } else if (value == null && fi.constantValue() instanceof Number n && n.intValue() != 0) {
+                nonDefaults.put(key, nonDefaultValues.size()); // ConstantValue of a non-final field
+                writeValue(nonDefaultValues, fieldSize(desc), n.intValue());
+            } else {
+                defaults.put(key, defaultValueCount);
+                defaultValueCount += fieldSize(desc);
+            }
+        }
+
+        /** array_init_info: u1 type, u2 count (bytes), u1 values[count] (§6.11). */
+        private void writeArrayInit(StaticValue.PrimitiveArray array) {
+            int[] elements = array.elements();
+            int count = elements.length * array.elementSize();
+            arrayInits.u1(array.type());
+            arrayInits.u2(count);
+            for (int element : elements) {
+                writeValue(arrayInits, array.elementSize(), element);
+            }
+            arrayInitSize += count;
+        }
+
+        StaticFieldResult toResult() {
+            int referenceCount = arrays.size() + references.size();
+            int defaultBase = 2 * referenceCount;
+            int nonDefaultBase = defaultBase + defaultValueCount;
+            Map<String, Integer> offsets = new HashMap<>();
+            for (int i = 0; i < arrays.size(); i++) {
+                offsets.put(arrays.get(i), 2 * i);
+            }
+            for (int i = 0; i < references.size(); i++) {
+                offsets.put(references.get(i), 2 * (arrays.size() + i));
+            }
+            defaults.forEach((k, off) -> offsets.put(k, defaultBase + off));
+            nonDefaults.forEach((k, off) -> offsets.put(k, nonDefaultBase + off));
+            byte[] nonDefault = nonDefaultValues.toByteArray();
+            int imageSize = nonDefaultBase + nonDefault.length;
+
+            var info = new BinaryWriter();
+            info.u2(imageSize);                 // image_size = reference_count*2 + default + non-default
+            info.u2(referenceCount);            // reference_count (segments 1 and 2)
+            info.u2(arrays.size());             // array_init_count (segment 1)
+            info.bytes(arrayInits.toByteArray()); // array_init[]
+            info.u2(defaultValueCount);         // default_value_count (segment 3 bytes)
+            info.u2(nonDefault.length);         // non_default_value_count (segment 4 bytes)
+            info.bytes(nonDefault);             // non_default_values[]
+            byte[] bytes = HeaderComponent.wrapComponent(TAG, info.toByteArray());
+            return new StaticFieldResult(bytes, imageSize, arrays.size(), arrayInitSize, offsets);
+        }
+    }
+
+    /** Writes a big-endian value of 1, 2 or 4 bytes (§6.11: boolean true is 1). */
+    private static void writeValue(BinaryWriter out, int size, int value) {
+        switch (size) {
+            case 1 -> out.u1(value);
+            case 2 -> out.u2(value);
+            default -> {
+                out.u2((value >> 16) & 0xFFFF);
+                out.u2(value & 0xFFFF);
             }
         }
     }
 
+    /** Size of a primitive static field in the image (§6.11 Table 6-14). */
     private static int fieldSize(String desc) {
         return switch (desc.charAt(0)) {
             case 'B', 'Z' -> 1;        // byte, boolean
-            case 'S', 'C' -> 2;        // short, char
             case 'I' -> 4;             // int
-            default -> 2;              // reference
+            default -> 2;              // short (and char)
         };
     }
 
@@ -166,10 +184,12 @@ public final class StaticFieldComponent {
      *
      * @param bytes            complete component bytes including tag and size header
      * @param imageSize        total static field image size in bytes (used by DirectoryComponent)
-     * @param arrayInitCount   number of array initializers (used by DirectoryComponent; currently 0)
-     * @param arrayInitSize    total bytes of array init data (used by DirectoryComponent; currently 0)
+     * @param arrayInitCount   number of array_init_info entries (used by DirectoryComponent)
+     * @param arrayInitSize    sum of the count items of the array_init_info entries (used by
+     *                         DirectoryComponent, JCVM 3.1 §6.5)
      * @param fieldOffsetMap   map from "className:fieldName" to byte offset within the static
-     *                         field image, used by ConstantPoolComponent and ExportComponent
+     *                         field image, used by the Constant Pool, Descriptor and Export
+     *                         components
      */
     public record StaticFieldResult(byte[] bytes, int imageSize,
                                     int arrayInitCount, int arrayInitSize,

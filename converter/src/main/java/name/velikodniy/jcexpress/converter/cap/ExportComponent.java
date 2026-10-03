@@ -1,49 +1,41 @@
 package name.velikodniy.jcexpress.converter.cap;
 
+import name.velikodniy.jcexpress.converter.input.ClassInfo;
+import name.velikodniy.jcexpress.converter.token.ImportedTypes;
 import name.velikodniy.jcexpress.converter.token.TokenMap;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
- * Generates the CAP Export component (tag 10) as defined in JCVM 3.0.5 spec section 6.12.
+ * Generates the CAP Export component (tag 10) as defined in JCVM 3.1 §6.13.
  *
- * <p>The Export component provides the linking information that other packages need to
- * resolve references to this package's public API. It is present only when the package
- * is a shareable library (indicated by {@link HeaderComponent#ACC_EXPORT} in the Header
- * flags), or when explicitly requested during conversion.
- *
- * <p>For each public class in the package, the Export component records:
+ * <p>The component lists the elements other packages may link to, indexed by class token:
  * <ul>
- *   <li>The class's byte offset within the Class component (so importing packages can
- *       build {@code CONSTANT_Classref} entries)</li>
- *   <li>Byte offsets of all public static fields within the StaticField component image
- *       (for {@code CONSTANT_StaticFieldref} resolution)</li>
- *   <li>Byte offsets of all public static methods within the Method component
- *       (for {@code CONSTANT_StaticMethodref} resolution)</li>
+ *   <li>a <b>library package</b> (no applets) exports every public class and interface, with the
+ *       offsets of each public class's public and protected static fields, static methods and
+ *       constructors (compile-time constants excluded);</li>
+ *   <li>an <b>application package</b> exports only its public shareable interfaces (interfaces
+ *       that are or extend {@code javacard.framework.Shareable}), without members.</li>
  * </ul>
+ * An index into {@code class_exports} equals the class token (§6.13), and {@code class_count}
+ * must be greater than zero: when nothing is exported the component is omitted.
  *
- * <p>Classes are listed in token order (matching the order in the Class component).
- * Within each class, static fields and static methods are listed in their respective
- * token order.
- *
- * <p>Binary format (JCVM 3.0.5 spec section 6.12, Table 6-12):
  * <pre>
  * u1  tag = 10
  * u2  size
- * u1  class_count                                        (number of exported classes)
- * class_export_info[class_count]:
- *   u2  class_offset                                     (offset into Class component)
- *   u1  static_field_count
- *   u1  static_method_count
- *   u2  static_field_offsets[static_field_count]          (offsets into StaticField image)
- *   u2  static_method_offsets[static_method_count]        (offsets into Method component)
+ * u1  class_count
+ * class_export_info { u2 class_offset; u1 static_field_count; u1 static_method_count;
+ *                     u2 static_field_offsets[]; u2 static_method_offsets[] } class_exports[]
  * </pre>
  *
  * @see ClassComponent
- * @see MethodComponent
  * @see StaticFieldComponent
- * @see ImportComponent
+ * @see MethodComponent
  */
 public final class ExportComponent {
 
@@ -52,56 +44,146 @@ public final class ExportComponent {
     private ExportComponent() {}
 
     /**
-     * Generates the Export component bytes.
+     * What the Export component describes.
      *
-     * @param tokenMap            token assignments for the package
-     * @param methodOffsets       method offsets in the Method component (global index → offset)
-     * @param classOffsets        class offsets in the Class component (class token → offset)
-     * @param methodIndexMap      maps "className:methodName:methodDesc" → global method index
-     * @param staticFieldOffsetMap maps "className:fieldName" → StaticField image offset
-     * @return complete component bytes including tag and size
+     * @param classes            classes and interfaces of the package
+     * @param tokenMap           token assignment
+     * @param classOffsets       internal class name to Class component offset
+     * @param methodOffsets      {@code "class:name:descriptor"} to Method component offset
+     * @param staticFieldOffsets {@code "class:field"} to static field image offset
+     * @param hasApplets         {@code true} for an application package (§6.13)
+     * @param imported           information about imported interfaces (to recognize shareable ones)
      */
-    public static byte[] generate(TokenMap tokenMap, int[] methodOffsets,
-                                   int[] classOffsets,
-                                   Map<String, Integer> methodIndexMap,
-                                   Map<String, Integer> staticFieldOffsetMap) {
-        // --- export_component (§6.12 Table 6-12) ---
-        var info = new BinaryWriter();
-        List<TokenMap.ClassEntry> classes = tokenMap.classes();
-        info.u1(classes.size()); // §6.12: u1 class_count
+    public record Input(List<ClassInfo> classes, TokenMap tokenMap, Map<String, Integer> classOffsets,
+                        Map<String, Integer> methodOffsets, Map<String, Integer> staticFieldOffsets,
+                        boolean hasApplets, ImportedTypes imported) {}
 
-        for (int i = 0; i < classes.size(); i++) {
-            TokenMap.ClassEntry ce = classes.get(i);
-
-            // --- class_export_info (§6.12 Table 6-12) ---
-            int classOffset = (i < classOffsets.length) ? classOffsets[i] : 0;
-            info.u2(classOffset); // §6.12: u2 class_offset (into Class component)
-
-            List<TokenMap.FieldEntry> staticFields = ce.staticFields();
-            List<TokenMap.MethodEntry> staticMethods = ce.staticMethods();
-
-            info.u1(staticFields.size());   // §6.12: u1 static_field_count
-            info.u1(staticMethods.size());  // §6.12: u1 static_method_count
-
-            // §6.12: u2[] static_field_offsets (into StaticField image)
-            for (TokenMap.FieldEntry fe : staticFields) {
-                String key = ce.internalName() + ":" + fe.name();
-                Integer offset = staticFieldOffsetMap.get(key);
-                info.u2(offset != null ? offset : 0);
-            }
-
-            // §6.12: u2[] static_method_offsets (into Method component)
-            for (TokenMap.MethodEntry me : staticMethods) {
-                String key = ce.internalName() + ":" + me.name() + ":" + me.descriptor();
-                Integer globalIdx = methodIndexMap.get(key);
-                if (globalIdx != null && globalIdx < methodOffsets.length) {
-                    info.u2(methodOffsets[globalIdx]);
-                } else {
-                    info.u2(0);
-                }
-            }
+    /**
+     * Generates the Export component (§6.13).
+     *
+     * @param in the package
+     * @return complete component bytes including tag and size, or empty if the package exports
+     *         nothing (the component must then be omitted)
+     * @throws IllegalStateException if the exported classes do not have the tokens 0..n-1 or an
+     *                               exported member has no location
+     */
+    public static Optional<byte[]> generate(Input in) {
+        TypeHierarchy hierarchy = new TypeHierarchy(in.classes(), in.tokenMap(), in.imported());
+        List<ClassInfo> exported = in.classes().stream()
+                .filter(ci -> (ci.accessFlags() & 0x0001) != 0)
+                .filter(ci -> !in.hasApplets() || (ci.isInterface() && hierarchy.isShareableInterface(ci.thisClass())))
+                .sorted(Comparator.comparingInt(ci -> in.tokenMap().classToken(ci.thisClass())))
+                .toList();
+        if (exported.isEmpty()) {
+            return Optional.empty();
         }
+        var info = new BinaryWriter();
+        info.u1(exported.size()); // class_count
+        for (int i = 0; i < exported.size(); i++) {
+            writeClassExport(info, in, exported.get(i), i);
+        }
+        return Optional.of(HeaderComponent.wrapComponent(TAG, info.toByteArray()));
+    }
 
+    /** class_export_info; interfaces have no static members (§6.13). */
+    private static void writeClassExport(BinaryWriter info, Input in, ClassInfo ci, int index) {
+        TokenMap.ClassEntry entry = in.tokenMap().findClass(ci.thisClass());
+        requireTokenIndex(ci.thisClass(), entry.token(), index);
+        List<TokenMap.FieldEntry> fields = ci.isInterface() ? List.of() : sortedFields(entry.staticFields());
+        List<TokenMap.MethodEntry> methods = ci.isInterface() ? List.of() : sortedMethods(entry.staticMethods());
+        info.u2(required(in.classOffsets(), ci.thisClass()));               // class_offset
+        info.u1(fields.size());                                            // static_field_count
+        info.u1(methods.size());                                           // static_method_count
+        for (TokenMap.FieldEntry fe : fields) {                            // static_field_offsets[token]
+            info.u2(required(in.staticFieldOffsets(), ci.thisClass() + ":" + fe.name()));
+        }
+        for (TokenMap.MethodEntry me : methods) {                          // static_method_offsets[token]
+            info.u2(required(in.methodOffsets(), ci.thisClass() + ":" + me.name() + ":" + me.descriptor()));
+        }
+    }
+
+    /** An index into {@code class_exports} is the class token (§6.13). */
+    private static void requireTokenIndex(String className, int token, int index) {
+        if (token != index) {
+            throw new IllegalStateException("Exported " + className + " has class token " + token
+                    + " but is entry " + index + " of the Export component (JCVM 3.1 §6.13)");
+        }
+    }
+
+    private static List<TokenMap.FieldEntry> sortedFields(List<TokenMap.FieldEntry> fields) {
+        List<TokenMap.FieldEntry> sorted = new ArrayList<>(fields);
+        sorted.sort(Comparator.comparingInt(TokenMap.FieldEntry::token));
+        return sorted;
+    }
+
+    private static List<TokenMap.MethodEntry> sortedMethods(List<TokenMap.MethodEntry> methods) {
+        List<TokenMap.MethodEntry> sorted = new ArrayList<>(methods);
+        sorted.sort(Comparator.comparingInt(TokenMap.MethodEntry::token));
+        return sorted;
+    }
+
+    private static int required(Map<String, Integer> offsets, String key) {
+        Integer offset = offsets.get(key);
+        if (offset == null) {
+            throw new IllegalStateException("Exported element " + key + " has no location in the CAP file"
+                    + " (JCVM 3.1 §6.13)");
+        }
+        return offset;
+    }
+
+    /**
+     * Generates an Export component that lists every class of the token map that has a class
+     * token, as for a library package.
+     *
+     * @param tokenMap             token assignment
+     * @param methodOffsets        Method component offset per global method index
+     * @param classOffsets         Class component offset per position in {@link TokenMap#classes()}
+     * @param methodIndexMap       {@code "class:name:descriptor"} to global method index
+     * @param staticFieldOffsetMap {@code "class:field"} to static field image offset
+     * @return complete component bytes including tag and size
+     * @throws IllegalStateException if the class tokens are not 0..n-1 or the location of an exported
+     *                               class, static field or static method is not given (before 0.4.0 such an
+     *                               element was written with offset 0, a real location of another element)
+     * @deprecated cannot tell application from library packages or recognize shareable
+     *             interfaces; use {@link #generate(Input)}
+     */
+    @Deprecated(since = "0.4.0")
+    public static byte[] generate(TokenMap tokenMap, int[] methodOffsets, int[] classOffsets,
+                                  Map<String, Integer> methodIndexMap, Map<String, Integer> staticFieldOffsetMap) {
+        Map<String, Integer> classes = new HashMap<>();
+        for (int i = 0; i < tokenMap.classes().size() && i < classOffsets.length; i++) {
+            classes.put(tokenMap.classes().get(i).internalName(), classOffsets[i]);
+        }
+        Map<String, Integer> methods = new HashMap<>();
+        methodIndexMap.forEach((key, idx) -> {
+            if (idx >= 0 && idx < methodOffsets.length) {
+                methods.put(key, methodOffsets[idx]);
+            }
+        });
+        List<TokenMap.ClassEntry> exported = tokenMap.classes().stream()
+                .filter(ce -> ce.token() != TokenMap.NO_TOKEN)
+                .sorted(Comparator.comparingInt(TokenMap.ClassEntry::token)).toList();
+        var info = new BinaryWriter();
+        info.u1(exported.size());
+        for (int i = 0; i < exported.size(); i++) {
+            writeClassExport(info, exported.get(i), i, classes, methods, staticFieldOffsetMap);
+        }
         return HeaderComponent.wrapComponent(TAG, info.toByteArray());
+    }
+
+    /** class_export_info of the deprecated variant: every location must be given (§6.13). */
+    private static void writeClassExport(BinaryWriter info, TokenMap.ClassEntry ce, int index,
+                                         Map<String, Integer> classes, Map<String, Integer> methods,
+                                         Map<String, Integer> fields) {
+        requireTokenIndex(ce.internalName(), ce.token(), index);
+        info.u2(required(classes, ce.internalName()));
+        info.u1(ce.staticFields().size());
+        info.u1(ce.staticMethods().size());
+        for (TokenMap.FieldEntry fe : sortedFields(ce.staticFields())) {
+            info.u2(required(fields, ce.internalName() + ":" + fe.name()));
+        }
+        for (TokenMap.MethodEntry me : sortedMethods(ce.staticMethods())) {
+            info.u2(required(methods, ce.internalName() + ":" + me.name() + ":" + me.descriptor()));
+        }
     }
 }

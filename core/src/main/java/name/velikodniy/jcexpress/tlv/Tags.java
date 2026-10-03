@@ -85,11 +85,35 @@ public final class Tags {
     /** Previous Certificate Authority Reference. */
     public static final int PACE_CAR2 = 0x88;
 
-    // Card Recognition Data sub-tags (inside 0x73)
+    // Card Recognition Data (inside '73'): GlobalPlatform Card Specification 2.3.1, H.2, Tables H-1 and H-2
+
+    /** OID tag; directly inside '73' it holds {globalPlatform 1}, the OID for Card Recognition Data. */
     public static final int GP_OID = 0x06;
-    public static final int GP_CARD_IDENTIFICATION_SCHEME = 0x60;
-    public static final int GP_CARD_CONFIG_DETAILS = 0x64;
-    public static final int GP_CARD_CHIP_DETAILS = 0x65;
+
+    /** Application tag 0: OID {globalPlatform 2 v}, Card Management Type and Version (Table H-1, note 2). */
+    public static final int GP_CARD_MANAGEMENT_TYPE_VERSION = 0x60;
+
+    /** Application tag 3: OID {globalPlatform 3}, Card Identification Scheme (Table H-1, note 3). */
+    public static final int GP_CARD_IDENTIFICATION_SCHEME = 0x63;
+
+    /**
+     * Application tag 4: OID(s) {globalPlatform 4 scp i}, Secure Channel Protocol of the Issuer Security Domain
+     * and its implementation options (Table H-1, note 4: one OID per occurrence in format 1, one occurrence with
+     * all OIDs in format 2).
+     */
+    public static final int GP_SECURE_CHANNEL_PROTOCOL = 0x64;
+
+    /** Application tag 5: Card configuration details (Table H-1, note 5). */
+    public static final int GP_CARD_CONFIG_DETAILS = 0x65;
+
+    /** Application tag 6: Card / chip details (Table H-1, note 6). */
+    public static final int GP_CARD_CHIP_DETAILS = 0x66;
+
+    /** Application tag 7: Issuer Security Domain's Trust Point certificate information (Table H-1, note 7). */
+    public static final int GP_ISD_TRUST_POINT_CERTIFICATE_INFO = 0x67;
+
+    /** Application tag 8: Issuer Security Domain certificate information (Table H-1, note 8). */
+    public static final int GP_ISD_CERTIFICATE_INFO = 0x68;
 
     /**
      * Returns true if the tag indicates a constructed (non-primitive) TLV.

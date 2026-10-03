@@ -1,25 +1,27 @@
 package name.velikodniy.jcexpress.converter;
 
-import org.junit.jupiter.api.Assumptions;
+import name.velikodniy.jcexpress.converter.testutil.OracleReferences;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
-import java.io.InputStream;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 import org.assertj.core.api.SoftAssertions;
 
 import static name.velikodniy.jcexpress.converter.CapTestUtils.extractComponents;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Parameterized Oracle reference comparison across all 8 JavaCard versions.
  *
  * <p>For each {@link JavaCardVersion} enum value, the test looks for a corresponding
- * Oracle reference CAP file in {@code /reference/}. If the file is not found, the
- * test is skipped (via {@link Assumptions#assumeTrue}). If found, our converter
+ * Oracle reference CAP file in {@code build/oracle-refs/} (see {@link OracleReferences}). If it is missing, the
+ * test is skipped (via {@link OracleReferences#require}). If found, our converter
  * output is compared component-by-component against the Oracle reference.
  *
  * <p>Reference file naming convention:
@@ -51,14 +53,7 @@ class PerVersionOracleComparisonTest {
     @EnumSource(JavaCardVersion.class)
     void compareAgainstOracleReference(JavaCardVersion version) throws Exception {
         String refFileName = referenceFileName(version);
-        InputStream refStream = getClass().getResourceAsStream("/reference/" + refFileName);
-        Assumptions.assumeTrue(refStream != null,
-                "Reference file not found: " + refFileName + " -- skipping " + version);
-
-        byte[] oracleCapBytes;
-        try (refStream) {
-            oracleCapBytes = refStream.readAllBytes();
-        }
+        byte[] oracleCapBytes = OracleReferences.require(refFileName);
 
         // Convert TestApplet with the given version
         Path classesDir = Path.of("target/test-classes");
@@ -144,10 +139,6 @@ class PerVersionOracleComparisonTest {
         int sizeMatchCount = 0;
         int diffCount = 0;
 
-        // Components with known non-byte-identical differences:
-        // - Class.cap: Oracle dispatch table off-by-one bug (all versions)
-        Set<String> knownSizeMatchOnly = Set.of("Class.cap");
-
         SoftAssertions softly = new SoftAssertions();
         for (String name : COMPONENT_ORDER) {
             byte[] ours = ourComponents.get(name);
@@ -167,12 +158,11 @@ class PerVersionOracleComparisonTest {
                     .as("%s size for %s (ours vs oracle)", name, version)
                     .isEqualTo(oracle.length);
 
-            // Components not in knownSizeMatchOnly must be byte-identical
-            if (!knownSizeMatchOnly.contains(name)) {
-                softly.assertThat(ours)
-                        .as("%s must be byte-identical for %s", name, version)
-                        .isEqualTo(oracle);
-            }
+            // Every component must be byte-identical, including the Class component: its
+            // class_info layout (JCVM 3.1 §6.9.2) is the same in both converters
+            softly.assertThat(ours)
+                    .as("%s must be byte-identical for %s", name, version)
+                    .isEqualTo(oracle);
         }
 
         System.out.printf("%n  Summary for %s: %d byte-identical, %d size-match, %d size-diff%n",
@@ -198,7 +188,7 @@ class PerVersionOracleComparisonTest {
 
         for (JavaCardVersion version : JavaCardVersion.values()) {
             String refFileName = referenceFileName(version);
-            boolean exists = getClass().getResource("/reference/" + refFileName) != null;
+            boolean exists = OracleReferences.find(refFileName).isPresent();
             System.out.printf("  %-10s  %-40s  %s%n",
                     version, refFileName, exists ? "FOUND" : "MISSING");
             if (exists) found++;

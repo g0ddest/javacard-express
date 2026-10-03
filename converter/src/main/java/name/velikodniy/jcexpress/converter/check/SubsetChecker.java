@@ -8,48 +8,49 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Verifies that a set of parsed classes only use the JVM subset allowed by the
- * Java Card Virtual Machine (JCVM).
+ * Verifies that a set of parsed classes only uses the Java language subset supported by the
+ * Java Card platform (JCVM 3.1 §2.2).
  *
- * <p>This class implements <strong>Stage 2: Subset Check</strong> of the converter
- * pipeline. After Stage 1 (class file parsing via {@code ClassFileReader}) produces
- * {@link ClassInfo} objects, this checker inspects every class, field, method
- * descriptor, and bytecode instruction to ensure nothing falls outside the JCVM
- * subset. If any violations are found, the converter aborts before proceeding to
- * Stage 3 (token assignment).
+ * <p>This class implements <strong>Stage 2: Subset Check</strong> of the converter pipeline.
+ * After Stage 1 (class file parsing via {@code ClassFileReader}) produces {@link ClassInfo}
+ * objects, this checker inspects every class, field, method and instruction. If any violations
+ * are found, the converter aborts before Stage 3 (token assignment); every violation names the
+ * class, the member and, when the class file has a LineNumberTable, the source line.
  *
  * <h2>What is checked</h2>
  * <ul>
- *   <li><strong>Superclass and interface names</strong> -- rejected if they reference
- *       forbidden classes such as {@code java/lang/String} or {@code java/lang/Thread}
- *       (see {@link ForbiddenTypes}).</li>
- *   <li><strong>Field descriptors</strong> -- rejected if they contain forbidden
- *       primitive types ({@code long}, {@code float}, {@code double}) or forbidden
- *       reference types.</li>
- *   <li><strong>Method descriptors</strong> -- parameter and return types are checked
- *       for the same forbidden type set.</li>
- *   <li><strong>Bytecode instructions</strong> -- every opcode in every method body
- *       is checked against the {@link ForbiddenOpcodes} table. Forbidden opcodes
- *       include all {@code long}/{@code float}/{@code double} operations, threading
- *       instructions ({@code monitorenter}/{@code monitorexit}), subroutines
- *       ({@code jsr}/{@code ret}), {@code invokedynamic}, and wide jumps
- *       ({@code goto_w}/{@code jsr_w}).</li>
+ *   <li><strong>Types</strong> (§2.2.1.3, §2.2.1.4): char, long, float, double, arrays of more
+ *       than one dimension, and the unsupported classes named by §2.2.1.4 (String, Thread,
+ *       wrapper classes, Class, System) or used by javac for unsupported constructs, in
+ *       superclasses, interfaces, field and method signatures, instructions and catch clauses
+ *       (see {@link ForbiddenTypes}). Other Java SE API references are reported by the link
+ *       check against the export files of the target platform.</li>
+ *   <li><strong>Class kinds</strong>: enums (§2.2.1.1.7), annotation types (§2.2.1.1.10) and
+ *       records.</li>
+ *   <li><strong>Keywords</strong> (§2.2.1.2): native, synchronized (methods and blocks),
+ *       volatile, transient, strictfp; varargs (§2.2.1.1.9), assert (§2.2.1.1.11) and cloning
+ *       (§2.2.1.1.5).</li>
+ *   <li><strong>Instructions</strong>: long, float and double operations, monitors,
+ *       invokedynamic (lambdas, string concatenation), multianewarray, char arrays, String and
+ *       class literal constants; jsr/ret subroutines that were not inlined first (the converter
+ *       inlines them when it reads the class files, §2.3.2.2).</li>
+ *   <li><strong>Interfaces</strong>: methods with a body (default, static or private interface
+ *       methods) cannot be represented (§6.10).</li>
+ *   <li><strong>Static final constants</strong> (§2.2.4.6): a static final field of a primitive
+ *       type must be a compile-time constant; a blank final assigned in {@code <clinit>} is
+ *       rejected at the assignment.</li>
+ *   <li><strong>Access control</strong> (§2.2.1.1.6): the public API of the package must not
+ *       expose package-visible classes and interfaces ({@link AccessRules}); no access to a
+ *       private member of another class that could not be made package-visible
+ *       ({@link name.velikodniy.jcexpress.converter.input.NestmateAccess}).</li>
+ *   <li><strong>Integer data type</strong> (§2.2.3.1): without int support, int fields,
+ *       parameters, locals, constants and 32-bit intermediate values that could change a result
+ *       (see {@link name.velikodniy.jcexpress.converter.translate.IntRules}); in any case,
+ *       array indices and sizes must be short values (§2.2.1.1.8).</li>
  * </ul>
  *
- * <h2>JCVM specification references</h2>
- * <ul>
- *   <li>JCVM 3.0.5, Section 3.1 -- "Java Card Platform Subset": defines the
- *       unsupported Java language features (no {@code float}, {@code double},
- *       {@code long}, threads, etc.).</li>
- *   <li>JCVM 3.0.5, Section 3.2 -- "Unsupported Items": lists specific JVM bytecodes
- *       excluded from the Java Card platform.</li>
- *   <li>JCVM 3.0.5, Section 7 -- "Java Card Virtual Machine Instruction Set":
- *       canonical list of supported bytecodes.</li>
- * </ul>
- *
- * <p>This class is a stateless utility with no public constructor. All checking is
- * performed through the static {@link #check(List)} method, which returns an
- * immutable list of {@link Violation} records.
+ * <p>This class is a stateless utility. All checking is performed through the static
+ * {@link #check(List, boolean)} method, which returns an immutable list of {@link Violation}s.
  *
  * @see ForbiddenOpcodes
  * @see ForbiddenTypes
@@ -57,118 +58,105 @@ import java.util.List;
  */
 public final class SubsetChecker {
 
+    private static final int ACC_VOLATILE = 0x0040;
+    private static final int ACC_TRANSIENT = 0x0080;
+    private static final int ACC_ANNOTATION = 0x2000;
+    private static final int ACC_ENUM = 0x4000;
+
     private SubsetChecker() {}
+
+    /**
+     * Checks all classes for a target without int support (the converter default).
+     *
+     * @param classes the parsed classes from Stage 1
+     * @return an immutable list of violations; empty if all classes are compliant
+     * @see #check(List, boolean)
+     */
+    public static List<Violation> check(List<ClassInfo> classes) {
+        return check(classes, false);
+    }
 
     /**
      * Checks all classes for JavaCard subset violations.
      *
-     * <p>Iterates over every class, inspecting superclass references, implemented
-     * interfaces, field descriptors, method descriptors, and bytecode instructions.
-     * Any construct that falls outside the JCVM-supported subset is recorded as a
-     * {@link Violation}.
-     *
-     * @param classes the list of parsed {@link ClassInfo} objects from Stage 1
+     * @param classes      the parsed {@link ClassInfo} objects from Stage 1
+     * @param intSupported whether the target supports the optional int type (JCVM 3.1
+     *                     §2.2.3.1); without it every use of int is a violation
      * @return an immutable list of violations; empty if all classes are compliant
      */
-    public static List<Violation> check(List<ClassInfo> classes) {
+    public static List<Violation> check(List<ClassInfo> classes, boolean intSupported) {
         List<Violation> violations = new ArrayList<>();
         for (ClassInfo ci : classes) {
-            checkClass(ci, violations);
+            checkClass(ci, intSupported, violations, classes);
         }
+        AccessRules.check(classes, violations);
         return List.copyOf(violations);
     }
 
-    private static void checkClass(ClassInfo ci, List<Violation> violations) {
-        String className = ci.thisClass();
-
-        // Check superclass
+    private static void checkClass(ClassInfo ci, boolean intSupported, List<Violation> violations,
+                                   List<ClassInfo> packageClasses) {
+        String unsupportedKind = unsupportedKind(ci);
+        if (unsupportedKind != null) {
+            // one clear message instead of the many consequences (java.lang.Enum, clone(), ...)
+            violations.add(classViolation(ci, "class", unsupportedKind));
+            return;
+        }
         if (ci.superClass() != null) {
             String reason = ForbiddenTypes.checkInternalName(ci.superClass());
             if (reason != null) {
-                violations.add(new Violation(className, "superclass", reason));
+                violations.add(classViolation(ci, "superclass", reason));
             }
         }
-
-        // Check interfaces
         for (String iface : ci.interfaces()) {
             String reason = ForbiddenTypes.checkInternalName(iface);
             if (reason != null) {
-                violations.add(new Violation(className, "interface " + iface, reason));
+                violations.add(classViolation(ci, "interface " + iface, reason));
             }
         }
-
-        // Check fields
         for (FieldInfo fi : ci.fields()) {
-            String reason = ForbiddenTypes.checkDescriptor(fi.descriptor());
-            if (reason != null) {
-                violations.add(new Violation(className, "field " + fi.name(), reason));
-            }
+            checkField(ci, fi, intSupported, violations);
         }
-
-        // Check methods
         for (MethodInfo mi : ci.methods()) {
-            String ctx = mi.name() + mi.descriptor();
-
-            // Check method descriptor for forbidden parameter/return types
-            String reason = ForbiddenTypes.checkDescriptor(mi.descriptor());
-            if (reason != null) {
-                violations.add(new Violation(className, ctx, reason));
-            }
-
-            // Check bytecode for forbidden opcodes
-            checkBytecode(className, ctx, mi.bytecode(), violations);
+            new MethodChecker(ci, mi, intSupported, violations, packageClasses).check();
         }
     }
 
-    private static void checkBytecode(String className, String context,
-                                      byte[] bytecode, List<Violation> violations) {
-        if (bytecode == null || bytecode.length == 0) return;
+    /** Class kinds that the Java Card language subset does not have, or {@code null}. */
+    private static String unsupportedKind(ClassInfo ci) {
+        if ((ci.accessFlags() & ACC_ENUM) != 0) {
+            return "enum types are not supported (JCVM 3.1 §2.2.1.1.7)";
+        }
+        if ((ci.accessFlags() & ACC_ANNOTATION) != 0) {
+            return "annotation types are not supported (JCVM 3.1 §2.2.1.1.10)";
+        }
+        if ("java/lang/Record".equals(ci.superClass())) {
+            return "records are not supported: java/lang/Record is not part of the Java Card platform"
+                    + " (JCVM 3.1 §2.2.1.4)";
+        }
+        return null;
+    }
 
-        int pc = 0;
-        while (pc < bytecode.length) {
-            int opcode = bytecode[pc] & 0xFF;
-
-            if (ForbiddenOpcodes.isForbidden(opcode)) {
-                violations.add(new Violation(
-                        className, context, pc,
-                        ForbiddenOpcodes.reason(opcode)
-                ));
-            }
-
-            int len = ForbiddenOpcodes.instructionLength(opcode);
-            if (len > 0) {
-                pc += len;
-            } else {
-                pc = skipVariableLength(bytecode, pc, opcode);
-            }
+    private static void checkField(ClassInfo ci, FieldInfo fi, boolean intSupported,
+                                   List<Violation> violations) {
+        String context = "field " + fi.name();
+        String reason = ForbiddenTypes.checkDescriptor(fi.descriptor());
+        if (reason != null) {
+            violations.add(classViolation(ci, context, reason));
+        } else if (!intSupported && (fi.descriptor().equals("I") || fi.descriptor().equals("[I"))) {
+            violations.add(classViolation(ci, context, "field of type "
+                    + (fi.descriptor().equals("I") ? "int" : "int[]")
+                    + " needs int support (JCVM 3.1 §2.2.3.1)"));
+        }
+        if ((fi.accessFlags() & ACC_VOLATILE) != 0) {
+            violations.add(classViolation(ci, context, "volatile fields are not supported (JCVM 3.1 §2.2.1.2)"));
+        }
+        if ((fi.accessFlags() & ACC_TRANSIENT) != 0) {
+            violations.add(classViolation(ci, context, "transient fields are not supported (JCVM 3.1 §2.2.1.2);"
+                    + " use JCSystem.makeTransient*Array for transient data"));
         }
     }
 
-    private static int skipVariableLength(byte[] bytecode, int pc, int opcode) {
-        return switch (opcode) {
-            case 0xAA -> { // tableswitch
-                int padded = (pc + 4) & ~3;
-                int low = readInt(bytecode, padded + 4);
-                int high = readInt(bytecode, padded + 8);
-                yield padded + 12 + (high - low + 1) * 4;
-            }
-            case 0xAB -> { // lookupswitch
-                int padded = (pc + 4) & ~3;
-                int npairs = readInt(bytecode, padded + 4);
-                yield padded + 8 + npairs * 8;
-            }
-            case 0xC4 -> { // wide
-                int wideOpcode = bytecode[pc + 1] & 0xFF;
-                yield (wideOpcode == 0x84) ? pc + 6 : pc + 4;
-            }
-            default -> pc + 1;
-        };
-    }
-
-    private static int readInt(byte[] b, int offset) {
-        return ((b[offset] & 0xFF) << 24)
-                | ((b[offset + 1] & 0xFF) << 16)
-                | ((b[offset + 2] & 0xFF) << 8)
-                | (b[offset + 3] & 0xFF);
+    private static Violation classViolation(ClassInfo ci, String context, String message) {
+        return new Violation(ci.thisClass(), context, -1, message, ci.sourceFile().orElse(null), -1);
     }
 }

@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Parent POM for Java Card applet projects: a project that inherits it needs only its own coordinates, its package
+  AID (property javacard.packageAid) and the plugin javacard-express-maven-plugin named by groupId and artifactId to
+  compile the applet for Java 8, test it on jCardSim with JUnit 5, and build the CAP file with `mvn package`. Every
+  setting below can be overridden in the project's POM.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- The BOM manages the versions of the toolkit's artifacts and of its Maven plugin -->
+    <parent>
+        <groupId>name.velikodniy</groupId>
+        <artifactId>javacard-express-bom</artifactId>
+        <version>${revision}</version>
+        <relativePath>../bom/pom.xml</relativePath>
+    </parent>
+
+    <artifactId>javacard-express-applet-parent</artifactId>
+    <packaging>pom</packaging>
+
+    <name>JavaCard Express :: Applet Parent</name>
+    <description>Parent POM for Java Card applet projects: Java 8 applet code, JUnit 5 tests on jCardSim, the CAP file built by the JavaCard Express Maven plugin</description>
+
+    <properties>
+        <!-- Java Card supports a subset of Java: applets are compiled to Java 8 class files -->
+        <maven.compiler.release>8</maven.compiler.release>
+        <!-- Tests run on JDK 25 with the toolkit (its class files are Java 25) and may use the current Java API -->
+        <maven.compiler.testRelease>25</maven.compiler.testRelease>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Reproducible jars (the CAP file is reproducible anyway) -->
+        <project.build.outputTimestamp>1980-02-01T00:00:00Z</project.build.outputTimestamp>
+    </properties>
+
+    <dependencies>
+        <!-- The test runtime first: javacard-express-core brings jCardSim, which executes the javacard.* API in tests,
+             plus the JUnit Jupiter API and AssertJ. Test runners that follow the POM order (IDEs) need it before the
+             stubs; the dependencies of the project itself come before these. -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The card test backends simulated-gp and livecard: the same @JavaCardTest classes run on a simulated
+             GlobalPlatform card (-Djcx.backend=simulated-gp) or on a card in a PC/SC reader (-Djcx.backend=livecard,
+             only as a JVM system property, never on CI) without a change to the POM -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-livecard</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The Java Card 3.0.5 API for javac: compile-only stubs (signatures and constants) -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <!-- @ParameterizedTest -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <version>5.14.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <!-- A project declares the plugin with its groupId and artifactId (the README Quick Start): the
+                         version comes from javacard-express-bom, the binding of the build goal to its default phase,
+                         process-classes (after compilation, before the tests), from here. Managed, not declared: the
+                         modules of the toolkit's own build never use the plugin, so neither Maven nor an IDE has to
+                         resolve it before it is installed -->
+                    <groupId>name.velikodniy</groupId>
+                    <artifactId>javacard-express-maven-plugin</artifactId>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>build</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>javacard-express-requirements</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[25,)</version>
+                                    <message>JavaCard Express needs Maven to run on JDK 25+ (mvn -v shows ${java.version}). Applets are still compiled for Java 8.</message>
+                                </requireJavaVersion>
+                                <requireMavenVersion>
+                                    <version>[3.9.0,)</version>
+                                    <message>JavaCard Express needs Maven 3.9.0 or newer (mvn -v shows ${maven.version}).</message>
+                                </requireMavenVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <compilerArgs combine.children="append">
+                                <!-- javac 21+ warns that release 8 is obsolete; the old target is intentional -->
+                                <arg>-Xlint:-options</arg>
+                            </compilerArgs>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+                <configuration>
+                    <!-- The stubs and jCardSim define the same javacard.* classes: keep the compile-only stubs off the
+                         test runtime, whatever the order of the dependencies -->
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>name.velikodniy:javacard-express-api</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <!-- The toolkit's own build of this POM; the published POM has no profiles -->
+            <id>toolkit-build</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <properties>
+                <!-- -DskipTests also skips the integration test of this POM -->
+                <skipTests>false</skipTests>
+            </properties>
+            <dependencies>
+                <!-- Orders the reactor: the integration test below installs the plugin, which this POM only manages -->
+                <dependency>
+                    <groupId>name.velikodniy</groupId>
+                    <artifactId>javacard-express-maven-plugin</artifactId>
+                    <version>${project.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <!-- src/it/parent-quickstart: a project whose POM has only coordinates, this parent and a
+                             package AID builds and tests an applet with mvn package, and runs the same test on the
+                             simulated GlobalPlatform card with -Djcx.backend=simulated-gp -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-invoker-plugin</artifactId>
+                        <version>3.10.1</version>
+                        <configuration>
+                            <projectsDirectory>src/it</projectsDirectory>
+                            <cloneProjectsTo>${project.build.directory}/it</cloneProjectsTo>
+                            <localRepositoryPath>${project.build.directory}/it-repo</localRepositoryPath>
+                            <settingsFile>../maven-plugin/src/it/settings.xml</settingsFile>
+                            <extraArtifacts>
+                                <extraArtifact>name.velikodniy:javacard-express-bom:${project.version}:pom</extraArtifact>
+                                <extraArtifact>name.velikodniy:javacard-express-maven-plugin:${project.version}:jar</extraArtifact>
+                                <extraArtifact>name.velikodniy:javacard-express-api:${project.version}:jar</extraArtifact>
+                                <extraArtifact>name.velikodniy:javacard-express-core:${project.version}:jar</extraArtifact>
+                                <extraArtifact>name.velikodniy:javacard-express-livecard:${project.version}:jar</extraArtifact>
+                            </extraArtifacts>
+                            <postBuildHookScript>verify</postBuildHookScript>
+                            <streamLogsOnFailures>true</streamLogsOnFailures>
+                            <skipInstallation>${skipTests}</skipInstallation>
+                            <skipInvocation>${skipTests}</skipInvocation>
+                            <failIfNoProjects>true</failIfNoProjects>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>integration-test</id>
+                                <goals>
+                                    <goal>install</goal>
+                                    <goal>run</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>flatten-maven-plugin</artifactId>
+                        <configuration>
+                            <!-- Publish this POM as written (it is a parent: build, properties and dependencies are
+                                 its content), with the version resolved and without this profile -->
+                            <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                            <updatePomFile>true</updatePomFile>
+                            <pomElements combine.self="override">
+                                <parent>resolve</parent>
+                                <build>keep</build>
+                                <properties>keep</properties>
+                                <dependencies>keep</dependencies>
+                                <profiles>remove</profiles>
+                                <url>expand</url>
+                                <scm>expand</scm>
+                                <developers>expand</developers>
+                            </pomElements>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -1,337 +1,279 @@
 package name.velikodniy.jcexpress.converter.cap;
 
 import name.velikodniy.jcexpress.converter.Converter;
-import name.velikodniy.jcexpress.converter.ConverterResult;
+import name.velikodniy.jcexpress.converter.ConverterException;
+import name.velikodniy.jcexpress.converter.JavaCardVersion;
+import name.velikodniy.jcexpress.converter.TestFixtures;
+import name.velikodniy.jcexpress.converter.capcheck.CapImage;
+import name.velikodniy.jcexpress.converter.capcheck.ClassComponentView;
+import name.velikodniy.jcexpress.converter.capcheck.ClassComponentView.ClassEntry;
+import name.velikodniy.jcexpress.converter.capcheck.ClassComponentView.ImplementedInterface;
+import name.velikodniy.jcexpress.converter.capcheck.ClassComponentView.InterfaceEntry;
+import name.velikodniy.jcexpress.converter.capcheck.DescriptorView;
+import name.velikodniy.jcexpress.converter.capcheck.DescriptorView.ClassDescriptor;
+import name.velikodniy.jcexpress.converter.capcheck.DescriptorView.MethodDescriptor;
+import name.velikodniy.jcexpress.converter.testutil.JavaSources;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.ByteArrayInputStream;
 import java.nio.file.Path;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for ClassComponent — verifies dispatch tables, interface mappings,
- * and inheritance handling in the generated Class component.
+ * Class component (JCVM 3.1 §6.9) of the converter's test packages, parsed with the layout of
+ * the specification ({@code class_info_compact}: the four u1 table items precede both tables).
+ * Expected values are derived from the rules of §6.9.2 and §4.3.7; the Descriptor component
+ * (§6.14) is used to identify methods by token.
  */
 class ClassComponentTest {
 
-    private static final Path CLASSES_DIR = Path.of("target/test-classes");
+    private static final int FRAMEWORK_SHAREABLE = 0x8002; // javacard.framework is package token 0 or 1
 
-    // ── Inherited virtual method dispatch tables ──
+    @TempDir
+    Path probe;
 
-    @Test
-    void inheritanceAppletShouldHaveThreeClassEntries() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.inherit", "A000000062060101",
-                "com.example.inherit.InheritanceApplet", "A00000006206010101");
-
-        // Parse Class component: skip tag(1) + size(2), then parse class_info entries
-        // 3 classes: BaseApplet, MiddleApplet, InheritanceApplet (sorted by token)
-        int pos = 3; // skip tag + u2 size
-        int classCount = 0;
-        while (pos < classData.length) {
-            int flags = classData[pos] & 0xFF;
-            boolean isInterface = (flags & 0x80) != 0;
-            if (isInterface) {
-                // Interface: flags(1) + superinterfaces(interface_count * 2)
-                int ifaceCount = flags & 0x0F;
-                pos += 1 + ifaceCount * 2;
-            } else {
-                // Class: parse and skip all fields
-                pos = skipClassInfo(classData, pos);
-            }
-            classCount++;
-        }
-        assertThat(classCount).as("Should have 3 class_info entries (Base, Middle, Inheritance)")
-                .isEqualTo(3);
+    private static CapImage convert(String label) throws ConverterException {
+        return CapImage.parse(TestFixtures.applet(label).convert().capFile());
     }
 
-    @Test
-    void inheritanceAppletShouldHaveCorrectDispatchTable() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.inherit", "A000000062060101",
-                "com.example.inherit.InheritanceApplet", "A00000006206010101");
-
-        // Parse the last class (InheritanceApplet) — it should have the most virtual methods
-        int pos = 3; // skip tag + u2 size
-        int[] publicMethodTableBase = new int[3];
-        int[] publicMethodTableCount = new int[3];
-
-        for (int i = 0; i < 3; i++) {
-            int flags = classData[pos] & 0xFF;
-            pos++; // flags
-
-            pos += 2; // super_class_ref
-            pos++;    // declared_instance_size
-            pos++;    // first_reference_token
-            pos++;    // reference_count
-
-            publicMethodTableBase[i] = classData[pos] & 0xFF;
-            pos++; // public_method_table_base
-            publicMethodTableCount[i] = classData[pos] & 0xFF;
-            pos++; // public_method_table_count
-            pos += publicMethodTableCount[i] * 2; // skip method offsets
-
-            int pkgBase = classData[pos] & 0xFF;
-            pos++; // package_method_table_base
-            int pkgCount = classData[pos] & 0xFF;
-            pos++; // package_method_table_count
-            pos += pkgCount * 2; // skip package method offsets
-
-            // Skip implemented interfaces
-            int interfaceCount = flags & 0x0F;
-            for (int j = 0; j < interfaceCount; j++) {
-                pos += 2; // interface_ref
-                int mappingCount = classData[pos] & 0xFF;
-                pos++; // mapping count
-                pos += mappingCount; // mapping indices
-            }
-        }
-
-        // InheritanceApplet (class 2) should have a dispatch table covering process
-        assertThat(publicMethodTableCount[2]).as("InheritanceApplet should have virtual methods")
-                .isGreaterThan(0);
+    private static CapImage convert(String label, JavaCardVersion version) throws ConverterException {
+        return CapImage.parse(TestFixtures.applet(label).builder(version).build().convert().capFile());
     }
 
-    // ── Interface-to-method mappings ──
+    /** Method offset of the method with the given token declared by the class at {@code classRef}. */
+    private static int method(CapImage cap, int classRef, int token) {
+        ClassDescriptor cd = cap.descriptor().byClassRef(classRef).orElseThrow();
+        return cd.methods().stream().filter(MethodDescriptor::isVirtual).filter(m -> m.token() == token)
+                .findFirst().orElseThrow(() -> new AssertionError("no token " + token)).methodOffset();
+    }
+
+    // ── §6.9.2 field order ──
 
     @Test
-    void interfaceAppletShouldHaveInterfaceCount() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.iface", "A000000062040101",
-                "com.example.iface.InterfaceApplet", "A00000006204010101");
+    void classInfoUsesTheFieldOrderOfTheSpecification_6_9_2() throws Exception {
+        CapImage cap = convert("TestApplet");
+        ClassEntry applet = cap.classComponent().classes().getFirst();
 
-        // InterfaceApplet implements Shareable → interface_count should be 1
-        int pos = 3; // skip tag + u2 size
-        int flags = classData[pos] & 0xFF;
-        int interfaceCount = flags & 0x0F;
-
-        assertThat(interfaceCount)
-                .as("InterfaceApplet implements 1 interface (Shareable)")
-                .isEqualTo(1);
+        assertThat(applet.publicBase()).isEqualTo(7);
+        assertThat(applet.publicCount()).isEqualTo(1);
+        assertThat(applet.packageBase()).isZero();
+        assertThat(applet.packageCount()).isZero();
+        assertThat(applet.publicTable()).containsExactly(method(cap, applet.offset(), 7));
     }
 
     @Test
-    void interfaceAppletShouldHaveShareableMappingEntry() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.iface", "A000000062040101",
-                "com.example.iface.InterfaceApplet", "A00000006204010101");
+    void deprecatedOracleCompatibilityOptionDoesNotChangeTheOutput() throws Exception {
+        TestFixtures.Fixture fx = TestFixtures.applet("InheritanceApplet");
+        byte[] defaults = fx.builder(JavaCardVersion.V3_0_5).build().convert().capFile();
+        @SuppressWarnings("deprecation")
+        byte[] compat = fx.builder(JavaCardVersion.V3_0_5).oracleCompatibility(true).build().convert().capFile();
 
-        // Skip to implemented_interface_info_table
-        int pos = 3;
-        int flags = classData[pos] & 0xFF;
-        pos++; // flags
-        pos += 2; // super_class_ref
-        pos++;    // declared_instance_size
-        pos++;    // first_reference_token
-        pos++;    // reference_count
+        assertThat(CapImage.parse(compat).requireBody(CapImage.TAG_CLASS))
+                .isEqualTo(CapImage.parse(defaults).requireBody(CapImage.TAG_CLASS));
+    }
 
-        int pubBase = classData[pos] & 0xFF;
-        pos++; // public_method_table_base
-        int pubCount = classData[pos] & 0xFF;
-        pos++; // public_method_table_count
-        pos += pubCount * 2; // skip method offsets
+    // ── §6.9.2.3 method table base/count ──
 
-        pos++; // package_method_table_base
-        int pkgCount = classData[pos] & 0xFF;
-        pos++; // package_method_table_count
-        pos += pkgCount * 2; // skip
+    @Test
+    void tablesStartAtTheFirstOverrideAndRunToTheLargestInheritedToken_6_9_2_3() throws Exception {
+        CapImage cap = convert("ChainApplet");
+        List<ClassEntry> c = cap.classComponent().classes(); // A, B, C, ChainApplet, D, E
+        ClassEntry a = c.get(0);
+        ClassEntry b = c.get(1);
+        ClassEntry cc = c.get(2);
+        ClassEntry e = c.get(5);
 
-        // Now at implemented_interface_info_table
-        int interfaceCount = flags & 0x0F;
-        assertThat(interfaceCount).isEqualTo(1);
-
-        // Read interface ref
-        int ifaceRef = ((classData[pos] & 0xFF) << 8) | (classData[pos + 1] & 0xFF);
-        pos += 2;
-
-        // Shareable is external: (0x80|pkg_token) << 8 | class_token=2
-        // pkg_token for javacard.framework = 0
-        assertThat(ifaceRef).as("Shareable interface ref")
-                .isEqualTo(0x8002);
-
-        // Shareable has 0 methods → mapping count = 0
-        int mappingCount = classData[pos] & 0xFF;
-        assertThat(mappingCount).as("Shareable has no methods")
-                .isEqualTo(0);
+        assertThat(List.of(a.publicBase(), a.publicCount())).containsExactly(1, 2);
+        assertThat(List.of(b.publicBase(), b.publicCount())).containsExactly(1, 2);
+        assertThat(b.publicTable()).containsExactly(method(cap, b.offset(), 1), method(cap, a.offset(), 2));
+        assertThat(List.of(e.publicBase(), e.publicCount())).containsExactly(1, 3);
+        assertThat(e.publicTable()).containsExactly(method(cap, e.offset(), 1),
+                method(cap, cc.offset(), 2), method(cap, cc.offset(), 3));
     }
 
     @Test
-    void testAppletClassComponentShouldHaveZeroInterfaces() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example", "A000000062010101",
-                "com.example.TestApplet", "A00000006201010101");
+    void emptyTableBaseIsSuperclassBasePlusCount_6_9_2_3() throws Exception {
+        CapImage chain = convert("ChainApplet");
+        ClassEntry d = chain.classComponent().classes().get(4);
+        assertThat(List.of(d.publicBase(), d.publicCount())).containsExactly(4, 0);
 
-        int pos = 3; // skip tag + u2 size
-        int flags = classData[pos] & 0xFF;
-        int interfaceCount = flags & 0x0F;
-
-        assertThat(interfaceCount)
-                .as("TestApplet implements no interfaces directly")
-                .isEqualTo(0);
+        List<ClassEntry> noMeth = convert("NoMethApplet").classComponent().classes(); // Holder, MyException, applet
+        assertThat(List.of(noMeth.get(0).publicBase(), noMeth.get(0).publicCount()))
+                .as("Holder extends Object (equals = token 0)").containsExactly(1, 0);
+        assertThat(List.of(noMeth.get(1).publicBase(), noMeth.get(1).publicCount()))
+                .as("MyException extends CardRuntimeException (tokens 0..2)").containsExactly(3, 0);
     }
 
     @Test
-    void multiClassAppletShouldHaveTwoClassEntries() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.multiclass", "A000000062030101",
-                "com.example.multiclass.MultiClassApplet", "A00000006203010101");
+    void methodsInheritedFromAnImportedPackageAreMarkedFFFF_6_9_2_3() throws Exception {
+        CapImage cap = convert("ChainApplet");
+        ClassEntry applet = cap.classComponent().classes().get(3);
 
-        int pos = 3;
-        int classCount = 0;
-        while (pos < classData.length) {
-            int flags = classData[pos] & 0xFF;
-            boolean isInterface = (flags & 0x80) != 0;
-            if (isInterface) {
-                int ifaceCount = flags & 0x0F;
-                pos += 1 + ifaceCount * 2;
-            } else {
-                pos = skipClassInfo(classData, pos);
-            }
-            classCount++;
-        }
-
-        assertThat(classCount)
-                .as("Should have 2 class_info entries (Helper, MultiClassApplet)")
-                .isEqualTo(2);
+        assertThat(List.of(applet.publicBase(), applet.publicCount())).containsExactly(4, 4);
+        assertThat(applet.publicTable().get(1)).as("token 5 not overridden").isEqualTo(0xFFFF);
     }
 
-    // ── Abstract class tests ──
+    // ── §6.9.2.3 package_virtual_method_table ──
 
     @Test
-    void abstractClassAppletShouldHaveTwoClassEntries() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.abstract_", "A000000062100101",
-                "com.example.abstract_.ConcreteApplet", "A00000006210010101");
+    void packageVisibleMethodsAreDispatchedThroughThePackageTable_6_9_2_3() throws Exception {
+        CapImage cap = convert("PkgVirtApplet");
+        List<ClassEntry> c = cap.classComponent().classes(); // Base, PkgVirtApplet, Sub, Sub2
+        ClassEntry base = c.get(0);
+        ClassEntry sub = c.get(2);
+        ClassEntry sub2 = c.get(3);
 
-        int pos = 3; // skip tag + u2 size
-        int classCount = 0;
-        while (pos < classData.length) {
-            int flags = classData[pos] & 0xFF;
-            boolean isInterface = (flags & 0x80) != 0;
-            if (isInterface) {
-                int ifaceCount = flags & 0x0F;
-                pos += 1 + ifaceCount * 2;
-            } else {
-                pos = skipClassInfo(classData, pos);
-            }
-            classCount++;
-        }
-        assertThat(classCount).as("Should have 2 class_info entries (AbstractBase, ConcreteApplet)")
-                .isEqualTo(2);
+        assertThat(List.of(base.publicBase(), base.publicCount(), base.packageBase(), base.packageCount()))
+                .containsExactly(1, 1, 0, 2);
+        assertThat(base.packageTable()).containsExactly(method(cap, base.offset(), 0x80),
+                method(cap, base.offset(), 0x81));
+        assertThat(sub.packageTable()).containsExactly(method(cap, sub.offset(), 0x80),
+                method(cap, base.offset(), 0x81), method(cap, sub.offset(), 0x82));
+        assertThat(List.of(sub2.publicBase(), sub2.publicCount(), sub2.packageBase(), sub2.packageCount()))
+                .containsExactly(2, 0, 3, 0);
     }
 
     @Test
-    void abstractClassShouldHaveVirtualMethods() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.abstract_", "A000000062100101",
-                "com.example.abstract_.ConcreteApplet", "A00000006210010101");
+    void packageTableBaseIsZeroWhenTheSuperclassIsImported_6_9_2_3() throws Exception {
+        CapImage cap = convert("HelperApplet");
+        ClassEntry applet = cap.classComponent().classes().get(1); // Counter, HelperApplet
 
-        // Parse the first class (AbstractBase) — check it has virtual method entries
-        int pos = 3; // skip tag + u2 size
-        int flags = classData[pos] & 0xFF;
-        pos++; // flags
-
-        pos += 2; // super_class_ref
-        pos++;    // declared_instance_size
-        pos++;    // first_reference_token
-        pos++;    // reference_count
-
-        pos++; // public_method_table_base
-        int pubCount = classData[pos] & 0xFF;
-        pos++; // public_method_table_count
-
-        // AbstractBase has handleCommand (abstract virtual) + process (virtual)
-        // so dispatch table should have entries
-        assertThat(pubCount).as("AbstractBase should have virtual methods in dispatch table")
-                .isGreaterThan(0);
+        assertThat(List.of(applet.packageBase(), applet.packageCount())).containsExactly(0, 2);
+        assertThat(applet.packageTable()).containsExactly(method(cap, applet.offset(), 0x80),
+                method(cap, applet.offset(), 0x81));
     }
 
-    // ── Array ops applet test ──
+    // ── §6.9.2.3 instance layout ──
 
     @Test
-    void arrayOpsAppletShouldConvertClassComponent() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.arrayops", "A000000062080101",
-                "com.example.arrayops.ArrayOpsApplet", "A00000006208010101");
+    void declaredInstanceSizeCountsCellsAndReferenceBlockIsContiguous_6_9_2_3() throws Exception {
+        ClassEntry fields = convert("FieldsApplet").classComponent().classes().getFirst();
 
-        int pos = 3;
-        int flags = classData[pos] & 0xFF;
-        int interfaceCount = flags & 0x0F;
-
-        assertThat(interfaceCount)
-                .as("ArrayOpsApplet implements no interfaces directly")
-                .isEqualTo(0);
+        assertThat(fields.declaredInstanceSize()).as("10 fields, two of them int").isEqualTo(12);
+        assertThat(fields.firstReferenceToken()).isEqualTo(3);
+        assertThat(fields.referenceCount()).isEqualTo(4);
     }
 
-    // ── Multi-exception applet test ──
+    // ── §6.9.2.1, §6.9.2.2, §6.9.2.5 interfaces ──
 
     @Test
-    void multiExceptionAppletShouldConvertClassComponent() throws Exception {
-        byte[] classData = convertAndExtractClass("com.example.multiexc", "A000000062090101",
-                "com.example.multiexc.MultiExceptionApplet", "A00000006209010101");
+    void internalInterfaceReferencesAreComponentOffsets_6_8_1() throws Exception {
+        ClassComponentView cc = convert("OrderApplet").classComponent();
+        InterfaceEntry zSuper = cc.interfaces().get(0);
+        InterfaceEntry aSub = cc.interfaces().get(1);
+        ClassEntry applet = cc.classes().getFirst();
 
-        assertThat(classData).isNotNull();
-        assertThat(classData.length).isGreaterThan(3);
+        assertThat(aSub.superinterfaces()).containsExactly(zSuper.offset());
+        assertThat(applet.interfaces()).extracting(ImplementedInterface::interfaceRef)
+                .containsExactly(zSuper.offset(), aSub.offset());
     }
 
-    // ── Helper methods ──
+    @Test
+    void internalInterfaceReferencesSkipTheSignaturePoolInCap23_6_9() throws Exception {
+        ClassComponentView cc = convert("OrderApplet", JavaCardVersion.V3_2_0).classComponent();
 
-    private byte[] convertAndExtractClass(String packageName, String packageAid,
-                                           String appletClass, String appletAid) throws Exception {
-        ConverterResult result = Converter.builder()
-                .classesDirectory(CLASSES_DIR)
-                .packageName(packageName)
-                .packageAid(packageAid)
-                .packageVersion(1, 0)
-                .applet(appletClass, appletAid)
-                .build()
-                .convert();
-
-        byte[] classData = extractComponent(result.capFile(), "Class.cap");
-        assertThat(classData).as("Class.cap should exist").isNotNull();
-        return classData;
+        assertThat(cc.signaturePoolLength()).isZero();
+        assertThat(cc.interfaces().get(0).offset()).isEqualTo(2);
+        assertThat(cc.interfaces().get(1).superinterfaces()).containsExactly(2);
     }
 
-    private static byte[] extractComponent(byte[] capFile, String componentName) throws Exception {
-        try (var zis = new ZipInputStream(new ByteArrayInputStream(capFile))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                if (entry.getName().endsWith(componentName)) {
-                    return zis.readAllBytes();
+    @Test
+    void interfaceIndexCoversInheritedInterfaceMethods_6_9_2_5() throws Exception {
+        CapImage cap = convert("OrderApplet");
+        ClassEntry applet = cap.classComponent().classes().getFirst();
+        int z = applet.interfaces().get(0).index().getFirst();
+        int aSubZ = applet.interfaces().get(1).index().get(0);
+        int aSubA = applet.interfaces().get(1).index().get(1);
+
+        assertThat(aSubZ).as("ASub token 0 is the inherited z()").isEqualTo(z);
+        assertThat(List.of(z, aSubA)).doesNotHaveDuplicates().allMatch(t -> t >= 8);
+    }
+
+    @Test
+    void shareableInterfacesAndClassesCarryAccShareable_6_9_2_1() throws Exception {
+        ClassComponentView cc = convert("ShareApplet").classComponent();
+        assertThat(cc.interfaces()).hasSize(3); // AStatus, IBase, IExt
+
+        assertThat(cc.interfaces().get(0).isShareable()).as("AStatus").isFalse();
+        assertThat(cc.interfaces().get(1).isShareable()).as("IBase extends Shareable").isTrue();
+        assertThat(cc.interfaces().get(2).isShareable()).as("IExt extends IBase").isTrue();
+        assertThat(cc.classes().getFirst().isShareable()).as("ShareApplet implements IExt").isTrue();
+    }
+
+    @Test
+    void interfaceListsContainTheWholeHierarchy_6_9_2_2_and_6_9_2_3() throws Exception {
+        CapImage cap = convert("ShareApplet");
+        ClassComponentView cc = cap.classComponent();
+        InterfaceEntry aStatus = cc.interfaces().get(0);
+        InterfaceEntry iBase = cc.interfaces().get(1);
+        InterfaceEntry iExt = cc.interfaces().get(2);
+        int shareable = iBase.superinterfaces().getFirst();
+
+        assertThat(shareable & 0x8000).as("Shareable is imported").isNotZero();
+        assertThat(shareable & 0xFF).isEqualTo(FRAMEWORK_SHAREABLE & 0xFF);
+        assertThat(iExt.superinterfaces()).containsExactly(shareable, iBase.offset());
+        assertThat(cc.classes().getFirst().interfaces()).extracting(ImplementedInterface::interfaceRef)
+                .hasSize(6).containsSubsequence(shareable, iBase.offset(), iExt.offset())
+                .contains(aStatus.offset());
+    }
+
+    @Test
+    void superinterfacesOfImportedInterfacesArePartOfTheInterfaceLists_6_9_2_2_and_6_9_2_3()
+            throws Exception {
+        // WrappedKey extends the imported PrivateKey, which extends the imported Key (JCVM 3.1 §5.7)
+        JavaSources.compile(probe, Map.of("com.acme.subkey.KeyApplet", """
+                package com.acme.subkey;
+                import javacard.framework.*;
+                public class KeyApplet extends Applet {
+                    public static void install(byte[] b, short o, byte l) { new KeyApplet().register(); }
+                    public void process(APDU apdu) { }
                 }
-                zis.closeEntry();
-            }
-        }
-        return null;
+                """, "com.acme.subkey.WrappedKey", """
+                package com.acme.subkey;
+                public interface WrappedKey extends javacard.security.PrivateKey { }
+                """, "com.acme.subkey.SoftKey", """
+                package com.acme.subkey;
+                class SoftKey implements WrappedKey {
+                    public boolean isInitialized() { return false; }
+                    public void clearKey() { }
+                    public byte getType() { return 0; }
+                    public short getSize() { return 0; }
+                }
+                """));
+        ClassComponentView cc = CapImage.parse(Converter.builder().classesDirectory(probe)
+                .packageName("com.acme.subkey").packageAid("A000000FFE40")
+                .applet("com.acme.subkey.KeyApplet", "A000000FFE4001")
+                .build().convert().capFile()).classComponent();
+
+        InterfaceEntry wrappedKey = cc.interfaces().getFirst();
+        // §6.9.2.2: direct and indirect superinterfaces; imported ones as (0x80|package)<<8|class token
+        assertThat(wrappedKey.superinterfaces()).hasSize(2).allMatch(ref -> (ref & 0x8000) != 0)
+                .extracting(ref -> ref & 0xFF).containsExactlyInAnyOrder(0, 2); // Key, PrivateKey
+        // §6.9.2.3: the interfaces of a class include the superinterfaces of those interfaces
+        ClassEntry softKey = cc.classes().stream()
+                .filter(c -> c.interfaces().stream().anyMatch(i -> i.interfaceRef() == wrappedKey.offset()))
+                .findFirst().orElseThrow();
+        assertThat(softKey.interfaces()).extracting(ImplementedInterface::interfaceRef)
+                .containsExactlyInAnyOrder(wrappedKey.offset(), wrappedKey.superinterfaces().get(0),
+                        wrappedKey.superinterfaces().get(1));
+        // §6.9.2.5: each index[] maps the four Key methods (interface tokens 0..3)
+        assertThat(softKey.interfaces()).allMatch(i -> i.index().size() == 4);
     }
 
-    /**
-     * Skips a class_info entry in the Class component binary data.
-     * Returns the position after the entry.
-     */
-    private static int skipClassInfo(byte[] data, int startPos) {
-        int pos = startPos;
-        int flags = data[pos] & 0xFF;
-        int interfaceCount = flags & 0x0F;
-        pos++; // flags
+    @Test
+    void interfacesAreNotPartOfTheMethodComponentAndHaveTokensFromZero_6_14_4() throws Exception {
+        CapImage cap = convert("ShareApplet");
+        DescriptorView d = cap.descriptor();
 
-        pos += 2; // super_class_ref
-        pos++;    // declared_instance_size
-        pos++;    // first_reference_token
-        pos++;    // reference_count
-
-        pos++; // public_method_table_base
-        int pubCount = data[pos] & 0xFF;
-        pos++; // public_method_table_count
-        pos += pubCount * 2; // method offsets
-
-        pos++; // package_method_table_base
-        int pkgCount = data[pos] & 0xFF;
-        pos++; // package_method_table_count
-        pos += pkgCount * 2;
-
-        // implemented_interface_info_table
-        for (int i = 0; i < interfaceCount; i++) {
-            pos += 2; // interface_ref
-            int mappingCount = data[pos] & 0xFF;
-            pos++; // mapping count
-            pos += mappingCount; // indices
+        for (ClassDescriptor cd : d.classes().stream().filter(ClassDescriptor::isInterface).toList()) {
+            assertThat(cd.interfaces()).isEmpty();
+            assertThat(cd.methods()).allMatch(m -> m.methodOffset() == 0 && m.bytecodeCount() == 0);
+            assertThat(cd.methods()).extracting(MethodDescriptor::token)
+                    .containsExactlyElementsOf(java.util.stream.IntStream.range(0, cd.methods().size())
+                            .boxed().toList());
         }
-
-        return pos;
     }
 }

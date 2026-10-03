@@ -139,35 +139,73 @@ class SMSessionTest {
     }
 
     @Test
-    void installShouldDelegateDirectly() {
+    void installDelegatesAndEndsTheSecureMessagingSession() {
         StubSession stub = new StubSession();
-        SMSession session = SMSession.wrap(stub, context());
-        session.install(null); // Will just set flag
+        SMContext ctx = context();
+        SMSession session = SMSession.wrap(stub, ctx);
+
+        session.install(null);
+
         assertThat(stub.installCalled).isTrue();
+        assertThat(ctx.isTerminated()).isTrue();
     }
 
     @Test
-    void selectShouldDelegateDirectly() {
+    void plainSelectByAidEndsTheSecureMessagingSession() {
+        // ICAO 9303-11 9.8.3: the chip aborts SM when it receives a plain APDU
         StubSession stub = new StubSession();
-        SMSession session = SMSession.wrap(stub, context());
+        SMContext ctx = context();
+        SMSession session = SMSession.wrap(stub, ctx);
+
         session.select(AID.fromHex("A000000001"));
+
         assertThat(stub.selectCalled).isTrue();
+        assertThat(ctx.isTerminated()).isTrue();
+        assertThatThrownBy(() -> session.send(0x00, 0xB0, 0x00, 0x00, null, 4))
+                .isInstanceOf(SMException.class)
+                .hasMessageContaining("terminated")
+                .hasMessageContaining("select");
+        assertThat(stub.transmitted).isEmpty();
     }
 
     @Test
-    void resetShouldDelegateDirectly() {
+    void resetEndsTheSecureMessagingSession() {
+        // ICAO 9303-11 9.8.5: a de-powered chip has aborted the secure channel
         StubSession stub = new StubSession();
-        SMSession session = SMSession.wrap(stub, context());
+        SMContext ctx = context();
+        SMSession session = SMSession.wrap(stub, ctx);
+
         session.reset();
+
         assertThat(stub.resetCalled).isTrue();
+        assertThat(ctx.isTerminated()).isTrue();
+        assertThat(ctx.terminationReason()).contains("reset");
     }
 
     @Test
-    void closeShouldDelegateDirectly() {
+    void closeEndsTheSecureMessagingSessionAndWipesKeys() {
         StubSession stub = new StubSession();
-        SMSession session = SMSession.wrap(stub, context());
+        SMContext ctx = context();
+        SMSession session = SMSession.wrap(stub, ctx);
+
         session.close();
+
         assertThat(stub.closeCalled).isTrue();
+        assertThat(ctx.isTerminated()).isTrue();
+        assertThatThrownBy(ctx::encKey).isInstanceOf(SMException.class);
+    }
+
+    @Test
+    void smErrorWithoutSecureMessagingIsReportedOnceThenTheSessionIsClosed() {
+        StubSession stub = new StubSession();
+        stub.nextResponse = new byte[]{0x69, (byte) 0x88};
+        SMSession session = SMSession.wrap(stub, context());
+
+        assertThat(session.send(0x00, 0xB0, 0x00, 0x00, null, 4).sw()).isEqualTo(0x6988);
+        assertThatThrownBy(() -> session.send(0x00, 0xB0, 0x00, 0x00, null, 4))
+                .isInstanceOf(SMException.class)
+                .hasMessageContaining("6988");
+        assertThat(stub.transmitted).hasSize(1);
     }
 
     @Test

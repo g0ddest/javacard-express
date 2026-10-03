@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.sm;
 
+import name.velikodniy.jcexpress.Hex;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,6 +46,18 @@ class SMKeysTest {
         assertThat(k1).isEqualTo(k2);
         k1[0] = (byte) 0xFF;
         assertThat(keys.macKey()[0]).isEqualTo((byte) 0x02);
+    }
+
+    @Test
+    void toStringDoesNotRevealTheKeys() {
+        // toString() ends up in logs and assertion messages: only the key lengths are shown
+        SMKeys keys = new SMKeys(Hex.decode("979EC13B1CBFE9DCD01AB0FED307EAE5"),
+                Hex.decode("F1CB1F1FB5ADF208806B89DC579DC1F8"));
+
+        assertThat(keys.toString())
+                .doesNotContainIgnoringCase("979EC13B")
+                .doesNotContainIgnoringCase("F1CB1F1F")
+                .contains("16 bytes");
     }
 
     @Test

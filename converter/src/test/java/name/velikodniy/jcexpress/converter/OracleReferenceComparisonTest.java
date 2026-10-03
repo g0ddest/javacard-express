@@ -1,15 +1,20 @@
 package name.velikodniy.jcexpress.converter;
 
+import name.velikodniy.jcexpress.converter.testutil.OracleReferences;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.io.InputStream;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 import static name.velikodniy.jcexpress.converter.CapTestUtils.extractComponents;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Compares our generated CAP file against Oracle's reference converter output.
@@ -42,11 +47,9 @@ class OracleReferenceComparisonTest {
                 .convert();
         ourComponents = extractComponents(result.capFile());
 
-        // Load Oracle reference CAP
-        try (InputStream is = getClass().getResourceAsStream("/reference/oracle-TestApplet-jc305.cap")) {
-            assertThat(is).as("Oracle reference CAP must exist").isNotNull();
-            oracleComponents = extractComponents(is.readAllBytes());
-        }
+        // Load Oracle reference CAP: Oracle tool output is not redistributable, so it is generated
+        // locally (never committed) and the comparison is skipped without it
+        oracleComponents = extractComponents(OracleReferences.require("oracle-TestApplet-jc305.cap"));
     }
 
     // ── Structural Comparison ──
@@ -243,15 +246,11 @@ class OracleReferenceComparisonTest {
         assertByteIdentical("RefLocation.cap");
     }
 
-    // ── Class.cap: byte-identical except Oracle dispatch table bug ──
+    // ── Class.cap: class_info layout of JCVM 3.1 §6.9.2, identical to Oracle's output ──
 
     @Test
-    void classComponentMatchesExceptDispatchTable() {
-        byte[] ours = ourComponents.get("Class.cap");
-        byte[] oracle = oracleComponents.get("Class.cap");
-        assertThat(ours).as("Class.cap present").isNotNull();
-        assertThat(oracle).as("Oracle Class.cap present").isNotNull();
-        assertClassCapMatchesExceptDispatchTable(ours, oracle, "TestApplet");
+    void classComponentByteIdentical() {
+        assertByteIdentical("Class.cap");
     }
 
     @Test
@@ -309,7 +308,8 @@ class OracleReferenceComparisonTest {
     // ── Detailed Binary Dump for Comparison ──
 
     @Test
-    void printDetailedComparison() {
+    void allComponentsByteIdenticalWithDetailedDiff() {
+        List<String> differing = new ArrayList<>();
         System.out.println("═══════════════════════════════════════════════");
         System.out.println("      CAP FILE COMPARISON: OURS vs ORACLE");
         System.out.println("═══════════════════════════════════════════════");
@@ -326,12 +326,14 @@ class OracleReferenceComparisonTest {
 
             System.out.printf("%n── %s ──%n", name);
             if (ours == null) {
+                differing.add(name);
                 System.out.println("  OURS: NOT PRESENT");
                 System.out.printf("  ORACLE: %d bytes%n", oracle.length);
                 printHex("  ORACLE", oracle, Math.min(oracle.length, 64));
                 continue;
             }
             if (oracle == null) {
+                differing.add(name);
                 System.out.printf("  OURS: %d bytes%n", ours.length);
                 System.out.println("  ORACLE: NOT PRESENT");
                 continue;
@@ -356,6 +358,7 @@ class OracleReferenceComparisonTest {
             if (diffCount == 0) {
                 System.out.println("  BYTE-IDENTICAL ✓");
             } else {
+                differing.add(name);
                 System.out.printf("  Differences: %d bytes, first at offset %d%n", diffCount, firstDiff);
             }
 
@@ -389,6 +392,8 @@ class OracleReferenceComparisonTest {
         System.out.println("\n── ConstantPool Entry Comparison ──");
         printCpEntries("OURS  ", ourComponents.get("ConstantPool.cap"));
         printCpEntries("ORACLE", oracleComponents.get("ConstantPool.cap"));
+
+        assertThat(differing).as("components that differ from Oracle's reference output").isEmpty();
     }
 
     // ── Assertion helpers ──
@@ -510,8 +515,9 @@ class OracleReferenceComparisonTest {
     void cryptoAppletProducesStructurallyValidCap() throws Exception {
         // CryptoApplet exercises Cipher, MessageDigest, Signature, KeyBuilder,
         // KeyPair, RandomData, CryptoException — validates all crypto token exports.
-        // Known differences vs Oracle: ConstantPool ordering, Class.cap reference_count.
-        // TODO: achieve byte-identical output for crypto-heavy applets
+        // The constant pool holds the same entries as Oracle's but in another order, which
+        // JCVM 3.1 §6.8 permits; components that embed CP indices (Method, Descriptor) differ
+        // accordingly. Everything else, including the Class component, is byte-identical.
         ConverterResult result = Converter.builder()
                 .classesDirectory(Path.of("target/test-classes"))
                 .packageName("com.example.crypto")
@@ -553,42 +559,41 @@ class OracleReferenceComparisonTest {
                 .isGreaterThanOrEqualTo(4);
 
         // Oracle reference comparison (structural, not byte-identical)
-        try (InputStream is = getClass().getResourceAsStream("/reference/oracle-CryptoApplet.cap")) {
-            if (is != null) {
-                Map<String, byte[]> ref = extractComponents(is.readAllBytes());
-                System.out.printf("%n═══ Oracle comparison for CryptoApplet ═══%n");
+        Optional<byte[]> cryptoReference = OracleReferences.find("oracle-CryptoApplet.cap");
+        if (cryptoReference.isPresent()) {
+            Map<String, byte[]> ref = extractComponents(cryptoReference.get());
+            System.out.printf("%n═══ Oracle comparison for CryptoApplet ═══%n");
 
-                // These components must be byte-identical
-                for (String name : new String[]{"Header.cap", "Applet.cap", "Import.cap",
-                        "StaticField.cap", "RefLocation.cap", "Directory.cap"}) {
-                    byte[] ours = components.get(name);
-                    byte[] oracle = ref.get(name);
-                    if (oracle == null) continue;
-                    System.out.printf("  %-20s %3d vs %3d  %s%n",
-                            name, ours.length, oracle.length,
-                            Arrays.equals(ours, oracle) ? "BYTE-IDENTICAL" : "DIFFER");
-                    assertThat(ours).as("%s byte-identical", name).isEqualTo(oracle);
-                }
+            // These components must be byte-identical
+            for (String name : new String[]{"Header.cap", "Applet.cap", "Import.cap", "Class.cap",
+                    "StaticField.cap", "RefLocation.cap", "Directory.cap"}) {
+                byte[] ours = components.get(name);
+                byte[] oracle = ref.get(name);
+                if (oracle == null) continue;
+                System.out.printf("  %-20s %3d vs %3d  %s%n",
+                        name, ours.length, oracle.length,
+                        Arrays.equals(ours, oracle) ? "BYTE-IDENTICAL" : "DIFFER");
+                assertThat(ours).as("%s byte-identical", name).isEqualTo(oracle);
+            }
 
-                // These components may differ in CP ordering — report and verify same size
-                for (String name : new String[]{"ConstantPool.cap", "Method.cap", "Descriptor.cap"}) {
-                    byte[] ours = components.get(name);
-                    byte[] oracle = ref.get(name);
-                    if (oracle == null) continue;
-                    boolean identical = Arrays.equals(ours, oracle);
-                    System.out.printf("  %-20s %3d vs %3d  %s%n",
-                            name, ours.length, oracle.length,
-                            identical ? "BYTE-IDENTICAL" : (ours.length == oracle.length ? "SIZE MATCH" : "SIZE DIFF"));
-                }
+            // These components may differ in CP ordering — report and verify same size
+            for (String name : new String[]{"ConstantPool.cap", "Method.cap", "Descriptor.cap"}) {
+                byte[] ours = components.get(name);
+                byte[] oracle = ref.get(name);
+                if (oracle == null) continue;
+                boolean identical = Arrays.equals(ours, oracle);
+                System.out.printf("  %-20s %3d vs %3d  %s%n",
+                        name, ours.length, oracle.length,
+                        identical ? "BYTE-IDENTICAL" : (ours.length == oracle.length ? "SIZE MATCH" : "SIZE DIFF"));
             }
         }
     }
 
     /**
      * Validates a complex applet's CAP output for structural correctness,
-     * and compares with Oracle reference if available.
-     * All components except Class.cap must be byte-identical to Oracle reference.
-     * Class.cap is verified structurally (accounting for Oracle dispatch table bug).
+     * and compares with Oracle reference if available: every component must be byte-identical.
+     * The Class component follows the {@code class_info} layout of JCVM 3.1 §6.9.2, which is
+     * also the layout of Oracle's converter (there is no "dispatch table off-by-one").
      */
     private void assertComplexAppletValid(String packageName, String packageAid,
                                            String appletClass, String appletAid,
@@ -639,145 +644,25 @@ class OracleReferenceComparisonTest {
         assertThat(applet[3] & 0xFF).as("Applet count for %s", appletClass).isEqualTo(1);
 
         // Conditional Oracle reference comparison (strict)
-        try (InputStream is = getClass().getResourceAsStream("/reference/" + oracleRefFile)) {
-            if (is != null) {
-                Map<String, byte[]> refComponents = extractComponents(is.readAllBytes());
-                System.out.printf("%n═══ Oracle comparison for %s ═══%n", appletClass);
+        Optional<byte[]> reference = OracleReferences.find(oracleRefFile);
+        if (reference.isPresent()) {
+            Map<String, byte[]> refComponents = extractComponents(reference.get());
+            System.out.printf("%n═══ Oracle comparison for %s ═══%n", appletClass);
 
-                for (String name : required) {
-                    byte[] ours = components.get(name);
-                    byte[] ref = refComponents.get(name);
-                    if (ref == null) continue;
-                    boolean identical = Arrays.equals(ours, ref);
-                    System.out.printf("  %-20s %3d vs %3d  %s%n",
-                            name, ours.length, ref.length,
-                            identical ? "BYTE-IDENTICAL" :
-                                    ours.length == ref.length ? "SIZE MATCH" : "DIFFER");
+            for (String name : required) {
+                byte[] ours = components.get(name);
+                byte[] ref = refComponents.get(name);
+                if (ref == null) continue;
+                boolean identical = Arrays.equals(ours, ref);
+                System.out.printf("  %-20s %3d vs %3d  %s%n",
+                        name, ours.length, ref.length,
+                        identical ? "BYTE-IDENTICAL" :
+                                ours.length == ref.length ? "SIZE MATCH" : "DIFFER");
 
-                    if ("Class.cap".equals(name)) {
-                        // Oracle dispatch table off-by-one bug (§6.9 Table 6-16)
-                        assertClassCapMatchesExceptDispatchTable(ours, ref, appletClass);
-                    } else {
-                        // All other components must be byte-identical
-                        assertThat(ours)
-                                .as("%s must be byte-identical for %s", name, appletClass)
-                                .isEqualTo(ref);
-                    }
-                }
+                assertThat(ours)
+                        .as("%s must be byte-identical for %s", name, appletClass)
+                        .isEqualTo(ref);
             }
         }
-    }
-
-    /**
-     * Compares two Class.cap components byte-by-byte, accounting for the known Oracle
-     * dispatch table off-by-one bug (see BINARY_COMPATIBILITY.md).
-     *
-     * <p>The Oracle converter writes a phantom {@code 0x0000} entry at the start of each
-     * class's {@code public_virtual_method_table}, shifting all real entries right by 2 bytes.
-     * The last real entry overflows into the next structural field. This results in the same
-     * set of u2 values being present in both outputs, just shifted by one position.
-     *
-     * <p>This method parses the Class.cap structure per JCVM spec §6.9, identifies the
-     * dispatch table regions, and verifies:
-     * <ol>
-     *   <li>All non-dispatch-table bytes are identical</li>
-     *   <li>Each dispatch table region (plus 2 trailing bytes) contains the same set of u2 values</li>
-     * </ol>
-     */
-    private void assertClassCapMatchesExceptDispatchTable(byte[] ours, byte[] oracle,
-                                                           String appletClass) {
-        assertThat(ours.length).as("Class.cap size for %s", appletClass).isEqualTo(oracle.length);
-
-        // Parse ONLY our Class.cap (structurally correct) to find dispatch table regions.
-        // Oracle's Class.cap has corrupted bytes after each dispatch table due to the
-        // off-by-one bug (the displaced last entry overwrites pkg_base/pkg_count fields),
-        // so we cannot reliably parse it.
-        List<int[]> dispatchRegions = findDispatchTableRegions(ours);
-
-        // Build set of masked byte offsets:
-        // dispatch table (pub_count*2 bytes) + 2 trailing bytes (Oracle overflow zone)
-        Set<Integer> maskedOffsets = new HashSet<>();
-        for (int[] region : dispatchRegions) {
-            for (int i = region[0]; i < region[0] + region[1] + 2 && i < ours.length; i++) {
-                maskedOffsets.add(i);
-            }
-        }
-
-        // Compare non-dispatch bytes (must be identical)
-        for (int i = 0; i < ours.length; i++) {
-            if (!maskedOffsets.contains(i)) {
-                assertThat(ours[i] & 0xFF)
-                        .as("Class.cap byte at offset 0x%04X for %s", i, appletClass)
-                        .isEqualTo(oracle[i] & 0xFF);
-            }
-        }
-
-        // Compare dispatch table regions: same u2 values as sorted multisets
-        for (int[] region : dispatchRegions) {
-            int start = region[0];
-            int len = region[1] + 2; // +2 for Oracle overflow
-            List<Integer> ourValues = new ArrayList<>();
-            for (int i = 0; i < len && start + i + 1 < ours.length; i += 2) {
-                ourValues.add(u2(ours, start + i));
-            }
-            List<Integer> oracleValues = new ArrayList<>();
-            for (int i = 0; i < len && start + i + 1 < oracle.length; i += 2) {
-                oracleValues.add(u2(oracle, start + i));
-            }
-            Collections.sort(ourValues);
-            Collections.sort(oracleValues);
-            assertThat(ourValues)
-                    .as("Dispatch table values for %s (Oracle off-by-one bug)", appletClass)
-                    .isEqualTo(oracleValues);
-        }
-    }
-
-    /**
-     * Parses Class.cap binary to find dispatch table byte regions.
-     * Returns list of {@code [offset, length]} pairs for each {@code public_virtual_method_table}.
-     *
-     * <p>Only call this on structurally correct Class.cap data (i.e., our output, not Oracle's),
-     * because Oracle's dispatch table bug corrupts the bytes after each dispatch table.
-     */
-    private static List<int[]> findDispatchTableRegions(byte[] classCap) {
-        List<int[]> regions = new ArrayList<>();
-        int pos = 3; // skip tag(1) + size(2)
-        while (pos < classCap.length) {
-            int bitfield = classCap[pos] & 0xFF;
-            if ((bitfield & 0x80) != 0) {
-                // interface_info: bitfield(1) + u2[interface_count]
-                int ifCount = bitfield & 0x0F;
-                pos += 1 + ifCount * 2;
-            } else {
-                // class_info (§6.9 Table 6-16)
-                pos += 1 + 2 + 1 + 1 + 1; // bitfield + super_class_ref + decl_size + first_ref + ref_count
-                pos++; // pub_table_base
-                int pubCount = classCap[pos] & 0xFF;
-                pos++; // pub_table_count
-                int tableStart = pos;
-                int tableLen = pubCount * 2;
-                if (pubCount > 0) {
-                    regions.add(new int[]{tableStart, tableLen});
-                }
-                pos += tableLen;
-
-                // package_method_table
-                pos++; // pkg_table_base
-                int pkgCount = classCap[pos] & 0xFF;
-                pos++; // pkg_table_count
-                pos += pkgCount * 2;
-
-                // implemented_interface_info[interface_count]
-                int ifCount = bitfield & 0x0F;
-                for (int i = 0; i < ifCount && pos < classCap.length; i++) {
-                    pos += 2; // u2 interface class_ref
-                    if (pos >= classCap.length) break;
-                    int methodCount = classCap[pos] & 0xFF;
-                    pos++;
-                    pos += methodCount; // u1[] index mapping
-                }
-            }
-        }
-        return regions;
     }
 }

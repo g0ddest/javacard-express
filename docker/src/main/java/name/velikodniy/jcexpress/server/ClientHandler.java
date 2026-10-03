@@ -1,191 +1,143 @@
 package name.velikodniy.jcexpress.server;
 
-import com.licel.jcardsim.smartcardio.CardSimulator;
-import com.licel.jcardsim.utils.AIDUtil;
-import javacard.framework.Applet;
+import jdk.net.ExtendedSocketOptions;
 
-import javax.smartcardio.CommandAPDU;
-import javax.smartcardio.ResponseAPDU;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
+import java.net.ProtocolException;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Handles a single client connection, processing protocol commands.
+ * Serves one client connection: checks the access token if the server has one, then reads request frames, executes
+ * them on the connection's own {@link SimulatorSession} and writes one reply per request.
+ *
+ * <p>No failure of a command can escape: every {@link Throwable} thrown while executing a command (including
+ * {@link LinkageError}s such as {@link NoClassDefFoundError} or {@link UnsupportedClassVersionError} caused by the
+ * shipped classes) is reported to the client as an error reply and the session continues. A framing error (invalid
+ * payload length) is reported and then the connection is closed, because the byte stream can no longer be
+ * interpreted.</p>
  */
 final class ClientHandler implements Runnable {
 
     private static final Logger LOG = Logger.getLogger("jcx-server");
 
-    private final Socket socket;
+    /** TCP keep-alive idle time (s) so that a vanished peer releases its session. */
+    private static final int KEEPALIVE_IDLE_SECONDS = 60;
 
-    ClientHandler(Socket socket) {
+    /** Time a client has to authenticate when the server requires an access token. */
+    private static final int AUTHENTICATION_TIMEOUT_MILLIS = 10_000;
+
+    private final Socket socket;
+    private final byte[] token;
+
+    /**
+     * Creates the handler.
+     *
+     * @param socket the accepted connection
+     * @param token  access token the client must present first, or {@code null} for none
+     */
+    ClientHandler(Socket socket, String token) {
         this.socket = socket;
+        this.token = token != null ? token.getBytes(StandardCharsets.UTF_8) : null;
     }
 
     @Override
     public void run() {
-        try (socket;
-             DataInputStream in = new DataInputStream(socket.getInputStream());
-             DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
-
-            CardSimulator simulator = new CardSimulator();
-            ByteClassLoader classLoader = new ByteClassLoader(getClass().getClassLoader());
-
-            LOG.info("Client connected: " + socket.getRemoteSocketAddress());
-
-            while (!socket.isClosed()) {
-                byte cmd;
-                try {
-                    cmd = in.readByte();
-                } catch (EOFException e) {
-                    break;
-                }
-
-                int payloadLen = in.readInt();
-                byte[] payload = new byte[payloadLen];
-                if (payloadLen > 0) {
-                    in.readFully(payload);
-                }
-
-                try {
-                    byte[] response = handleCommand(cmd, payload, simulator, classLoader);
-                    out.writeByte(Protocol.STATUS_OK);
-                    out.writeInt(response.length);
-                    if (response.length > 0) {
-                        out.write(response);
-                    }
-                } catch (Exception e) {
-                    LOG.log(Level.WARNING, "Command failed", e);
-                    byte[] errorMsg = e.getMessage() != null
-                            ? e.getMessage().getBytes()
-                            : "Unknown error".getBytes();
-                    out.writeByte(Protocol.STATUS_ERROR);
-                    out.writeInt(errorMsg.length);
-                    out.write(errorMsg);
-                }
-                out.flush();
-            }
-
-            LOG.info("Client disconnected");
-
+        String peer = String.valueOf(socket.getRemoteSocketAddress());
+        try (socket) {
+            configure(socket);
+            DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+            LOG.info("Client connected: " + peer);
+            serve(in, out, new SimulatorSession());
+            LOG.info("Client disconnected: " + peer);
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "Connection error", e);
+            LOG.log(Level.INFO, "Connection " + peer + " closed: " + e);
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private byte[] handleCommand(byte cmd, byte[] payload,
-                                 CardSimulator simulator,
-                                 ByteClassLoader classLoader) throws Exception {
-        switch (cmd) {
-            case Protocol.CMD_INSTALL: {
-                return handleInstall(payload, simulator, classLoader);
+    private void serve(DataInputStream in, DataOutputStream out, SimulatorSession session) throws IOException {
+        if (token != null && !authenticate(in, out)) {
+            return;
+        }
+        while (true) {
+            Frames.Request request;
+            try {
+                request = Frames.readRequest(socket, in);
+            } catch (ProtocolException e) {
+                LOG.warning("Protocol error, closing connection: " + e.getMessage());
+                Frames.writeError(out, ErrorReport.describe(IllegalArgumentException.class, e.getMessage()));
+                return;
             }
-
-            case Protocol.CMD_SELECT: {
-                javacard.framework.AID jcAid = AIDUtil.create(payload);
-                simulator.selectApplet(jcAid);
-                LOG.info("Selected applet");
-                return new byte[0];
+            if (request == null) {
+                return;
             }
-
-            case Protocol.CMD_TRANSMIT: {
-                CommandAPDU cmdApdu = new CommandAPDU(payload);
-                ResponseAPDU response = simulator.transmitCommand(cmdApdu);
-                return response.getBytes();
-            }
-
-            case Protocol.CMD_RESET: {
-                simulator.resetRuntime();
-                LOG.info("Card reset");
-                return new byte[0];
-            }
-
-            case Protocol.CMD_PING: {
-                return new byte[]{0x01};
-            }
-
-            default:
-                throw new IllegalArgumentException("Unknown command: " + cmd);
+            reply(out, session, request);
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private byte[] handleInstall(byte[] payload, CardSimulator simulator,
-                                 ByteClassLoader classLoader) throws Exception {
-        int offset = 0;
-
-        // AID
-        int aidLen = payload[offset++] & 0xFF;
-        byte[] aidBytes = new byte[aidLen];
-        System.arraycopy(payload, offset, aidBytes, 0, aidLen);
-        offset += aidLen;
-
-        // Main class name
-        int nameLen = ((payload[offset] & 0xFF) << 8) | (payload[offset + 1] & 0xFF);
-        offset += 2;
-        String className = new String(payload, offset, nameLen);
-        offset += nameLen;
-
-        // Main class bytes
-        int classLen = readInt(payload, offset);
-        offset += 4;
-        byte[] classBytes = new byte[classLen];
-        System.arraycopy(payload, offset, classBytes, 0, classLen);
-        offset += classLen;
-
-        // Extra classes (inner classes, dependencies)
-        int numExtra = readInt(payload, offset);
-        offset += 4;
-
-        classLoader.addClass(className, classBytes);
-        for (int i = 0; i < numExtra; i++) {
-            int extraNameLen = ((payload[offset] & 0xFF) << 8) | (payload[offset + 1] & 0xFF);
-            offset += 2;
-            String extraName = new String(payload, offset, extraNameLen);
-            offset += extraNameLen;
-
-            int extraLen = readInt(payload, offset);
-            offset += 4;
-            byte[] extraBytes = new byte[extraLen];
-            System.arraycopy(payload, offset, extraBytes, 0, extraLen);
-            offset += extraLen;
-
-            classLoader.addClass(extraName, extraBytes);
+    /**
+     * Checks that the first request is a {@link Protocol#CMD_HELLO} with the access token.
+     *
+     * @return whether the client may continue; otherwise an error reply has been sent
+     */
+    private boolean authenticate(DataInputStream in, DataOutputStream out) throws IOException {
+        Frames.Request hello;
+        try {
+            // an unauthenticated connection must not hold a session slot for long
+            socket.setSoTimeout(AUTHENTICATION_TIMEOUT_MILLIS);
+            hello = Frames.readRequest(socket, in);
+        } catch (ProtocolException e) {
+            reject(out, e.getMessage());
+            return false;
         }
-
-        // Install parameters (optional — may be absent for older clients)
-        byte[] installParams = new byte[0];
-        if (offset < payload.length) {
-            int paramsLen = ((payload[offset] & 0xFF) << 8) | (payload[offset + 1] & 0xFF);
-            offset += 2;
-            if (paramsLen > 0) {
-                installParams = new byte[paramsLen];
-                System.arraycopy(payload, offset, installParams, 0, paramsLen);
-                offset += paramsLen;
-            }
+        if (hello == null) {
+            return false;
         }
-
-        Class<?> loaded = classLoader.loadClass(className);
-        Class<? extends Applet> appletClass = loaded.asSubclass(Applet.class);
-
-        javacard.framework.AID jcAid = AIDUtil.create(aidBytes);
-        simulator.installApplet(jcAid, appletClass, installParams, (short) 0, (byte) installParams.length);
-        simulator.selectApplet(jcAid);
-
-        LOG.info("Installed " + className);
-        return new byte[0];
+        if (hello.command() != Protocol.CMD_HELLO) {
+            reject(out, "Access token required: this simulator was started with " + ServerConfig.TOKEN_ENV
+                    + "; send HELLO with the token first");
+            return false;
+        }
+        if (!MessageDigest.isEqual(token, hello.payload())) {
+            reject(out, "Wrong access token");
+            return false;
+        }
+        Frames.writeOk(out, new byte[0]);
+        return true;
     }
 
-    private static int readInt(byte[] data, int offset) {
-        return ((data[offset] & 0xFF) << 24)
-                | ((data[offset + 1] & 0xFF) << 16)
-                | ((data[offset + 2] & 0xFF) << 8)
-                | (data[offset + 3] & 0xFF);
+    private void reject(DataOutputStream out, String message) throws IOException {
+        LOG.warning(message + "; closing connection " + socket.getRemoteSocketAddress());
+        Frames.writeError(out, ErrorReport.describe(SecurityException.class, message));
+    }
+
+    private static void reply(DataOutputStream out, SimulatorSession session, Frames.Request request)
+            throws IOException {
+        session.takeMissingClasses(); // only lookups made by this command are relevant to its outcome
+        byte[] result;
+        try {
+            result = session.execute(request.command(), request.payload());
+        } catch (Throwable failure) {
+            LOG.log(Level.WARNING, Protocol.commandName(request.command()) + " failed", failure);
+            Frames.writeError(out, ErrorReport.describe(failure, session.takeMissingClasses()));
+            return;
+        }
+        Frames.writeOk(out, result);
+    }
+
+    private static void configure(Socket socket) throws IOException {
+        socket.setTcpNoDelay(true);
+        socket.setKeepAlive(true);
+        if (socket.supportedOptions().contains(ExtendedSocketOptions.TCP_KEEPIDLE)) {
+            socket.setOption(ExtendedSocketOptions.TCP_KEEPIDLE, KEEPALIVE_IDLE_SECONDS);
+        }
     }
 }

@@ -1,9 +1,12 @@
 package name.velikodniy.jcexpress.converter.translate;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Builder for the JCVM constant pool used in the {@code constant_pool} component of a CAP file.
@@ -292,22 +295,22 @@ public final class JcvmConstantPool {
 
     /**
      * Reorders CP entries so that instance field references ({@link #TAG_INSTANCE_FIELDREF})
-     * appear first, sorted by class token order, followed by all remaining entries in their
-     * original order.
+     * appear first, sorted by the given key of their declaring class, followed by all remaining
+     * entries in their original order. JCVM 3.1 §6.8 sets no ordering constraint but recommends
+     * instance field references early, so that getfield_&lt;t&gt;/putfield_&lt;t&gt; can use their
+     * one-byte index form.
      *
-     * <p>This matches Oracle's converter ordering, which pre-scans declared instance fields
-     * in class token order before processing bytecode, resulting in instance field refs
-     * appearing at the beginning of the constant pool sorted by declaring class token.
-     * Our converter adds CP entries in bytecode-encounter order, so this method is called
-     * after all bytecode translation is complete to reorder entries.
+     * <p>The converter passes the position of the declaring class in Class component order
+     * ({@link name.velikodniy.jcexpress.converter.resolve.ReferenceResolver#instanceFieldClassOrder()}),
+     * which also matches Oracle's converter output. CP entries are added in bytecode-encounter
+     * order, so this method is called after all bytecode translation is complete.
      *
      * <p>The returned array maps old CP indices to new CP indices. Callers must use this
      * mapping to patch all CP index references in translated bytecode.
      *
-     * @param fieldClassTokens mapping from CP index to class token for internal instance
-     *                         field refs (from {@link name.velikodniy.jcexpress.converter.resolve.ReferenceResolver#getInstanceFieldClassTokens()}).
-     *                         External instance field refs (not in this map) sort after
-     *                         internal ones, preserving their original order.
+     * @param fieldClassTokens mapping from CP index to the sort key of the declaring class of an
+     *                         internal instance field ref. External instance field refs (not in
+     *                         this map) sort after internal ones, preserving their original order.
      * @return mapping where {@code result[oldIndex] = newIndex}; empty array if no reordering needed
      */
     public int[] reorderInstanceFieldsFirst(Map<Integer, Integer> fieldClassTokens) {
@@ -364,6 +367,68 @@ public final class JcvmConstantPool {
         // Dedup map no longer needed — no more entries will be added after reordering
         dedup.clear();
 
+        return remap;
+    }
+
+    /**
+     * Reorders the constant pool for the Method component: instance field references first
+     * (see {@link #reorderInstanceFieldsFirst(Map)}) and no exception catch type at index 0.
+     *
+     * <p>JCVM 3.1 §6.10.3: "The order of constants in the constant pool is constrained such that
+     * all entries referenced by catch_type_index items that represent catch block (not finally
+     * blocks) are located at non-zero entries", because a catch_type_index of 0 denotes a
+     * {@code finally} handler. If entry 0 is a catch type after the field reordering (a package
+     * without instance field references), it is swapped with the first entry that is not a
+     * catch type.
+     *
+     * @param fieldClassTokens CP index to the sort key of the declaring class of internal instance
+     *                         field references
+     * @param catchTypeIndices CP indices (current numbering) used as catch types
+     * @return mapping {@code result[oldIndex] = newIndex}; empty array if nothing moved
+     * @throws IllegalStateException if every entry is a catch type
+     */
+    public int[] reorderInstanceFieldsFirst(Map<Integer, Integer> fieldClassTokens,
+                                            Set<Integer> catchTypeIndices) {
+        int[] fieldOrder = reorderInstanceFieldsFirst(fieldClassTokens);
+        Set<Integer> catchTypes = new HashSet<>();
+        for (int index : catchTypeIndices) {
+            catchTypes.add(fieldOrder.length == 0 ? index : fieldOrder[index]);
+        }
+        if (!catchTypes.contains(0)) {
+            return fieldOrder;
+        }
+        int swap = 1;
+        while (swap < entries.size() && catchTypes.contains(swap)) {
+            swap++;
+        }
+        if (swap == entries.size()) {
+            throw new IllegalStateException("every constant pool entry is an exception catch type;"
+                    + " JCVM 3.1 §6.10.3 forbids a catch type at index 0");
+        }
+        Collections.swap(entries, 0, swap);
+        dedup.clear();
+        return compose(fieldOrder, swapPermutation(entries.size(), swap));
+    }
+
+    private static int[] swapPermutation(int size, int swap) {
+        int[] remap = new int[size];
+        for (int i = 0; i < size; i++) {
+            remap[i] = i;
+        }
+        remap[0] = swap;
+        remap[swap] = 0;
+        return remap;
+    }
+
+    /** Composes two old-to-new mappings ({@code first} may be empty = identity). */
+    private static int[] compose(int[] first, int[] second) {
+        if (first.length == 0) {
+            return second;
+        }
+        int[] remap = new int[first.length];
+        for (int i = 0; i < first.length; i++) {
+            remap[i] = second[first[i]];
+        }
         return remap;
     }
 

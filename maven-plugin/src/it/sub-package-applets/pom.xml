@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example.its</groupId>
+    <artifactId>sub-package-applets</artifactId>
+    <version>1.0</version>
+    <description>Applets in a package and in its sub-package: one CAP file holds one package.</description>
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <version>@project.version@</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>@project.version@</version>
+                <configuration>
+                    <packageAid>A00000006240</packageAid>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <!-- One execution without <packageName> -->
+            <id>single</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>name.velikodniy</groupId>
+                        <artifactId>javacard-express-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>wallet</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>name.velikodniy</groupId>
+                        <artifactId>javacard-express-maven-plugin</artifactId>
+                        <configuration>
+                            <packageName>com.example.wallet</packageName>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <!-- One execution per package, told apart by classifiers (README "Output Files and Artifacts") -->
+            <id>both</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>name.velikodniy</groupId>
+                        <artifactId>javacard-express-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>wallet</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <configuration>
+                                    <packageName>com.example.wallet</packageName>
+                                    <classifier>wallet</classifier>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>extra</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                                <configuration>
+                                    <packageName>com.example.wallet.extra</packageName>
+                                    <packageAid>A00000006241</packageAid>
+                                    <classifier>extra</classifier>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

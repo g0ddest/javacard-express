@@ -10,22 +10,22 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Parsed response from GET DATA (P1P2=0066) — Card Data.
- *
- * <p>The Card Data template (tag 0x66) contains the Card Recognition Data (tag 0x73),
- * which includes OIDs describing the card's capabilities (supported protocols,
- * cryptographic algorithms, etc.).</p>
+ * Parsed response from GET DATA (P1P2=0066) — Card Data with the Card Recognition Data
+ * (GPCS v2.3.1 Appendix H.2, Table H-1).
  *
  * <h2>Response structure:</h2>
  * <pre>
  * 66 len                           — Card Data template
  *   73 len                         — Card Recognition Data
- *     06 len OID-value             — GlobalPlatform OID
- *     60 len                       — Card identification scheme
- *       06 len OID-value           — scheme OID
- *       ...
- *     ...
+ *     06 len {globalPlatform 1}    — GlobalPlatform as Tag Allocation Authority
+ *     60 len 06 {globalPlatform 2 v}      — Card Management Type and Version
+ *     63 len 06 {globalPlatform 3}        — Card Identification Scheme
+ *     64 len 06 {globalPlatform 4 scp i}  — Secure Channel Protocol of the ISD and its "i" (repeatable)
+ *     65 .. 68                     — optional card configuration, chip details, certificates
  * </pre>
+ *
+ * <p>The "i" parameter of SCP02 is not part of the INITIALIZE UPDATE response; read it here and pass it to
+ * {@link GPSession#scp02Option(int)} if the card does not use the default '15'.</p>
  *
  * @param rawData         the full response data
  * @param recognitionData the parsed Card Recognition Data (tag 0x73), or empty TLVList
@@ -34,6 +34,13 @@ public record CardData(
         byte[] rawData,
         TLVList recognitionData
 ) {
+
+    /** Card Management Type and Version template (Table H-1). */
+    private static final int TAG_CARD_MANAGEMENT_VERSION = 0x60;
+    /** Secure Channel Protocol template (Table H-1). */
+    private static final int TAG_SECURE_CHANNEL_PROTOCOL = 0x64;
+    /** {globalPlatform 4}: Secure Channel Protocol OIDs. */
+    private static final String SCP_OID_PREFIX = "1.2.840.114283.4.";
 
     /**
      * Parses a GET DATA 0066 response into a CardData.
@@ -90,43 +97,59 @@ public record CardData(
     }
 
     /**
-     * Returns the GlobalPlatform version OID, if present.
+     * Returns the Card Management Type and Version OID {@code {globalPlatform 2 v}} of tag '60', if present
+     * (Table H-1), e.g. {@code 1.2.840.114283.2.2.1.1} for GlobalPlatform 2.1.1.
      *
-     * <p>Looks for the first top-level OID (tag 0x06) starting with {@code 1.2.840.114283}
-     * in the Card Recognition Data. The last arc indicates the GP version:</p>
-     * <ul>
-     *   <li>{@code 1.2.840.114283.1} → GP 2.1.1</li>
-     *   <li>{@code 1.2.840.114283.2} → GP 2.2</li>
-     *   <li>{@code 1.2.840.114283.4} → GP 2.3</li>
-     * </ul>
-     *
-     * @return the GP version OID string, or empty if not found
+     * @return the OID string, or empty if the card does not provide tag '60'
      */
     public Optional<String> gpVersion() {
-        for (TLV tlv : recognitionData) {
-            if (tlv.tag() == Tags.GP_OID) {
-                String oid = oidToString(tlv.value());
-                if (oid.startsWith("1.2.840.114283")) {
-                    return Optional.of(oid);
-                }
-            }
-        }
-        return Optional.empty();
+        return templateOids(TAG_CARD_MANAGEMENT_VERSION).stream().findFirst();
     }
 
     /**
-     * Returns supported SCP version OIDs from the Card Identification Scheme (tag 0x60).
+     * Returns the Secure Channel Protocol OIDs {@code {globalPlatform 4 scp i}} of the tag '64' templates
+     * (Table H-1), e.g. {@code 1.2.840.114283.4.2.21} for SCP02 with i='15'.
      *
-     * <p>The card identification scheme is a constructed element inside the
-     * Card Recognition Data that contains OIDs identifying the supported
-     * Secure Channel Protocols.</p>
-     *
-     * @return list of SCP version OID strings
+     * @return the OID strings in card order (empty if the card provides none)
      */
     public List<String> scpVersions() {
+        return templateOids(TAG_SECURE_CHANNEL_PROTOCOL);
+    }
+
+    /**
+     * Returns the Secure Channel Protocols of the Issuer Security Domain with their implementation option
+     * "i", decoded from the tag '64' OIDs {@code {globalPlatform 4 scp i}} (Table H-1).
+     *
+     * @return the protocols in card order
+     */
+    public List<SecureChannelProtocol> secureChannelProtocols() {
+        List<SecureChannelProtocol> result = new ArrayList<>();
+        for (String oid : scpVersions()) {
+            String[] arcs = oid.substring(Math.min(oid.length(), SCP_OID_PREFIX.length())).split("\\.");
+            if (oid.startsWith(SCP_OID_PREFIX) && arcs.length == 2) {
+                result.add(new SecureChannelProtocol(Integer.parseInt(arcs[0]), Integer.parseInt(arcs[1])));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * A Secure Channel Protocol announced in the Card Recognition Data.
+     *
+     * @param protocol the protocol number (2 for SCP02, 3 for SCP03)
+     * @param option   the implementation option "i" (GPCS v2.3.1 Table E-1, Amendment D Table 5-1)
+     */
+    public record SecureChannelProtocol(int protocol, int option) {
+        @Override
+        public String toString() {
+            return String.format("SCP%02d i=%02X", protocol, option);
+        }
+    }
+
+    private List<String> templateOids(int tag) {
         List<String> result = new ArrayList<>();
         for (TLV tlv : recognitionData) {
-            if (tlv.tag() == Tags.GP_CARD_IDENTIFICATION_SCHEME && tlv.isConstructed()) {
+            if (tlv.tag() == tag && tlv.isConstructed()) {
                 for (TLV child : tlv.children()) {
                     if (child.tag() == Tags.GP_OID) {
                         result.add(oidToString(child.value()));

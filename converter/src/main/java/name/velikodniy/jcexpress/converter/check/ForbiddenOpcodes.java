@@ -3,7 +3,8 @@ package name.velikodniy.jcexpress.converter.check;
 import java.util.Arrays;
 
 /**
- * Lookup table of JVM bytecode opcodes that are forbidden on the Java Card platform.
+ * Lookup table of the JVM bytecode opcodes that the subset check rejects: opcodes outside the Java Card
+ * subset (JCVM 3.1 §2.3.2.1), and subroutine instructions, which must have been inlined before the check.
  *
  * <p>This class is used by {@link SubsetChecker} during <strong>Stage 2: Subset
  * Check</strong> of the converter pipeline to identify illegal bytecode instructions
@@ -11,36 +12,30 @@ import java.util.Arrays;
  * the bytecode stream opcode-by-opcode.
  *
  * <h2>Forbidden opcode categories</h2>
- * <p>The JCVM specification (3.0.5, Section 3.2 and Section 7) defines the following
- * categories of unsupported JVM bytecodes:
  * <ul>
- *   <li><strong>{@code long} operations</strong> -- all load, store, arithmetic,
- *       comparison, conversion, return, and array opcodes for {@code long}
- *       (e.g., {@code lconst_0}, {@code ladd}, {@code lcmp}, {@code lreturn}).</li>
- *   <li><strong>{@code float} operations</strong> -- all load, store, arithmetic,
- *       comparison, conversion, return, and array opcodes for {@code float}
- *       (e.g., {@code fconst_0}, {@code fadd}, {@code fcmpl}, {@code freturn}).</li>
- *   <li><strong>{@code double} operations</strong> -- all load, store, arithmetic,
- *       comparison, conversion, return, and array opcodes for {@code double}
- *       (e.g., {@code dconst_0}, {@code dadd}, {@code dcmpl}, {@code dreturn}).</li>
- *   <li><strong>Threading</strong> -- {@code monitorenter} (0xC2) and
- *       {@code monitorexit} (0xC3), since Java Card has no multi-threading.</li>
- *   <li><strong>Subroutines</strong> -- {@code jsr} (0xA8) and {@code ret} (0xA9),
- *       deprecated in Java SE and absent from the JCVM instruction set.</li>
- *   <li><strong>{@code invokedynamic}</strong> (0xBA) -- not supported on the
- *       Java Card platform.</li>
- *   <li><strong>Wide jumps</strong> -- {@code goto_w} (0xC8) and {@code jsr_w}
- *       (0xC9), since JCVM methods are limited in size and these are not part of
- *       the JCVM instruction set.</li>
- *   <li><strong>{@code ldc2_w}</strong> (0x14) -- loads {@code long} or
- *       {@code double} constants from the constant pool, which are unsupported
- *       types.</li>
+ *   <li><strong>{@code long}, {@code float} and {@code double} operations</strong> (JCVM 3.1
+ *       §2.2.1.3) -- all load, store, arithmetic, comparison, conversion, return, constant
+ *       ({@code ldc2_w}) and array opcodes of these types.</li>
+ *   <li><strong>{@code char}</strong> (§2.2.1.3) -- {@code caload}, {@code castore} and
+ *       {@code i2c}.</li>
+ *   <li><strong>Arrays of more than one dimension</strong> (§2.2.1.3) --
+ *       {@code multianewarray}.</li>
+ *   <li><strong>Threads</strong> (§2.2.1.1.4) -- {@code monitorenter} and
+ *       {@code monitorexit} ({@code synchronized} blocks).</li>
+ *   <li><strong>Subroutines</strong> -- {@code jsr} and {@code ret} are supported (§2.3.2.2, JCVM
+ *       instructions §7.5.69 and §7.5.79), and {@code jsr_w}, like {@code goto_w}, has a translation, but
+ *       the {@link name.velikodniy.jcexpress.converter.Converter} inlines subroutines when it reads the
+ *       class files, before this check. They are reported only in code that skipped that step.</li>
+ *   <li><strong>{@code invokedynamic}</strong> -- lambdas, method references and string
+ *       concatenation have no JCVM counterpart.</li>
  * </ul>
+ * {@code goto_w} is allowed: it is translated to the JCVM {@code goto} or {@code goto_w}
+ * (§7.5.24, §7.5.25).
  *
  * <h2>Instruction length table</h2>
  * <p>In addition to the forbidden-opcode lookup, this class maintains a table of
  * instruction lengths for the full JVM instruction set. This is necessary for the
- * bytecode scanner in {@link SubsetChecker} to correctly advance past
+ * raw bytecode scan of methods without a parsed class file to correctly advance past
  * variable-length instructions such as {@code tableswitch}, {@code lookupswitch},
  * and {@code wide}. A length of {@code 0} signals that the instruction requires
  * special variable-length handling.
@@ -119,125 +114,91 @@ public final class ForbiddenOpcodes {
         for (int i = from; i <= to; i++) REASONS[i] = reason;
     }
 
+    private static final String LONG = "long type not supported in JavaCard (JCVM 3.1 §2.2.1.3)";
+    private static final String FLOAT = "float type not supported in JavaCard (JCVM 3.1 §2.2.1.3)";
+    private static final String DOUBLE = "double type not supported in JavaCard (JCVM 3.1 §2.2.1.3)";
+    private static final String CHAR = "char type not supported in JavaCard (JCVM 3.1 §2.2.1.3)";
+    private static final String THREADS = "threading not supported in JavaCard (synchronized,"
+            + " JCVM 3.1 §2.2.1.1.4)";
+    private static final String DYNAMIC = "invokedynamic not supported in JavaCard (lambdas, method"
+            + " references and string concatenation have no JCVM counterpart)";
+    private static final String SUBROUTINE = "jsr/ret subroutine that was not inlined: the converter inlines"
+            + " subroutines when it reads the class files, before this check (JCVM 3.1 §2.3.2.2 supports them)";
+    private static final String MULTI_ARRAY = "arrays of more than one dimension not supported in"
+            + " JavaCard (JCVM 3.1 §2.2.1.3)";
+
     private static void initForbidden() {
-        String longReason = "long type not supported in JavaCard";
-        String floatReason = "float type not supported in JavaCard";
-        String doubleReason = "double type not supported in JavaCard";
-        String threadReason = "threading not supported in JavaCard";
-        String dynamicReason = "invokedynamic not supported in JavaCard";
-        String subroutineReason = "subroutines (jsr/ret) not supported in JavaCard";
-        String wideJumpReason = "wide jumps not supported in JavaCard";
+        forbidConstantsLoadsAndStores();
+        forbidArithmetic();
+        forbidConversionsComparisonsAndReturns();
+        forbidControlAndObjectOpcodes();
+    }
 
-        // long constants
-        forbid(0x09, longReason); // lconst_0
-        forbid(0x0A, longReason); // lconst_1
+    private static void forbidConstantsLoadsAndStores() {
+        forbidRange(0x09, 0x0A, LONG);   // lconst_0..1
+        forbidRange(0x0B, 0x0D, FLOAT);  // fconst_0..2
+        forbidRange(0x0E, 0x0F, DOUBLE); // dconst_0..1
+        forbid(0x14, "ldc2_w: long/double constants not supported in JavaCard (JCVM 3.1 §2.2.1.3)");
+        forbid(0x16, LONG);   // lload
+        forbid(0x17, FLOAT);  // fload
+        forbid(0x18, DOUBLE); // dload
+        forbidRange(0x1E, 0x21, LONG);   // lload_0..3
+        forbidRange(0x22, 0x25, FLOAT);  // fload_0..3
+        forbidRange(0x26, 0x29, DOUBLE); // dload_0..3
+        forbid(0x2F, LONG);   // laload
+        forbid(0x30, FLOAT);  // faload
+        forbid(0x31, DOUBLE); // daload
+        forbid(0x34, CHAR);   // caload
+        forbid(0x37, LONG);   // lstore
+        forbid(0x38, FLOAT);  // fstore
+        forbid(0x39, DOUBLE); // dstore
+        forbidRange(0x3F, 0x42, LONG);   // lstore_0..3
+        forbidRange(0x43, 0x46, FLOAT);  // fstore_0..3
+        forbidRange(0x47, 0x4A, DOUBLE); // dstore_0..3
+        forbid(0x50, LONG);   // lastore
+        forbid(0x51, FLOAT);  // fastore
+        forbid(0x52, DOUBLE); // dastore
+        forbid(0x55, CHAR);   // castore
+    }
 
-        // float constants
-        forbidRange(0x0B, 0x0D, floatReason); // fconst_0..2
+    /** ladd..lxor, fadd..fneg, dadd..dneg: every fourth opcode from 0x61 / 0x62 / 0x63 on. */
+    private static void forbidArithmetic() {
+        for (int op : new int[]{0x61, 0x65, 0x69, 0x6D, 0x71, 0x75, 0x79, 0x7B, 0x7D, 0x7F, 0x81, 0x83}) {
+            forbid(op, LONG); // ladd, lsub, lmul, ldiv, lrem, lneg, lshl, lshr, lushr, land, lor, lxor
+        }
+        for (int op : new int[]{0x62, 0x66, 0x6A, 0x6E, 0x72, 0x76}) {
+            forbid(op, FLOAT); // fadd, fsub, fmul, fdiv, frem, fneg
+        }
+        for (int op : new int[]{0x63, 0x67, 0x6B, 0x6F, 0x73, 0x77}) {
+            forbid(op, DOUBLE); // dadd, dsub, dmul, ddiv, drem, dneg
+        }
+    }
 
-        // double constants
-        forbid(0x0E, doubleReason); // dconst_0
-        forbid(0x0F, doubleReason); // dconst_1
+    private static void forbidConversionsComparisonsAndReturns() {
+        forbid(0x85, LONG);   // i2l
+        forbid(0x86, FLOAT);  // i2f
+        forbid(0x87, DOUBLE); // i2d
+        forbidRange(0x88, 0x8A, LONG);   // l2i, l2f, l2d
+        forbidRange(0x8B, 0x8D, FLOAT);  // f2i, f2l, f2d
+        forbidRange(0x8E, 0x90, DOUBLE); // d2i, d2l, d2f
+        forbid(0x92, CHAR);   // i2c
+        forbid(0x94, LONG);   // lcmp
+        forbidRange(0x95, 0x96, FLOAT);  // fcmpl, fcmpg
+        forbidRange(0x97, 0x98, DOUBLE); // dcmpl, dcmpg
+        forbid(0xAD, LONG);   // lreturn
+        forbid(0xAE, FLOAT);  // freturn
+        forbid(0xAF, DOUBLE); // dreturn
+    }
 
-        // ldc2_w (loads long/double from constant pool)
-        forbid(0x14, "ldc2_w: long/double constants not supported in JavaCard");
-
-        // load instructions
-        forbid(0x16, longReason);   // lload
-        forbid(0x17, floatReason);  // fload
-        forbid(0x18, doubleReason); // dload
-        forbidRange(0x1E, 0x21, longReason);   // lload_0..3
-        forbidRange(0x22, 0x25, floatReason);  // fload_0..3
-        forbidRange(0x26, 0x29, doubleReason); // dload_0..3
-
-        // array load
-        forbid(0x2F, longReason);   // laload
-        forbid(0x30, floatReason);  // faload
-        forbid(0x31, doubleReason); // daload
-
-        // store instructions
-        forbid(0x37, longReason);   // lstore
-        forbid(0x38, floatReason);  // fstore
-        forbid(0x39, doubleReason); // dstore
-        forbidRange(0x3F, 0x42, longReason);   // lstore_0..3
-        forbidRange(0x43, 0x46, floatReason);  // fstore_0..3
-        forbidRange(0x47, 0x4A, doubleReason); // dstore_0..3
-
-        // array store
-        forbid(0x50, longReason);   // lastore
-        forbid(0x51, floatReason);  // fastore
-        forbid(0x52, doubleReason); // dastore
-
-        // arithmetic — long
-        forbid(0x61, longReason); // ladd
-        forbid(0x65, longReason); // lsub
-        forbid(0x69, longReason); // lmul
-        forbid(0x6D, longReason); // ldiv
-        forbid(0x71, longReason); // lrem
-        forbid(0x75, longReason); // lneg
-        forbid(0x79, longReason); // lshl
-        forbid(0x7B, longReason); // lshr
-        forbid(0x7D, longReason); // lushr
-        forbid(0x7F, longReason); // land
-        forbid(0x81, longReason); // lor
-        forbid(0x83, longReason); // lxor
-
-        // arithmetic — float
-        forbid(0x62, floatReason); // fadd
-        forbid(0x66, floatReason); // fsub
-        forbid(0x6A, floatReason); // fmul
-        forbid(0x6E, floatReason); // fdiv
-        forbid(0x72, floatReason); // frem
-        forbid(0x76, floatReason); // fneg
-
-        // arithmetic — double
-        forbid(0x63, doubleReason); // dadd
-        forbid(0x67, doubleReason); // dsub
-        forbid(0x6B, doubleReason); // dmul
-        forbid(0x6F, doubleReason); // ddiv
-        forbid(0x73, doubleReason); // drem
-        forbid(0x77, doubleReason); // dneg
-
-        // conversions
-        forbid(0x85, longReason);   // i2l
-        forbid(0x86, floatReason);  // i2f
-        forbid(0x87, doubleReason); // i2d
-        forbid(0x88, longReason);   // l2i
-        forbid(0x89, longReason);   // l2f
-        forbid(0x8A, longReason);   // l2d
-        forbid(0x8B, floatReason);  // f2i
-        forbid(0x8C, floatReason);  // f2l
-        forbid(0x8D, floatReason);  // f2d
-        forbid(0x8E, doubleReason); // d2i
-        forbid(0x8F, doubleReason); // d2l
-        forbid(0x90, doubleReason); // d2f
-
-        // comparisons
-        forbid(0x94, longReason);   // lcmp
-        forbid(0x95, floatReason);  // fcmpl
-        forbid(0x96, floatReason);  // fcmpg
-        forbid(0x97, doubleReason); // dcmpl
-        forbid(0x98, doubleReason); // dcmpg
-
-        // returns
-        forbid(0xAD, longReason);   // lreturn
-        forbid(0xAE, floatReason);  // freturn
-        forbid(0xAF, doubleReason); // dreturn
-
-        // subroutines (deprecated in Java, absent from JCVM)
-        forbid(0xA8, subroutineReason); // jsr
-        forbid(0xA9, subroutineReason); // ret
-
-        // invokedynamic
-        forbid(0xBA, dynamicReason);
-
-        // monitors (no threading in JavaCard)
-        forbid(0xC2, threadReason); // monitorenter
-        forbid(0xC3, threadReason); // monitorexit
-
-        // wide jumps
-        forbid(0xC8, wideJumpReason); // goto_w
-        forbid(0xC9, wideJumpReason); // jsr_w
+    /** Subroutines are inlined before the check (§2.3.2.2); goto_w is an ordinary jump (JCVM goto / goto_w). */
+    private static void forbidControlAndObjectOpcodes() {
+        forbid(0xA8, SUBROUTINE);  // jsr
+        forbid(0xA9, SUBROUTINE);  // ret
+        forbid(0xC9, SUBROUTINE);  // jsr_w
+        forbid(0xBA, DYNAMIC);     // invokedynamic
+        forbid(0xC2, THREADS);     // monitorenter
+        forbid(0xC3, THREADS);     // monitorexit
+        forbid(0xC5, MULTI_ARRAY); // multianewarray
     }
 
     @SuppressWarnings("MagicNumber")

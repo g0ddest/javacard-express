@@ -3,11 +3,12 @@ package name.velikodniy.jcexpress.pace;
 import java.io.ByteArrayOutputStream;
 
 /**
- * PACE algorithm identifiers (BSI TR-03110, Table A.3).
+ * The PACE protocols implemented by {@link PaceSession}: ECDH with Generic Mapping and AES session keys
+ * (ICAO Doc 9303-11, 4.4.3.2 Table 3; object identifiers of 9.2.3).
  *
- * <p>Only ECDH with Generic Mapping and AES-CBC-CMAC is supported — this is
- * the standard for all modern ePassports and eID cards. Legacy DES3 and
- * Integrated Mapping variants are not implemented.</p>
+ * <p>Not implemented: DH-based PACE (Table 2), PACE with 3DES, Integrated Mapping and Chip Authentication
+ * Mapping. ICAO 4.4.3 requires inspection systems to support both Generic and Integrated Mapping, so this is a
+ * subset, intended for testing chips and applets that offer ECDH Generic Mapping.</p>
  *
  * <p>Each constant provides the OID (as string and DER-encoded bytes)
  * and the session key length in bytes.</p>

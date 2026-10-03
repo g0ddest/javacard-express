@@ -5,11 +5,64 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link APDUCodec}.
  */
 class APDUCodecTest {
+
+    // ── Range validation (ISO/IEC 7816-4:2005 5.1: Nc 1..65535, Ne 1..65536) ──
+
+    @Nested
+    class RangeValidation {
+
+        @Test
+        void rejectsDataLongerThan65535Bytes() {
+            assertThatThrownBy(() -> APDUCodec.encode(0x00, 0xD6, 0x00, 0x00, new byte[65_536], -1))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("65535");
+        }
+
+        @Test
+        void acceptsDataOf65535Bytes() {
+            byte[] apdu = APDUCodec.encode(0x00, 0xD6, 0x00, 0x00, new byte[65_535], -1);
+            assertThat(Hex.encode(apdu)).startsWith("00D6000000FFFF");
+        }
+
+        @Test
+        void rejectsLeAbove65536() {
+            assertThatThrownBy(() -> APDUCodec.encode(0x00, 0xB0, 0x00, 0x00, null, 65_537))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("le");
+        }
+
+        /** The header constants of an applet are Java bytes: (byte) 0x80 reaches an int parameter as -128. */
+        @Test
+        void acceptsTheByteConstantsOfAnAppletAsHeaderBytes() {
+            byte[] apdu = APDUCodec.encode((byte) 0x80, (byte) 0xA4, (byte) 0x04, (byte) 0xFF, null, -1);
+
+            assertThat(Hex.encode(apdu)).isEqualTo("80A404FF");
+        }
+
+        @Test
+        void rejectsHeaderValuesOutsideTheByteRangeAndNamesTheRange() {
+            assertThatThrownBy(() -> APDUCodec.encode(0x100, 0xA4, 0x00, 0x00, null, -1))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("CLA")
+                    .hasMessageContaining("-128");
+            assertThatThrownBy(() -> APDUCodec.encode(0x00, -129, 0x00, 0x00, null, -1))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("INS");
+        }
+
+        @Test
+        void rejectsNegativeLeOtherThanNoLe() {
+            assertThatThrownBy(() -> APDUCodec.encode(0x00, 0xB0, 0x00, 0x00, null, -2))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("le");
+        }
+    }
 
     // ── Encode short format (backward compatibility) ──
 
@@ -242,6 +295,29 @@ class APDUCodecTest {
             int le = ((corrected[corrected.length - 2] & 0xFF) << 8)
                     | (corrected[corrected.length - 1] & 0xFF);
             assertThat(le).isEqualTo(128);
+        }
+
+        /**
+         * ISO/IEC 7816-4:2005 5.1.3: '6CXX' gives the exact number of available bytes in SW2, which is coded
+         * like a short Le field ('00' = 256); an extended command carries it as '0100', not '0000' (65 536).
+         */
+        @Test
+        void sw2ZeroMeans256() {
+            byte[] shortApdu = Hex.decode("00CA00CF10");
+            byte[] extApdu = APDUCodec.encode(0x80, 0x01, 0x00, 0x00, new byte[300], 1000);
+            byte[] ext2 = APDUCodec.encode(0x00, 0xCA, 0x00, 0xCF, null, 1000);
+
+            assertThat(Hex.encode(APDUCodec.correctLe(shortApdu, 0))).isEqualTo("00CA00CF00");
+            assertThat(Hex.encode(APDUCodec.correctLe(extApdu, 0))).endsWith("0100");
+            assertThat(Hex.encode(APDUCodec.correctLe(ext2, 0))).isEqualTo("00CA00CF000100");
+            assertThat(Hex.encode(APDUCodec.correctLe(extApdu, 256))).endsWith("0100");
+        }
+
+        @Test
+        void correctLeRejectsValuesOutsideTheSw2Range() {
+            byte[] apdu = Hex.decode("00CA00CF00");
+            assertThatThrownBy(() -> APDUCodec.correctLe(apdu, 257)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> APDUCodec.correctLe(apdu, -1)).isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test

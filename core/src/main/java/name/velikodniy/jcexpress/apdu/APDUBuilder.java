@@ -2,7 +2,6 @@ package name.velikodniy.jcexpress.apdu;
 
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
-import name.velikodniy.jcexpress.LogicalChannel;
 import name.velikodniy.jcexpress.SmartCardSession;
 
 /**
@@ -137,52 +136,48 @@ public final class APDUBuilder {
     /**
      * Sets the CLA (class) byte.
      *
-     * @param cla the CLA byte (0x00-0xFF)
+     * @param cla the CLA byte: {@code 0x00} to {@code 0xFF}, or a {@code byte} constant ({@code -128} and up)
      * @return this builder
      * @throws IllegalArgumentException if cla is out of range
      */
     public APDUBuilder cla(int cla) {
-        checkByte("CLA", cla);
-        this.cla = cla;
+        this.cla = APDUCodec.headerByte("CLA", cla);
         return this;
     }
 
     /**
      * Sets the INS (instruction) byte.
      *
-     * @param ins the INS byte (0x00-0xFF)
+     * @param ins the INS byte: {@code 0x00} to {@code 0xFF}, or a {@code byte} constant ({@code -128} and up)
      * @return this builder
      * @throws IllegalArgumentException if ins is out of range
      */
     public APDUBuilder ins(int ins) {
-        checkByte("INS", ins);
-        this.ins = ins;
+        this.ins = APDUCodec.headerByte("INS", ins);
         return this;
     }
 
     /**
      * Sets the P1 (parameter 1) byte.
      *
-     * @param p1 the P1 byte (0x00-0xFF)
+     * @param p1 the P1 byte: {@code 0x00} to {@code 0xFF}, or a {@code byte} constant ({@code -128} and up)
      * @return this builder
      * @throws IllegalArgumentException if p1 is out of range
      */
     public APDUBuilder p1(int p1) {
-        checkByte("P1", p1);
-        this.p1 = p1;
+        this.p1 = APDUCodec.headerByte("P1", p1);
         return this;
     }
 
     /**
      * Sets the P2 (parameter 2) byte.
      *
-     * @param p2 the P2 byte (0x00-0xFF)
+     * @param p2 the P2 byte: {@code 0x00} to {@code 0xFF}, or a {@code byte} constant ({@code -128} and up)
      * @return this builder
      * @throws IllegalArgumentException if p2 is out of range
      */
     public APDUBuilder p2(int p2) {
-        checkByte("P2", p2);
-        this.p2 = p2;
+        this.p2 = APDUCodec.headerByte("P2", p2);
         return this;
     }
 
@@ -222,18 +217,18 @@ public final class APDUBuilder {
     /**
      * Sets the logical channel number to encode in the CLA byte.
      *
-     * <p>Per ISO 7816-4, basic logical channel numbers (0-3) are encoded
-     * in bits [1:0] of the CLA byte. When set, the channel is applied
-     * during {@link #build()}.</p>
+     * <p>When set, the channel is applied during {@link #build()}: channels 0 to 3 in b2-b1, channels 4 to
+     * 19 in the further interindustry coding (ISO/IEC 7816-4:2005 5.1.1 Tables 2 and 3; GlobalPlatform
+     * Card Specification 2.3.1 11.1.4 for the proprietary class). See {@link ClassByte#withChannel(int, int)}.</p>
      *
-     * @param channel the logical channel number (0-3)
+     * @param channel the logical channel number (0-19)
      * @return this builder
      * @throws IllegalArgumentException if channel is out of range
      */
     public APDUBuilder channel(int channel) {
-        if (channel < 0 || channel > 3) {
+        if (channel < 0 || channel > ClassByte.MAX_CHANNEL) {
             throw new IllegalArgumentException(
-                    "Logical channel must be 0-3, got: " + channel);
+                    "Logical channel must be 0-" + ClassByte.MAX_CHANNEL + ", got: " + channel);
         }
         this.channel = channel;
         return this;
@@ -277,7 +272,7 @@ public final class APDUBuilder {
      * @return the encoded APDU command bytes
      */
     public byte[] build() {
-        int effectiveCla = (channel >= 0) ? LogicalChannel.encodeCla(cla, channel) : cla;
+        int effectiveCla = (channel >= 0) ? ClassByte.withChannel(cla, channel) : cla;
         return APDUCodec.encode(effectiveCla, ins, p1, p2, data, le);
     }
 
@@ -285,14 +280,14 @@ public final class APDUBuilder {
      * Builds the APDU and sends it via {@link SmartCardSession#transmit(byte[])}.
      *
      * <p>This is a convenience method equivalent to:
-     * {@code new APDUResponse(session.transmit(builder.build()))}</p>
+     * {@code new APDUResponse(session.transmit(apdu)).inReplyTo(apdu)} with {@code apdu = builder.build()}.</p>
      *
      * @param session the smart card session to send the APDU through
-     * @return the APDU response
+     * @return the APDU response, which knows its command ({@link APDUResponse#inReplyTo(byte[])})
      */
     public APDUResponse sendTo(SmartCardSession session) {
-        byte[] rawResponse = session.transmit(build());
-        return new APDUResponse(rawResponse);
+        byte[] apdu = build();
+        return new APDUResponse(session.transmit(apdu)).inReplyTo(apdu);
     }
 
     /**
@@ -303,12 +298,5 @@ public final class APDUBuilder {
     @Override
     public String toString() {
         return Hex.encodeSpaced(build());
-    }
-
-    private static void checkByte(String name, int value) {
-        if (value < 0 || value > 0xFF) {
-            throw new IllegalArgumentException(
-                    name + " must be 0x00-0xFF, got: " + value);
-        }
     }
 }

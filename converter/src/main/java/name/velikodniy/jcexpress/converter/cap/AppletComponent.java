@@ -5,7 +5,7 @@ import java.util.HexFormat;
 import java.util.List;
 
 /**
- * Generates the CAP Applet component (tag 3) as defined in JCVM 3.0.5 spec section 6.5.
+ * Generates the CAP Applet component (tag 3) in Compact format (JCVM 3.1 §6.6).
  *
  * <p>The Applet component is present only in packages that contain one or more applets
  * (indicated by {@link HeaderComponent#ACC_APPLET} in the Header flags). It enumerates
@@ -15,8 +15,10 @@ import java.util.List;
  * <p>When the JCRE processes an INSTALL [for install] APDU, it looks up the applet's
  * AID in this component and jumps to the corresponding {@code install_method_offset}
  * in the Method component to invoke the applet's static {@code install()} factory method.
+ * The converter validates the applets and AIDs before this component is generated
+ * ({@code AppletRules}, {@code AidRules}).
  *
- * <p>Binary format (JCVM 3.0.5 spec section 6.5, Table 6-4):
+ * <p>Binary format ({@code applet_component_compact}, JCVM 3.1 §6.6):
  * <pre>
  * u1  tag = 3
  * u2  size
@@ -66,18 +68,18 @@ public final class AppletComponent {
     /**
      * Generates the Applet component bytes.
      *
-     * @param applets list of applet entries
+     * @param applets list of applet entries, in the order they are written
      * @return complete component bytes including tag and size
      */
     public static byte[] generate(List<AppletEntry> applets) {
-        // --- applet_component (§6.5 Table 6-4) ---
+        // --- applet_component_compact (JCVM 3.1 §6.6) ---
         var info = new BinaryWriter();
-        info.u1(applets.size()); // §6.5: u1 count (number of applets)
+        info.u1(applets.size()); // §6.6: u1 count (number of applets)
 
         for (AppletEntry entry : applets) {
-            // --- applet_info (§6.5 Table 6-4) ---
-            info.aidWithLength(entry.aid());        // §6.5: u1 AID_length + u1[] AID
-            info.u2(entry.installMethodOffset());   // §6.5: u2 install_method_offset
+            // --- applets[i] (§6.6) ---
+            info.aidWithLength(entry.aid());        // §6.6: u1 AID_length + u1[] AID
+            info.u2(entry.installMethodOffset());   // §6.6: u2 install_method_offset
         }
 
         return HeaderComponent.wrapComponent(TAG, info.toByteArray());

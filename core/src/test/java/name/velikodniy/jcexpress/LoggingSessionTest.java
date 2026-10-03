@@ -1,10 +1,14 @@
 package name.velikodniy.jcexpress;
 
 import javacard.framework.Applet;
+import name.velikodniy.jcexpress.embedded.EmbeddedSession;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -156,19 +160,96 @@ class LoggingSessionTest {
         assertThat(logged.entries()).isEmpty();
     }
 
+    /** The dump uses the transcript format of the whole toolkit: C: command, R: response. */
     @Test
     void dumpShouldFormatEntries() {
         StubSession stub = new StubSession();
         LoggingSession logged = LoggingSession.wrap(stub);
 
         logged.send(0x80, 0x01, 0x00, 0x00);
+        logged.send(0x00, 0xA4, 0x04, 0x00);
 
-        String dump = logged.dump();
+        assertThat(logged.dump()).isEqualTo("""
+                C: 80010000
+                R: 01029000
+                C: 00A40400
+                R: A0009000
+                """);
+    }
 
-        assertThat(dump).contains("[0]");
-        assertThat(dump).contains(">>");
-        assertThat(dump).contains("<<");
-        assertThat(dump).contains("9000");
+    /** SELECTs and installs made through the logging session are logged like every other command. */
+    @Test
+    void selectsAndInstallsAreLogged() {
+        try (EmbeddedSession card = new EmbeddedSession()) {
+            LoggingSession logged = LoggingSession.wrap(card);
+            AID aid = AID.fromHex("F000000001");
+
+            logged.install(HelloWorldApplet.class, aid);
+            logged.send(0x80, 0x01);
+            logged.select(aid);
+
+            assertThat(logged.entries()).extracting(APDULogEntry::ins).containsExactly(0xA4, 0x01, 0xA4);
+            assertThat(logged.dump()).isEqualTo("""
+                    C: 00A4040005F00000000100
+                    R: 9000
+                    C: 80010000
+                    R: 48656C6C6F9000
+                    C: 00A4040005F00000000100
+                    R: 9000
+                    """);
+        }
+    }
+
+    @Test
+    void printedLinesUseTheTranscriptFormat() {
+        Logger logger = Logger.getLogger("name.velikodniy.jcexpress");
+        List<String> lines = new ArrayList<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                lines.add(record.getMessage());
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        logger.addHandler(handler);
+        try {
+            LoggingSession.wrap(new StubSession(), true).send(0x80, 0x01);
+        } finally {
+            logger.removeHandler(handler);
+        }
+
+        assertThat(lines).containsExactly("[JCX] C: 80010000", "[JCX] R: 01029000");
+    }
+
+    @Test
+    void deleteIsForwardedToTheWrappedSession() {
+        try (EmbeddedSession card = new EmbeddedSession()) {
+            LoggingSession logged = LoggingSession.wrap(card);
+            AID aid = AID.fromHex("F000000001");
+            logged.install(HelloWorldApplet.class, aid);
+
+            logged.delete(aid);
+            logged.install(HelloWorldApplet.class, aid);
+
+            assertThat(card.history().transcript()).contains("# delete F000000001");
+        }
+        assertThatThrownBy(() -> LoggingSession.wrap(new StubSession()).delete(AID.fromHex("F000000001")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void historyIsTheHistoryOfTheWrappedSession() {
+        try (EmbeddedSession card = new EmbeddedSession()) {
+            assertThat(LoggingSession.wrap(card).history()).isSameAs(card.history());
+        }
+        assertThat(LoggingSession.wrap(new StubSession()).history()).isSameAs(APDUHistory.none());
     }
 
     @Test

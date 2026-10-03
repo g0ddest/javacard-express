@@ -13,8 +13,14 @@ import javacard.framework.Applet;
  * wrapping (via {@link SMCodec#wrapCommand}) before sending, and response
  * unwrapping (via {@link SMCodec#unwrapResponse}) after receiving.</p>
  *
- * <p>Lifecycle methods ({@code install}, {@code select}, {@code reset}, {@code close})
- * are delegated directly without SM wrapping.</p>
+ * <p>Lifecycle methods ({@code install}, {@code select}, {@code reset}, {@code close}) are delegated without
+ * SM wrapping and end the Secure Messaging session: a plain APDU such as the SELECT sent by {@code select}
+ * makes the chip abort Secure Messaging and delete its session keys (ICAO Doc 9303-11, 9.8.3), and a reset
+ * de-powers it (9.8.5). The {@link SMContext} is therefore {@linkplain SMContext#terminate(String) terminated}
+ * and every later {@code send}/{@code transmit} fails with an {@link SMException} that names the cause. To select
+ * a file or application without leaving Secure Messaging, send the SELECT command through {@link #send}.
+ * The context is also terminated when the chip answers with a bare status word (an SM error, 9.8.5); that
+ * response is still returned once.</p>
  *
  * <h2>Usage:</h2>
  * <pre>
@@ -23,7 +29,8 @@ import javacard.framework.Applet;
  * SMSession secure = SMSession.wrap(card, ctx);
  *
  * // All send() calls are now SM-protected
- * APDUResponse resp = secure.send(0x00, 0xB0, 0x00, 0x00);
+ * secure.send(0x00, 0xA4, 0x02, 0x0C, Hex.decode("011E"));             // SELECT EF.COM
+ * APDUResponse resp = secure.send(0x00, 0xB0, 0x00, 0x00, null, 4);   // READ BINARY, Ne = 4
  * </pre>
  *
  * @see SMCodec
@@ -74,36 +81,49 @@ public final class SMSession implements SmartCardSession {
         return context;
     }
 
-    // ── SmartCardSession delegation (no SM wrapping) ──
+    // ── SmartCardSession delegation (plain, ends Secure Messaging) ──
 
     @Override
     public void install(Class<? extends Applet> appletClass) {
-        delegate.install(appletClass);
+        endingSession("install()", () -> delegate.install(appletClass));
     }
 
     @Override
     public void install(Class<? extends Applet> appletClass, AID aid) {
-        delegate.install(appletClass, aid);
+        endingSession("install()", () -> delegate.install(appletClass, aid));
     }
 
     @Override
     public void install(Class<? extends Applet> appletClass, AID aid, byte[] installParams) {
-        delegate.install(appletClass, aid, installParams);
+        endingSession("install()", () -> delegate.install(appletClass, aid, installParams));
     }
 
     @Override
     public void select(Class<? extends Applet> appletClass) {
-        delegate.select(appletClass);
+        endingSession("select()", () -> delegate.select(appletClass));
     }
 
     @Override
     public void select(AID aid) {
-        delegate.select(aid);
+        endingSession("select()", () -> delegate.select(aid));
     }
 
     @Override
     public void reset() {
-        delegate.reset();
+        try {
+            delegate.reset();
+        } finally {
+            context.terminate("the card was reset, which ends Secure Messaging (ICAO 9303-11 9.8.5)");
+        }
+    }
+
+    private void endingSession(String operation, Runnable plainOperation) {
+        try {
+            plainOperation.run();
+        } finally {
+            context.terminate(operation + " selects an applet with a plain APDU, which ends Secure Messaging"
+                    + " (ICAO 9303-11 9.8.3); send SELECT through send() to stay protected");
+        }
     }
 
     // ── APDU methods (SM-wrapped) ──
@@ -146,8 +166,15 @@ public final class SMSession implements SmartCardSession {
         return result;
     }
 
+    /**
+     * Closes the underlying session and terminates the SM context, wiping its key copies.
+     */
     @Override
     public void close() {
-        delegate.close();
+        try {
+            delegate.close();
+        } finally {
+            context.terminate("the session was closed");
+        }
     }
 }

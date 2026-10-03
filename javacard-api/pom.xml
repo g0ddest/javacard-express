@@ -16,7 +16,34 @@
     <name>JavaCard Express :: API Stubs</name>
     <description>JavaCard 3.0.5 Classic API stubs for compilation — clean-room reimplementation</description>
 
+    <properties>
+        <!--
+          The stubs are a compile-time dependency of applet projects, whose toolchains are often pinned to
+          JDK 8, 11, 17 or 21. Class-file version 52 can be read by every javac from 8 up, so the stubs are
+          compiled for Java 8 (the oldest release that javac 25 still supports). The tests use Java 25
+          (ClassFile API) and run on the build JDK.
+        -->
+        <maven.compiler.release>8</maven.compiler.release>
+        <maven.compiler.testRelease>25</maven.compiler.testRelease>
+    </properties>
+
     <dependencies>
+        <!--
+          Independent, Apache-2.0 implementation of the same public Java Card API. Used ONLY as a
+          conformance reference by ApiConformanceTest, which reads its class files as bytes
+          (JDK ClassFile API); its classes are never loaded or executed by the tests.
+        -->
+        <dependency>
+            <groupId>com.klinec</groupId>
+            <artifactId>jcardsim</artifactId>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -28,5 +55,29 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs>
+                        <!-- javac 21+ warns that release 8 is obsolete; the old target is intentional -->
+                        <arg>-Xlint:-options</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <jcx.api.classes>${project.build.outputDirectory}</jcx.api.classes>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 
 </project>

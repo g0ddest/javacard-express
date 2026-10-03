@@ -18,6 +18,19 @@ jobs:
           cache: maven
       - run: ./mvnw clean verify -pl !container -B
 
+  # The release profile builds javadoc and source jars; check them on every change so that a javadoc error cannot
+  # surface for the first time during a release.
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 25
+          distribution: oracle
+          cache: maven
+      - run: ./mvnw clean verify -Prelease -Dgpg.skip -DskipTests -pl !container -B
+
   sonar:
     runs-on: ubuntu-latest
     steps:
@@ -35,13 +48,34 @@ jobs:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
           restore-keys: ${{ runner.os }}-sonar
+      # The analysis needs a SonarCloud token that SonarCloud accepts. A missing, expired or revoked token skips the
+      # analysis with a warning on the run (the code is built and tested by the other jobs); a new token goes into the
+      # repository secret SONAR_TOKEN.
+      - name: Check the SonarCloud token
+        id: sonar-token
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "::notice::SONAR_TOKEN is not set: SonarCloud analysis skipped"
+            echo "accepted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SONAR_TOKEN" \
+            'https://api.sonarcloud.io/analysis/jres?os=linux&arch=x86_64')
+          if [ "$status" = "200" ]; then
+            echo "accepted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::SonarCloud refused SONAR_TOKEN (HTTP $status, expired or revoked): analysis skipped. Generate a new token at sonarcloud.io and update the repository secret SONAR_TOKEN."
+            echo "accepted=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and analyze
-        if: env.SONAR_TOKEN != ''
+        if: steps.sonar-token.outputs.accepted == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: >-
-          ./mvnw clean verify sonar:sonar -pl !container -B
+          ./mvnw clean verify org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar -pl !container -B
           -Dsonar.projectKey=g0ddest_javacard-express
           -Dsonar.organization=g0ddest
           -Dsonar.host.url=https://sonarcloud.io

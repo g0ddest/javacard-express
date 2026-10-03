@@ -2,15 +2,21 @@ package name.velikodniy.jcexpress;
 
 import name.velikodniy.jcexpress.container.ContainerSession;
 import name.velikodniy.jcexpress.container.SmartCardContainer;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
-
 import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * {@link ContainerSession} against a real simulator container started from the server bundled in the container
+ * artifact (the default of {@code @SmartCard(mode = CONTAINER)}).
+ */
 class ContainerSessionTest {
 
     private static SmartCardContainer container;
@@ -20,8 +26,7 @@ class ContainerSessionTest {
     static void startContainer() {
         assumeTrue(DockerClientFactory.instance().isDockerAvailable(),
                 "Docker is not available, skipping container tests");
-        Path dockerDir = Paths.get(System.getProperty("user.dir")).resolve("../docker").normalize();
-        container = new SmartCardContainer(dockerDir);
+        container = new SmartCardContainer();
         container.start();
     }
 
@@ -34,14 +39,8 @@ class ContainerSessionTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        // Each test gets a fresh session; reset state from previous test
-        session = new ContainerSession(
-                container.getHost(),
-                container.getPort(),
-                null, // container lifecycle managed by @BeforeAll/@AfterAll
-                false
-        );
-        session.reset();
+        // Every connection has its own blank card; the container is managed by @BeforeAll/@AfterAll
+        session = new ContainerSession(container.getHost(), container.getPort(), null);
     }
 
     @AfterEach
@@ -95,12 +94,15 @@ class ContainerSessionTest {
     }
 
     @Test
-    void shouldResetCard() {
+    void shouldKeepInstalledAppletsAcrossCardReset() {
         session.install(HelloWorldApplet.class);
         session.reset();
-        session.install(HelloWorldApplet.class);
+        session.select(HelloWorldApplet.class);
         APDUResponse response = session.send(0x80, 0x01);
         assertThat(response).isSuccess();
+        assertThatThrownBy(() -> session.install(HelloWorldApplet.class))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already installed");
     }
 
     @Test
