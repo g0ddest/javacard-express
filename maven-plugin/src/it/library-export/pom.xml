@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example.its</groupId>
+    <artifactId>library-export</artifactId>
+    <version>1.2</version>
+    <description>A library package (no applets) is exported: Export component + export file.</description>
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <version>@project.version@</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>@project.version@</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <packageAid>A0000000623301</packageAid>
+                    <packageVersion>1.2</packageVersion>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

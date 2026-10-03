@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example.its</groupId>
+    <artifactId>invalid-configuration</artifactId>
+    <version>1.0</version>
+    <description>Each invocation (invoker.properties) breaks one parameter; every build must fail and say why.</description>
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <version>@project.version@</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>@project.version@</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <packageAid>A00000006212</packageAid>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <!-- An odd number of hex digits (a configured element wins over -Djavacard.packageAid) -->
+            <id>bad-aid</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>name.velikodniy</groupId>
+                        <artifactId>javacard-express-maven-plugin</artifactId>
+                        <configuration>
+                            <packageAid>A0000000771</packageAid>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <!-- A typo in the applet class name -->
+            <id>typo</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>name.velikodniy</groupId>
+                        <artifactId>javacard-express-maven-plugin</artifactId>
+                        <configuration>
+                            <applets>
+                                <applet>
+                                    <className>com.example.hello.HeloWorldApplet</className>
+                                </applet>
+                            </applets>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>
