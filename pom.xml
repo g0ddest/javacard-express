@@ -237,6 +237,9 @@
                 <version>${flatten-maven-plugin.version}</version>
                 <configuration>
                     <flattenMode>ossrh</flattenMode>
+                    <!-- also for this pom-packaged root, which the plugin leaves unflattened by default: its published
+                         POM must carry the version instead of ${revision} -->
+                    <updatePomFile>true</updatePomFile>
                 </configuration>
                 <executions>
                     <execution>

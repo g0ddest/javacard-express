@@ -42,6 +42,17 @@ class PublishedPomTest {
     }
 
     @Test
+    void theRootPomIsPublishedFlattenedLikeTheModules() {
+        // flatten-maven-plugin replaces the project file of a pom-packaged project only with updatePomFile; without
+        // it the root POM was deployed with <version>${revision}</version>
+        String root = read("pom.xml");
+        String flatten = root.substring(root.indexOf("<artifactId>flatten-maven-plugin</artifactId>"));
+
+        assertThat(flatten.substring(0, flatten.indexOf("</configuration>")))
+                .contains("<updatePomFile>true</updatePomFile>");
+    }
+
+    @Test
     void theAppletParentUsesTheJUnitVersionTheToolkitIsBuiltWith() throws IOException {
         Matcher params = Pattern.compile("<artifactId>junit-jupiter-params</artifactId>\\s*<version>([^<]+)</version>")
                 .matcher(read("applet-parent/pom.xml"));
