@@ -1,0 +1,6 @@
+[submodule "livecard/third_party/PivApplet"]
+	path = livecard/third_party/PivApplet
+	url = https://github.com/arekinath/PivApplet
+[submodule "livecard/third_party/SmartPGP"]
+	path = livecard/third_party/SmartPGP
+	url = https://github.com/ANSSI-FR/SmartPGP
