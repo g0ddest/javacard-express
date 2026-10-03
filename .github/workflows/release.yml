@@ -1,8 +1,9 @@
 name: Release
 
+# 'published' also fires for a release that was first saved as a draft ('created' does not).
 on:
   release:
-    types: [ created ]
+    types: [ published ]
 
 jobs:
   # Gate: the tag must be a version, and the full build (all tests, including the container tests on Docker, plus
@@ -18,11 +19,17 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
-            echo "::error::Release tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<patch>[-qualifier]"
+            echo "::error::Release tag '$GITHUB_REF_NAME' is not <major>.<minor>.<patch>[-qualifier] (tags have no v prefix since 0.2.0)"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+      - name: Tag matches .mvn/maven.config
+        run: |
+          if ! grep -qx -- "-Drevision=${{ steps.version.outputs.version }}" .mvn/maven.config; then
+            echo "::error::Release tag '$GITHUB_REF_NAME' does not match .mvn/maven.config ($(cat .mvn/maven.config)): the tagged commit must carry the release version"
+            exit 1
+          fi
       - uses: actions/setup-java@v4
         with:
           java-version: 25
