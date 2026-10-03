@@ -921,7 +921,7 @@ public final class Converter {
          * @return this builder
          * @deprecated the output always follows the specification; remove the call
          */
-        @Deprecated(since = "0.4.0")
+        @Deprecated
         @SuppressWarnings("java:S1172") // parameter kept for source compatibility
         public Builder oracleCompatibility(boolean flag) {
             return this;

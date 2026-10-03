@@ -142,12 +142,12 @@ public final class ExportComponent {
      * @param staticFieldOffsetMap {@code "class:field"} to static field image offset
      * @return complete component bytes including tag and size
      * @throws IllegalStateException if the class tokens are not 0..n-1 or the location of an exported
-     *                               class, static field or static method is not given (before 0.4.0 such an
-     *                               element was written with offset 0, a real location of another element)
+     *                               class, static field or static method is not given (earlier releases wrote
+     *                               such an element with offset 0, a real location of another element)
      * @deprecated cannot tell application from library packages or recognize shareable
      *             interfaces; use {@link #generate(Input)}
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public static byte[] generate(TokenMap tokenMap, int[] methodOffsets, int[] classOffsets,
                                   Map<String, Integer> methodIndexMap, Map<String, Integer> staticFieldOffsetMap) {
         Map<String, Integer> classes = new HashMap<>();

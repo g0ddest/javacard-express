@@ -8,8 +8,6 @@ Mapping and AES (Section 4.4) and **Basic Access Control** (Section 4.3). Both r
 [Secure Messaging module](../sm/README.md), so you can test ePassport and eID applets and cards end to end. Part of
 the [JavaCard Express](../README.md) toolkit.
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Installation
 
 ```xml

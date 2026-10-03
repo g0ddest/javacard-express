@@ -12,15 +12,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ServerJarNameTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {"jcx-simulator.jar", "jcx-simulator-0.1.0.jar", "jcx-simulator-0.3.0.jar"})
+    @ValueSource(strings = {"jcx-simulator.jar", "jcx-simulator-1.2.3.jar", "jcx-simulator-4.5.6-SNAPSHOT.jar"})
     void acceptsTheShadedServerJar(String name) {
         assertThat(SmartCardContainer.isServerJarName(name)).isTrue();
     }
 
     @ParameterizedTest
     @ValueSource(strings = {
-            "original-jcx-simulator.jar", "original-jcx-simulator-0.1.0.jar",
-            "jcx-simulator-0.3.0-sources.jar", "jcx-simulator-0.3.0-javadoc.jar",
+            "original-jcx-simulator.jar", "original-jcx-simulator-1.2.3.jar",
+            "jcx-simulator-4.5.6-SNAPSHOT-sources.jar", "jcx-simulator-4.5.6-SNAPSHOT-javadoc.jar",
             "jcx-simulator.pom", "other.jar"})
     void rejectsEverythingElse(String name) {
         assertThat(SmartCardContainer.isServerJarName(name)).isFalse();

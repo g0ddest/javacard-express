@@ -39,9 +39,9 @@ class SimulatorSourceTest {
     @Test
     void imageSystemPropertyAppliesWhenTheAnnotationHasNoImage() {
         SimulatorSource source = SimulatorSource.resolve("",
-                Map.of(SimulatorSource.IMAGE_PROPERTY, "ghcr.io/g0ddest/jcx-simulator:0.3.1"));
+                Map.of(SimulatorSource.IMAGE_PROPERTY, "ghcr.io/g0ddest/jcx-simulator:1.2.3"));
 
-        assertThat(source).isEqualTo(new SimulatorSource.Image("ghcr.io/g0ddest/jcx-simulator:0.3.1"));
+        assertThat(source).isEqualTo(new SimulatorSource.Image("ghcr.io/g0ddest/jcx-simulator:1.2.3"));
     }
 
     @Test

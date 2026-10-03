@@ -13,7 +13,7 @@ order open the two converters may differ, and both results are valid.
 
 ## Correction: there is no "Oracle dispatch table off-by-one bug"
 
-Versions up to 0.3.0 documented an "off-by-one bug" in Oracle's Class component and offered
+Earlier releases documented an "off-by-one bug" in Oracle's Class component and offered
 `oracleCompatibility(true)` to reproduce it. That was a misreading of the specification. JCVM 3.1 §6.9 orders
 `class_info` as `public_method_table_base`, `public_method_table_count`, `package_method_table_base`,
 `package_method_table_count`, then `public_virtual_method_table[]` and `package_virtual_method_table[]`. Oracle's
@@ -22,9 +22,9 @@ public table, so Oracle's verifier rejected every default-mode CAP (`Invalid met
 dispatch virtual methods wrongly.
 
 Since the 2026 fixes the converter always writes the §6.9 layout. `Converter.Builder.oracleCompatibility(boolean)`
-and the plugin parameter `oracleCompatibility` are deprecated and have no effect. **CAP files built with 0.3.0 or
-earlier in the default mode should be rebuilt.** The other defects fixed at the same time are listed in the
-[changelog](../CHANGELOG.md).
+and the plugin parameter `oracleCompatibility` are deprecated and have no effect. **CAP files that the converter built
+before these fixes in the default mode should be rebuilt;** the [changelog](../CHANGELOG.md) names those releases and
+the other defects fixed at the same time.
 
 ## How the output is checked
 
@@ -64,7 +64,7 @@ applets: IsoApplet, PivApplet, SmartPGP, status-keycard, ykneo-oath, ykneo-openp
 compiled with `javac --release 8` against the target SDK's API jar (variant A) and against this project's stubs
 (variant B). Results at the integrated converter (the state documented here):
 
-| Check | Result | Original 0.3.0 converter |
+| Check | Result | Converter before the fixes |
 |-------|--------|--------------------------|
 | Expected-valid packages, CAP passes the target SDK's verifier (A) | 108/108 | 0/108 |
 | Same, compiled against the project's API stubs (B) | 102/102 (the other 6 target 3.1/3.2 APIs, which the stubs do not cover) | 0/102 |

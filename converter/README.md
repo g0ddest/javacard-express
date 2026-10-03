@@ -18,8 +18,6 @@ sections it implements. Most users run it through the [Maven plugin](../maven-pl
 How the output is verified, and how it compares with Oracle's converter:
 [BINARY_COMPATIBILITY.md](BINARY_COMPATIBILITY.md).
 
-> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
-
 ## Usage
 
 ```java

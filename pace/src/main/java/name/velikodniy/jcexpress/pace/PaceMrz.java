@@ -88,7 +88,7 @@ public final class PaceMrz {
      * @deprecated the name suggests the BAC key seed, which is only the first 16 bytes; use
      *             {@link #encodeMrzPassword} for PACE and {@link #bacKeySeed} for BAC
      */
-    @Deprecated(since = "0.3.0")
+    @Deprecated
     public static byte[] computeKSeed(String documentNumber, String dateOfBirth, String dateOfExpiry) {
         return encodeMrzPassword(documentNumber, dateOfBirth, dateOfExpiry);
     }

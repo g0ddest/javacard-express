@@ -94,7 +94,7 @@ public final class ClassComponent {
      * @return component bytes and the offset of every entry, in the order of {@code classes}
      * @deprecated use {@link #generate(List, TokenMap, int[], Map, ReferenceResolver, JavaCardVersion)}
      */
-    @Deprecated(since = "0.4.0")
+    @Deprecated
     public static ClassResult generate(List<ClassInfo> classes, TokenMap tokenMap, int[] methodOffsets,
                                        Map<String, Integer> methodIndexMap, ReferenceResolver resolver,
                                        JavaCardVersion version, boolean oracleCompat) {
