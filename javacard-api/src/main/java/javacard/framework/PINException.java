@@ -6,7 +6,9 @@ package javacard.framework;
 @SuppressWarnings({"java:S1172", "java:S112"}) // API stubs: params are contractual, RuntimeException is intentional
 public class PINException extends CardRuntimeException {
 
+    /** Reason code: a PIN or try-limit value is not allowed, for example too long. */
     public static final short ILLEGAL_VALUE = 1;
+    /** Reason code: the operation is not allowed in the current state of the PIN object. */
     public static final short ILLEGAL_STATE = 2;
 
     /**
@@ -16,6 +18,7 @@ public class PINException extends CardRuntimeException {
      */
     public PINException(short reason) {
         super(reason);
+        throw new RuntimeException("stub");
     }
 
     /**

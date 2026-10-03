@@ -11,6 +11,7 @@ public class UserException extends CardException {
      */
     public UserException() {
         super((short) 0);
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -20,6 +21,7 @@ public class UserException extends CardException {
      */
     public UserException(short reason) {
         super(reason);
+        throw new RuntimeException("stub");
     }
 
     /**

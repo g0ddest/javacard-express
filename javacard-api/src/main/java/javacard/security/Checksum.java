@@ -6,7 +6,16 @@ package javacard.security;
 @SuppressWarnings({"java:S1172", "java:S112"}) // API stubs: params are contractual, RuntimeException is intentional
 public abstract class Checksum {
 
+    /**
+     * Constructor for algorithm implementations; applets obtain instances through {@code getInstance}.
+     */
+    protected Checksum() {
+        throw new RuntimeException("stub");
+    }
+
+    /** 16-bit CRC as defined by ISO/IEC 3309. */
     public static final byte ALG_ISO3309_CRC16 = 1;
+    /** 32-bit CRC as defined by ISO/IEC 3309. */
     public static final byte ALG_ISO3309_CRC32 = 2;
 
     /**
@@ -17,8 +26,8 @@ public abstract class Checksum {
      * @return the Checksum instance
      * @throws CryptoException with NO_SUCH_ALGORITHM if the requested algorithm is not supported
      */
-    public static Checksum getInstance(byte algorithm, boolean externalAccess) throws CryptoException {
-        return null;
+    public static final Checksum getInstance(byte algorithm, boolean externalAccess) throws CryptoException {
+        throw new RuntimeException("stub");
     }
 
     /**

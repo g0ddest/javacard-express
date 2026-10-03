@@ -6,6 +6,9 @@ package javacard.framework;
 @SuppressWarnings({"java:S1172", "java:S112"}) // API stubs: params are contractual, RuntimeException is intentional
 public class Util {
 
+    private Util() {
+    }
+
     /**
      * Copies bytes from source to destination atomically.
      *
@@ -16,8 +19,8 @@ public class Util {
      * @param length  number of bytes to copy
      * @return destOff + length
      */
-    public static short arrayCopy(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
-        return (short) (destOff + length);
+    public static final short arrayCopy(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -30,8 +33,8 @@ public class Util {
      * @param length  number of bytes to copy
      * @return destOff + length
      */
-    public static short arrayCopyNonAtomic(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
-        return (short) (destOff + length);
+    public static final short arrayCopyNonAtomic(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -43,8 +46,8 @@ public class Util {
      * @param bValue the fill value
      * @return bOff + bLen
      */
-    public static short arrayFill(byte[] bArray, short bOff, short bLen, byte bValue) {
-        return (short) (bOff + bLen);
+    public static final short arrayFill(byte[] bArray, short bOff, short bLen, byte bValue) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -56,8 +59,8 @@ public class Util {
      * @param bValue the fill value
      * @return bOff + bLen
      */
-    public static short arrayFillNonAtomic(byte[] bArray, short bOff, short bLen, byte bValue) {
-        return (short) (bOff + bLen);
+    public static final short arrayFillNonAtomic(byte[] bArray, short bOff, short bLen, byte bValue) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -70,8 +73,8 @@ public class Util {
      * @param length  number of bytes to compare
      * @return 0 if equal, negative if src &lt; dest, positive if src &gt; dest
      */
-    public static byte arrayCompare(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
-        return 0;
+    public static final byte arrayCompare(byte[] src, short srcOff, byte[] dest, short destOff, short length) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -81,8 +84,8 @@ public class Util {
      * @param b2 the low byte
      * @return the short value
      */
-    public static short makeShort(byte b1, byte b2) {
-        return (short) ((b1 << 8) | (b2 & 0xFF));
+    public static final short makeShort(byte b1, byte b2) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -92,8 +95,8 @@ public class Util {
      * @param bOff   the offset
      * @return the short value
      */
-    public static short getShort(byte[] bArray, short bOff) {
-        return makeShort(bArray[bOff], bArray[(short) (bOff + 1)]);
+    public static final short getShort(byte[] bArray, short bOff) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -104,7 +107,7 @@ public class Util {
      * @param sValue the short value
      * @return bOff + 2
      */
-    public static short setShort(byte[] bArray, short bOff, short sValue) {
-        return (short) (bOff + 2);
+    public static final short setShort(byte[] bArray, short bOff, short sValue) {
+        throw new RuntimeException("stub");
     }
 }

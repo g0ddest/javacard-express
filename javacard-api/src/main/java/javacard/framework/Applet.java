@@ -10,6 +10,7 @@ public abstract class Applet {
      * Constructs an Applet instance.
      */
     protected Applet() {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -21,6 +22,7 @@ public abstract class Applet {
      * @param bLength length of the parameters
      */
     public static void install(byte[] bArray, short bOffset, byte bLength) {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -37,13 +39,14 @@ public abstract class Applet {
      * @return true if selection succeeded
      */
     public boolean select() {
-        return true;
+        throw new RuntimeException("stub");
     }
 
     /**
      * Called when the applet is deselected.
      */
     public void deselect() {
+        throw new RuntimeException("stub");
     }
 
     /**
@@ -54,11 +57,16 @@ public abstract class Applet {
      * @return a shareable interface object, or null
      */
     public Shareable getShareableInterfaceObject(AID clientAID, byte parameter) {
-        return null;
+        throw new RuntimeException("stub");
     }
 
     /**
-     * Registers this applet instance with the runtime using the AID from the install parameters.
+     * Registers this applet instance with the runtime under the applet's own AID: its Java Card platform name, the
+     * AID of the applet in the Applet component of its CAP file (JCVM 3.1 §6.6), not the instance AID of the install
+     * parameters. GlobalPlatform requires applets to register with the instance AID that INSTALL [for install] gives
+     * them ({@link #register(byte[], short, byte)}, GPCS v2.3.1 A.1, "Installation"); an applet installed under
+     * another AID than its own, or more than once, needs that method. jCardSim, which the simulators of JavaCard
+     * Express run applets on, registers an instance under the AID its installation requested with either method.
      *
      * @throws SystemException on error
      */
@@ -67,7 +75,9 @@ public abstract class Applet {
     }
 
     /**
-     * Registers this applet instance with the runtime using the specified AID.
+     * Registers this applet instance with the runtime using the specified AID: on a GlobalPlatform card the instance
+     * AID of the install parameters, {@code register(bArray, (short) (bOffset + 1), bArray[bOffset])} in
+     * {@code install} (GPCS v2.3.1 A.1, "Installation").
      *
      * @param bArray byte array containing the AID
      * @param bOffset starting offset
@@ -84,16 +94,16 @@ public abstract class Applet {
      * @return true if the applet is being selected
      */
     protected final boolean selectingApplet() {
-        return false;
+        throw new RuntimeException("stub");
     }
 
-    @Override
-    public boolean equals(Object obj) {
-        return super.equals(obj);
-    }
-
-    @Override
-    public int hashCode() {
-        return super.hashCode();
+    /**
+     * Tells whether the applet is being selected again on the same logical channel while it is already the
+     * selected applet there, so that {@link #select()} can skip reinitialisation.
+     *
+     * @return {@code true} if this is a re-selection of the currently selected applet
+     */
+    protected static boolean reSelectingApplet() {
+        throw new RuntimeException("stub");
     }
 }
