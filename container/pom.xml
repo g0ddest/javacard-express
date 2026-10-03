@@ -51,4 +51,83 @@
         </dependency>
     </dependencies>
 
+    <properties>
+        <!-- Location of the runnable simulator server jar inside this artifact (see SmartCardContainer). -->
+        <simulator.server.dir>${project.build.outputDirectory}/name/velikodniy/jcexpress/container</simulator.server.dir>
+        <simulator.server.classes>${project.build.directory}/simulator-server/classes</simulator.server.classes>
+    </properties>
+
+    <build>
+        <plugins>
+            <!-- Compile the simulator server from its single source of truth (../docker/src/main/java) into a
+                 separate directory, at the Java level of the docker/ project, so it can be bundled below. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>compile-simulator-server</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <release>17</release>
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/../docker/src/main/java</compileSourceRoot>
+                            </compileSourceRoots>
+                            <outputDirectory>${simulator.server.classes}</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Package server classes + jCardSim as a runnable jar resource of this artifact, so that
+                 @SmartCard(mode = CONTAINER) works in any project without docker/ or a pre-built image. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <version>3.7.1</version>
+                <executions>
+                    <execution>
+                        <id>simulator-server-jar</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                        <configuration>
+                            <descriptors>
+                                <descriptor>src/assembly/simulator-server.xml</descriptor>
+                            </descriptors>
+                            <finalName>jcx-simulator-server</finalName>
+                            <appendAssemblyId>false</appendAssemblyId>
+                            <attach>false</attach>
+                            <outputDirectory>${simulator.server.dir}</outputDirectory>
+                            <archive>
+                                <manifest>
+                                    <mainClass>name.velikodniy.jcexpress.server.JcxServer</mainClass>
+                                </manifest>
+                                <manifestEntries>
+                                    <Implementation-Title>jcx-simulator</Implementation-Title>
+                                    <Implementation-Version>${project.version}</Implementation-Version>
+                                </manifestEntries>
+                            </archive>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Server classes are visible to the tests (unit tests of the server package). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <additionalClasspathElements>
+                        <additionalClasspathElement>${simulator.server.classes}</additionalClasspathElement>
+                    </additionalClasspathElements>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>

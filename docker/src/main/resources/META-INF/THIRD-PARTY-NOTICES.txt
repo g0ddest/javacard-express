@@ -1,0 +1,10 @@
+JCX Simulator Server - third-party components
+=============================================
+
+This runnable jar bundles the following third-party software in binary form.
+
+1. jCardSim (com.klinec:jcardsim) - Java Card simulator
+   https://github.com/licel/jcardsim
+   Licensed under the Apache License, Version 2.0
+   (https://www.apache.org/licenses/LICENSE-2.0). jCardSim's own LICENSE and
+   NOTICE files are included in this jar under META-INF/.

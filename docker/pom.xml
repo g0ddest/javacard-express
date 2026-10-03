@@ -6,13 +6,18 @@
 
     <groupId>name.velikodniy</groupId>
     <artifactId>jcx-simulator</artifactId>
-    <version>0.1.0</version>
+    <!-- Standalone project (not a module of the reactor). ../mvnw in this directory takes -Drevision from the
+         repository's .mvn/maven.config; the release workflow builds the image with JCX_VERSION=<release>, which the
+         Dockerfile passes as -Drevision. -->
+    <version>${revision}</version>
     <packaging>jar</packaging>
 
     <name>JCX Simulator Server</name>
     <description>TCP server wrapping jCardSim for container-based JavaCard testing</description>
 
     <properties>
+        <!-- Only for an image built from this directory alone without JCX_VERSION (no .mvn/maven.config there) -->
+        <revision>0-SNAPSHOT</revision>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
@@ -22,10 +27,20 @@
             <groupId>com.klinec</groupId>
             <artifactId>jcardsim</artifactId>
             <version>3.0.6.0</version>
+            <!-- No class of the jCardSim jar references ASM (its POM lists ASM for jCardSim's own build tooling) -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.ow2.asm</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
 
     <build>
+        <!-- Fixed file name (no version): the Dockerfile copies target/jcx-simulator.jar by its exact path, so a
+             missing jar fails the image build instead of silently producing an empty image. -->
+        <finalName>jcx-simulator</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -41,6 +56,10 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>name.velikodniy.jcexpress.server.JcxServer</mainClass>
+                                    <manifestEntries>
+                                        <Implementation-Title>jcx-simulator</Implementation-Title>
+                                        <Implementation-Version>${project.version}</Implementation-Version>
+                                    </manifestEntries>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
