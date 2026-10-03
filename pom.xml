@@ -1,17 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- child.project.url.inherit.append.path=false: modules publish the repository URL as is (Maven appends the
+     artifactId otherwise, which gives links to directories that do not exist). -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"
+         child.project.url.inherit.append.path="false">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express</artifactId>
+    <!-- The one place of the version is .mvn/maven.config (-Drevision=...); the release workflow passes the
+         release with -Drevision, and flatten-maven-plugin writes it into the published POMs -->
     <version>${revision}</version>
     <packaging>pom</packaging>
 
     <name>JavaCard Express</name>
-    <description>Java toolkit for JavaCard development — APDU tooling, BER-TLV, GlobalPlatform, Secure Messaging, PACE</description>
-    <url>https://jce.velikodniy.name</url>
+    <description>Java toolkit for Java Card development: CAP converter and Maven plugin, API stubs, JUnit 5 testing on jCardSim, APDU tooling, BER-TLV, GlobalPlatform, Secure Messaging, PACE</description>
+    <url>https://github.com/g0ddest/javacard-express</url>
 
     <modules>
         <module>core</module>
@@ -22,6 +27,9 @@
         <module>javacard-api</module>
         <module>converter</module>
         <module>maven-plugin</module>
+        <module>livecard</module>
+        <module>bom</module>
+        <module>applet-parent</module>
     </modules>
 
     <licenses>
@@ -31,7 +39,9 @@
         </license>
     </licenses>
 
-    <scm>
+    <scm child.scm.connection.inherit.append.path="false"
+         child.scm.developerConnection.inherit.append.path="false"
+         child.scm.url.inherit.append.path="false">
         <connection>scm:git:git://github.com/g0ddest/javacard-express.git</connection>
         <developerConnection>scm:git:ssh://github.com:g0ddest/javacard-express.git</developerConnection>
         <url>https://github.com/g0ddest/javacard-express/tree/main</url>
@@ -46,7 +56,9 @@
     </developers>
 
     <properties>
-        <revision>0.3.0</revision>
+        <!-- Reproducible builds: fixed timestamp for jar entries (the release workflow passes the tagged commit's
+             time with -Dproject.build.outputTimestamp). -->
+        <project.build.outputTimestamp>2026-10-01T00:00:00Z</project.build.outputTimestamp>
         <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -77,44 +89,49 @@
         <dependencies>
             <!-- Internal modules -->
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-core</artifactId>
                 <version>${project.version}</version>
                 <type>test-jar</type>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-gp</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-sm</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-pace</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-container</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>${project.groupId}</groupId>
+                <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-converter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-livecard</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -149,6 +166,13 @@
                 <artifactId>slf4j-simple</artifactId>
                 <version>${slf4j.version}</version>
             </dependency>
+            <!-- Testcontainers brings slf4j-api 1.7.36, which cannot bind the SLF4J 2 provider used by the container
+                 tests (slf4j-simple 2.x): logging fell back to NOP and Docker diagnostics were lost. -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.apache.maven</groupId>
                 <artifactId>maven-plugin-api</artifactId>
@@ -168,6 +192,20 @@
     </dependencyManagement>
 
     <build>
+        <!-- Every published jar carries the licence and the notices (modules are direct children of this directory) -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}/..</directory>
+                <targetPath>META-INF</targetPath>
+                <includes>
+                    <include>LICENSE</include>
+                    <include>NOTICE</include>
+                </includes>
+            </resource>
+        </resources>
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -232,6 +270,17 @@
     </build>
 
     <profiles>
+        <!--
+            The live-card suite: ./mvnw -Plivecard verify -pl livecard -am runs it against the card in the reader
+            (LIVE_CARD_TESTING.md). The livecard module's profile of the same name selects the live tests; this one
+            only lets -Dtest=<LiveTestClass> pass the modules built before livecard, which have no such test.
+        -->
+        <profile>
+            <id>livecard</id>
+            <properties>
+                <surefire.failIfNoSpecifiedTests>false</surefire.failIfNoSpecifiedTests>
+            </properties>
+        </profile>
         <profile>
             <id>release</id>
             <build>
