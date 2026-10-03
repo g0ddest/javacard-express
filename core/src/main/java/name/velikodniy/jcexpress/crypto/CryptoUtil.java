@@ -440,15 +440,16 @@ public final class CryptoUtil {
 
         byte[] cmac = aesCmac(staticKey, fullData);
 
+        // Amd D 4.1.5: the derived data is exactly L bits (e.g. 24 bytes for L = '00C0')
         if (keyLengthBits <= 128) {
-            return Arrays.copyOf(cmac, 16);
+            return Arrays.copyOf(cmac, keyLengthBits / 8);
         } else {
             fullData[15] = 0x02;
             byte[] cmac2 = aesCmac(staticKey, fullData);
             byte[] result = new byte[32];
             System.arraycopy(cmac, 0, result, 0, 16);
             System.arraycopy(cmac2, 0, result, 16, 16);
-            return result;
+            return Arrays.copyOf(result, keyLengthBits / 8);
         }
     }
 

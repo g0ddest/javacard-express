@@ -177,10 +177,18 @@ class APDUBuilderTest {
         }
 
         @Test
-        void shouldRejectNegativeCla() {
-            assertThatThrownBy(() -> APDUBuilder.command().cla(-1))
+        void shouldRejectClaBelowTheByteRange() {
+            assertThatThrownBy(() -> APDUBuilder.command().cla(-129))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("CLA");
+        }
+
+        /** An applet's header constants are Java bytes: (byte) 0x80 reaches an int parameter as -128. */
+        @Test
+        void acceptsTheByteConstantsOfAnApplet() {
+            byte[] apdu = APDUBuilder.command().cla((byte) 0x80).ins((byte) 0xA4).p1((byte) 0xFF).p2(-1).build();
+
+            assertThat(apdu).containsExactly(0x80, 0xA4, 0xFF, 0xFF);
         }
 
         @Test
@@ -199,7 +207,7 @@ class APDUBuilderTest {
 
         @Test
         void shouldRejectP2OutOfRange() {
-            assertThatThrownBy(() -> APDUBuilder.command().p2(-5))
+            assertThatThrownBy(() -> APDUBuilder.command().p2(-200))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("P2");
         }
@@ -252,11 +260,23 @@ class APDUBuilderTest {
             assertThat(apdu[0] & 0xFF).isEqualTo(0x02); // CLA with channel 2
         }
 
+        /** ISO/IEC 7816-4:2005 Table 3: channels 4 to 19 use the further interindustry coding. */
+        @Test
+        void channelsFourToNineteenAreSupported() {
+            byte[] apdu = APDUBuilder.command().cla(0x00).ins(0xA4).channel(4).build();
+            byte[] gp = APDUBuilder.command().cla(0x80).ins(0xCA).channel(19).build();
+
+            assertThat(apdu[0] & 0xFF).isEqualTo(0x40);
+            assertThat(gp[0] & 0xFF).isEqualTo(0xCF);
+        }
+
         @Test
         void channelShouldRejectInvalidValue() {
-            assertThatThrownBy(() -> APDUBuilder.command().channel(4))
+            assertThatThrownBy(() -> APDUBuilder.command().channel(20))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("0-3");
+                    .hasMessageContaining("0-19");
+            assertThatThrownBy(() -> APDUBuilder.command().channel(-1))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
     }
 
@@ -332,7 +352,7 @@ class APDUBuilderTest {
 
         @BeforeEach
         void setUp() {
-            session = new EmbeddedSession(false);
+            session = new EmbeddedSession();
         }
 
         @AfterEach

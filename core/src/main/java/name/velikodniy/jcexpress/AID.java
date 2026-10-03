@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.Locale;
 
 /**
  * Application Identifier (AID) for JavaCard applets.
@@ -43,10 +44,15 @@ public final class AID {
      *
      * @param bytes the AID bytes (each value 0x00–0xFF)
      * @return the AID
+     * @throws IllegalArgumentException if a value is outside 0x00–0xFF or the length is not 5–16
      */
     public static AID of(int... bytes) {
         byte[] b = new byte[bytes.length];
         for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] < 0 || bytes[i] > 0xFF) {
+                throw new IllegalArgumentException("AID byte " + i + " must be 0x00-0xFF, got: 0x"
+                        + Integer.toHexString(bytes[i]).toUpperCase(Locale.ROOT));
+            }
             b[i] = (byte) bytes[i];
         }
         validateLength(b);

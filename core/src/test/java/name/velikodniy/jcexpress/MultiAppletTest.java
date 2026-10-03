@@ -17,7 +17,7 @@ class MultiAppletTest {
 
     @BeforeEach
     void setUp() {
-        session = new EmbeddedSession(false);
+        session = new EmbeddedSession();
     }
 
     @AfterEach

@@ -16,10 +16,13 @@ public final class TLV {
     private final byte[] value;
     private final TLVList children;
 
-    TLV(int tag, byte[] value) {
+    /**
+     * Creates a data object; the value of a constructed one is parsed as the level {@code childDepth}.
+     */
+    TLV(int tag, byte[] value, int childDepth) {
         this.tag = tag;
         this.value = value.clone();
-        this.children = Tags.isConstructed(tag) ? TLVParser.parseInternal(value) : TLVList.empty();
+        this.children = Tags.isConstructed(tag) ? TLVParser.parseInternal(value, childDepth) : TLVList.empty();
     }
 
     /**

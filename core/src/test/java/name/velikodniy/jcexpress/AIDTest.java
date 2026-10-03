@@ -3,6 +3,7 @@ package name.velikodniy.jcexpress;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AIDTest {
 
@@ -45,5 +46,14 @@ class AIDTest {
     void shouldHaveReadableToString() {
         AID aid = AID.fromHex("A0000000031010");
         assertThat(aid.toString()).contains("A0000000031010");
+    }
+
+    @Test
+    void ofRejectsValuesOutsideTheByteRange() {
+        assertThatThrownBy(() -> AID.of(0x1A0, 0x00, 0x00, 0x00, 0x00))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("0x1A0");
+        assertThatThrownBy(() -> AID.of(0xA0, 0x00, 0x00, 0x00, -1))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

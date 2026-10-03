@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.apdu;
 
+import name.velikodniy.jcexpress.SmartCardSession;
+
 import java.io.ByteArrayOutputStream;
 import java.util.Arrays;
 
@@ -27,6 +29,12 @@ import java.util.Arrays;
  */
 public final class APDUCodec {
 
+    /** Largest Nc (data field length) of a command APDU, ISO/IEC 7816-4:2005 5.1. */
+    public static final int MAX_NC = 65_535;
+
+    /** Largest Ne (expected response length) of a command APDU, ISO/IEC 7816-4:2005 5.1. */
+    public static final int MAX_NE = 65_536;
+
     private APDUCodec() {
     }
 
@@ -34,32 +42,63 @@ public final class APDUCodec {
      * Encodes an APDU command, automatically choosing short or extended format.
      *
      * <p>Extended format is used when {@code data.length > 255} or {@code le > 256}.
-     * Otherwise short format is used for backward compatibility.</p>
+     * Otherwise short format is used.</p>
      *
-     * @param cla  the CLA byte
-     * @param ins  the INS byte
-     * @param p1   the P1 byte
-     * @param p2   the P2 byte
-     * @param data the command data (may be null or empty)
-     * @param le   the expected response length (-1 for no Le, 0-256 for short,
-     *             0-65536 for extended; 0 means max for the format)
+     * <p>{@code le} follows the contract of
+     * {@link SmartCardSession#send(int, int, int, int, byte[], int)}: {@link SmartCardSession#NO_LE}
+     * ({@code -1}) omits the Le field, {@code 1..65536} is Ne ({@code 256} becomes the short Le
+     * {@code '00'}, {@code 65536} the extended Le {@code '0000'}), and {@code 0} produces an Le field with
+     * all bytes set to {@code '00'} ("maximum", ISO/IEC 7816-4:2005 5.1).</p>
+     *
+     * <p>Header bytes are {@code 0x00} to {@code 0xFF}, or the {@code byte} constants of an applet:
+     * {@code (byte) 0x80} reaches an {@code int} parameter as {@code -128} and is encoded as {@code '80'}.</p>
+     *
+     * @param cla  the CLA byte ({@code -128} to {@code 0xFF})
+     * @param ins  the INS byte ({@code -128} to {@code 0xFF})
+     * @param p1   the P1 byte ({@code -128} to {@code 0xFF})
+     * @param p2   the P2 byte ({@code -128} to {@code 0xFF})
+     * @param data the command data (may be null or empty; at most {@value #MAX_NC} bytes)
+     * @param le   the expected response length: {@code -1} for no Le, {@code 0..65536} otherwise
      * @return the encoded APDU bytes
+     * @throws IllegalArgumentException if a header byte, the data length or {@code le} is out of range
      */
     public static byte[] encode(int cla, int ins, int p1, int p2,
                                 byte[] data, int le) {
-        if (cla < 0 || cla > 0xFF) throw new IllegalArgumentException("CLA must be 0x00-0xFF, got: 0x" + Integer.toHexString(cla));
-        if (ins < 0 || ins > 0xFF) throw new IllegalArgumentException("INS must be 0x00-0xFF, got: 0x" + Integer.toHexString(ins));
-        if (p1 < 0 || p1 > 0xFF)  throw new IllegalArgumentException("P1 must be 0x00-0xFF, got: 0x" + Integer.toHexString(p1));
-        if (p2 < 0 || p2 > 0xFF)  throw new IllegalArgumentException("P2 must be 0x00-0xFF, got: 0x" + Integer.toHexString(p2));
+        int[] header = {headerByte("CLA", cla), headerByte("INS", ins), headerByte("P1", p1), headerByte("P2", p2)};
+        if (data != null && data.length > MAX_NC) {
+            throw new IllegalArgumentException("Command data too long: " + data.length
+                    + " bytes (Nc must not exceed " + MAX_NC + ", ISO/IEC 7816-4:2005 5.1)");
+        }
+        if (le < SmartCardSession.NO_LE || le > MAX_NE) {
+            throw new IllegalArgumentException("le must be SmartCardSession.NO_LE (-1) or 0.." + MAX_NE
+                    + " (ISO/IEC 7816-4:2005 5.1), got: " + le);
+        }
 
         boolean hasData = data != null && data.length > 0;
         boolean hasLe = le >= 0;
         boolean extended = (hasData && data.length > 255) || (hasLe && le > 256);
 
         if (extended) {
-            return encodeExtended(cla, ins, p1, p2, data, le, hasData, hasLe);
+            return encodeExtended(header[0], header[1], header[2], header[3], data, le, hasData, hasLe);
         }
-        return encodeShort(cla, ins, p1, p2, data, le, hasData, hasLe);
+        return encodeShort(header[0], header[1], header[2], header[3], data, le, hasData, hasLe);
+    }
+
+    /**
+     * A byte of a command given as an unsigned value or as a Java {@code byte} (an applet's constant), as the
+     * unsigned value.
+     *
+     * @param name  the field, for the message
+     * @param value {@code -128} to {@code 0xFF}
+     * @return {@code value & 0xFF}
+     * @throws IllegalArgumentException if {@code value} is outside {@code -128} to {@code 0xFF}
+     */
+    static int headerByte(String name, int value) {
+        if (value < Byte.MIN_VALUE || value > 0xFF) {
+            throw new IllegalArgumentException(name + " must be a byte: 0x00 to 0xFF, or a byte constant from -128;"
+                    + " got " + value + (value > 0 ? String.format(" (0x%X)", value) : ""));
+        }
+        return value & 0xFF;
     }
 
     /**
@@ -83,19 +122,26 @@ public final class APDUCodec {
     /**
      * Replaces or appends Le in an existing APDU (for 6CXX Le correction).
      *
-     * <p>Handles both short and extended APDU formats. For short APDUs,
-     * Le is encoded as a single byte. For extended APDUs, Le is encoded
-     * as two bytes.</p>
+     * <p>ISO/IEC 7816-4:2005 5.1.3: after {@code '6CXX'} "the same command may be re-issued using SW2 (exact
+     * number of available data bytes) as short Le field". SW2 is therefore read like a short Le field, i.e.
+     * {@code '00'} means 256 bytes. A short APDU gets that byte as its Le field; an extended APDU, whose Le
+     * field must be extended as well, gets Ne coded on two bytes ({@code 256} becomes {@code '0100'}).</p>
      *
      * @param apdu      the original APDU bytes
-     * @param correctLe the corrected Le value from SW2 (0-255, where 0 means 256)
+     * @param correctLe SW2 of the '6CXX' response (0-255, where 0 means 256), or 256
      * @return the corrected APDU bytes
+     * @throws IllegalArgumentException if {@code correctLe} is outside 0-256
      */
     public static byte[] correctLe(byte[] apdu, int correctLe) {
-        if (isExtended(apdu)) {
-            return correctLeExtended(apdu, correctLe);
+        if (correctLe < 0 || correctLe > 256) {
+            throw new IllegalArgumentException("Corrected Le must be SW2 (0-255, '00' = 256) or 256, got: "
+                    + correctLe);
         }
-        return correctLeShort(apdu, correctLe);
+        int ne = correctLe == 0 ? 256 : correctLe;
+        if (isExtended(apdu)) {
+            return correctLeExtended(apdu, ne);
+        }
+        return correctLeShort(apdu, ne);
     }
 
     // ── Short format ──
@@ -181,42 +227,22 @@ public final class APDUCodec {
         return corrected;
     }
 
-    private static byte[] correctLeExtended(byte[] apdu, int correctLe) {
-        // Parse extended APDU structure
+    /** Extended APDU: Ne (1-256 here) is written as the two-byte Le field, e.g. 256 as '0100'. */
+    private static byte[] correctLeExtended(byte[] apdu, int ne) {
         // After header (4 bytes) + marker (1 byte):
-        // Case 2E: [0x00 Le_hi Le_lo] → length == 7, no data
-        // Case 3E: [0x00 Lc_hi Lc_lo Data] → no Le
-        // Case 4E: [0x00 Lc_hi Lc_lo Data Le_hi Le_lo] → has Le
-
+        // Case 2E: [0x00 Le_hi Le_lo] -> length == 7, no data
+        // Case 3E: [0x00 Lc_hi Lc_lo Data] -> no Le
+        // Case 4E: [0x00 Lc_hi Lc_lo Data Le_hi Le_lo] -> has Le
+        byte[] corrected;
         if (apdu.length == 7) {
-            // Case 2E: replace Le
-            byte[] corrected = Arrays.copyOf(apdu, apdu.length);
-            int encodedLe = correctLe == 65536 ? 0 : correctLe;
-            corrected[5] = (byte) ((encodedLe >> 8) & 0xFF);
-            corrected[6] = (byte) (encodedLe & 0xFF);
-            return corrected;
-        }
-
-        // Case 3E or 4E: parse Lc
-        int lcHi = apdu[5] & 0xFF;
-        int lcLo = apdu[6] & 0xFF;
-        int lc = (lcHi << 8) | lcLo;
-        int dataEnd = 7 + lc;
-
-        int encodedLe = correctLe == 65536 ? 0 : correctLe;
-
-        if (apdu.length == dataEnd + 2) {
-            // Case 4E: replace Le (last 2 bytes)
-            byte[] corrected = Arrays.copyOf(apdu, apdu.length);
-            corrected[corrected.length - 2] = (byte) ((encodedLe >> 8) & 0xFF);
-            corrected[corrected.length - 1] = (byte) (encodedLe & 0xFF);
-            return corrected;
+            corrected = Arrays.copyOf(apdu, apdu.length);
         } else {
-            // Case 3E: append Le (2 bytes)
-            byte[] corrected = Arrays.copyOf(apdu, apdu.length + 2);
-            corrected[corrected.length - 2] = (byte) ((encodedLe >> 8) & 0xFF);
-            corrected[corrected.length - 1] = (byte) (encodedLe & 0xFF);
-            return corrected;
+            int lc = ((apdu[5] & 0xFF) << 8) | (apdu[6] & 0xFF);
+            boolean hasLe = apdu.length == 7 + lc + 2;
+            corrected = Arrays.copyOf(apdu, hasLe ? apdu.length : apdu.length + 2);
         }
+        corrected[corrected.length - 2] = (byte) ((ne >> 8) & 0xFF);
+        corrected[corrected.length - 1] = (byte) (ne & 0xFF);
+        return corrected;
     }
 }

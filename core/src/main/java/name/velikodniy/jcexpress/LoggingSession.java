@@ -6,14 +6,15 @@ import javacard.framework.Applet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
  * A decorator that records all APDU exchanges for programmatic access and debugging.
  *
  * <p>Wraps any {@link SmartCardSession} and intercepts all {@code send}/{@code transmit}
- * calls, recording each exchange as an {@link APDULogEntry}. Optionally prints to
- * java.util.logging for human-readable output.</p>
+ * calls, recording each exchange as an {@link APDULogEntry}. Optionally prints the exchanges to standard output,
+ * one line each.</p>
  *
  * <h2>Usage — programmatic access:</h2>
  * <pre>
@@ -30,8 +31,27 @@ import java.util.logging.Logger;
  * <h2>Usage — with console logging:</h2>
  * <pre>
  * LoggingSession logged = LoggingSession.wrap(card, true);
- * // APDUs are printed to java.util.logging as they are sent
+ * // printed to standard output as the exchanges happen, one line each:
+ * // [JCX] C: 80010000
+ * // [JCX] R: 9000
  * </pre>
+ *
+ * <p>The lines go through java.util.logging: logger {@code name.velikodniy.jcexpress}, level INFO, message
+ * {@code [JCX] } followed by a transcript line. When the first line is printed and that logger has no handler of
+ * its own, JavaCard Express gives it one that prints the message alone on standard output and turns its parent
+ * handlers off (so the lines appear once, without the timestamp line of the JDK's default format); records of the
+ * loggers below it keep going to the parent handlers. To route the lines elsewhere, give the logger a handler of
+ * your own before the first exchange: {@code name.velikodniy.jcexpress.handlers = ...} in a
+ * {@code logging.properties} file, or {@code Logger.getLogger("name.velikodniy.jcexpress").addHandler(...)} (for
+ * example SLF4J's {@code SLF4JBridgeHandler}); JavaCard Express then adds none and leaves the parent handlers as
+ * configured. A level above INFO on the logger silences the lines.</p>
+ *
+ * <p>The log holds the commands sent through this session, the SELECT commands of {@link #select(AID)},
+ * {@link #select(Class)} and the install methods included (taken from the wrapped session's {@link #history()};
+ * a wrapped session that keeps no history contributes only what passes through {@code send} and
+ * {@code transmit}). {@link #dump()} and the printed lines use the transcript format of {@link APDUHistory}; the
+ * printed lines also show the notes the wrapped session records during an exchange, after its response (for
+ * example {@code # applet threw java.lang.NullPointerException at ...} on jCardSim).</p>
  *
  * @see APDULogEntry
  * @see SmartCardSession
@@ -63,7 +83,8 @@ public final class LoggingSession implements SmartCardSession {
      * Wraps a session with APDU logging.
      *
      * @param session    the session to wrap
-     * @param printToLog true to also print APDUs to java.util.logging
+     * @param printToLog true to also print the exchanges, one line each on standard output (see the class
+     *                   documentation)
      * @return a logging session
      */
     public static LoggingSession wrap(SmartCardSession session, boolean printToLog) {
@@ -135,24 +156,16 @@ public final class LoggingSession implements SmartCardSession {
     }
 
     /**
-     * Returns a human-readable dump of all recorded APDU exchanges.
+     * Returns the recorded exchanges in the transcript format of {@link APDUHistory}: a {@code C:} line with the
+     * command and an {@code R:} line with the response (data and SW1 SW2) per exchange, as upper-case hex.
      *
-     * @return multi-line text dump
+     * @return multi-line text dump, every line ended by a line break
      */
     public String dump() {
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < entries.size(); i++) {
-            APDULogEntry e = entries.get(i);
-            sb.append('[').append(i).append("] ");
-            sb.append(">> ").append(e.commandHex()).append('\n');
-            sb.append('[').append(i).append("] ");
-            sb.append("<< ");
-            if (e.response().data().length > 0) {
-                sb.append(Hex.encodeSpaced(e.response().data())).append(' ');
-            }
-            sb.append('[').append(String.format("%04X", e.response().sw())).append(']');
-            sb.append(' ').append(e.response().data().length).append(" bytes");
-            sb.append('\n');
+        for (APDULogEntry entry : entries) {
+            sb.append(TranscriptFormat.command(entry.command())).append('\n');
+            sb.append(TranscriptFormat.response(entry.response().toBytes())).append('\n');
         }
         return sb.toString();
     }
@@ -161,63 +174,99 @@ public final class LoggingSession implements SmartCardSession {
 
     @Override
     public void install(Class<? extends Applet> appletClass) {
-        delegate.install(appletClass);
+        logDelegated(() -> delegate.install(appletClass));
     }
 
     @Override
     public void install(Class<? extends Applet> appletClass, AID aid) {
-        delegate.install(appletClass, aid);
+        logDelegated(() -> delegate.install(appletClass, aid));
     }
 
     @Override
     public void install(Class<? extends Applet> appletClass, AID aid, byte[] installParams) {
-        delegate.install(appletClass, aid, installParams);
+        logDelegated(() -> delegate.install(appletClass, aid, installParams));
     }
 
     @Override
     public void select(Class<? extends Applet> appletClass) {
-        delegate.select(appletClass);
+        logDelegated(() -> delegate.select(appletClass));
     }
 
     @Override
     public void select(AID aid) {
-        delegate.select(aid);
+        logDelegated(() -> delegate.select(aid));
     }
 
     @Override
     public void reset() {
-        delegate.reset();
+        logDelegated(delegate::reset);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Deletes through the wrapped session.</p>
+     */
+    @Override
+    public void delete(AID aid) {
+        logDelegated(() -> delegate.delete(aid));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return the history of the wrapped session
+     */
+    @Override
+    public APDUHistory history() {
+        return delegate.history();
     }
 
     @Override
     public APDUResponse send(int cla, int ins) {
-        return send(cla, ins, 0, 0, null, -1);
+        byte[] command = APDUCodec.encode(cla, ins, 0, 0, null, NO_LE);
+        return exchange(command, () -> delegate.send(cla, ins));
     }
 
     @Override
     public APDUResponse send(int cla, int ins, int p1, int p2) {
-        return send(cla, ins, p1, p2, null, -1);
+        byte[] command = APDUCodec.encode(cla, ins, p1, p2, null, NO_LE);
+        return exchange(command, () -> delegate.send(cla, ins, p1, p2));
     }
 
     @Override
     public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data) {
-        return send(cla, ins, p1, p2, data, -1);
+        byte[] command = APDUCodec.encode(cla, ins, p1, p2, data, NO_LE);
+        return exchange(command, () -> delegate.send(cla, ins, p1, p2, data));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The log entry holds the command as encoded by
+     * {@link APDUCodec#encode(int, int, int, int, byte[], int)}, which is what every backend shipped with
+     * JavaCard Express transmits.</p>
+     */
     @Override
     public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data, int le) {
-        byte[] command = buildCommandBytes(cla, ins, p1, p2, data, le);
+        byte[] command = APDUCodec.encode(cla, ins, p1, p2, data, le);
+        return exchange(command, () -> delegate.send(cla, ins, p1, p2, data, le));
+    }
 
+    /**
+     * Forwards each overload to the same overload of the delegate (so a delegate never receives an
+     * {@code le} it did not get from the caller) and records the encoded command.
+     */
+    private APDUResponse exchange(byte[] command, Supplier<APDUResponse> forward) {
         if (printToLog) {
-            LOG.info("[JCX] >> " + Hex.encodeSpaced(command));
+            print(TranscriptFormat.command(command));
         }
-
-        APDUResponse response = delegate.send(cla, ins, p1, p2, data, le);
-
+        long start = delegate.history().position();
+        APDUResponse response = forward.get().inReplyTo(command);
         if (printToLog) {
             logResponse(response);
+            printNotesSince(start);
         }
-
         entries.add(new APDULogEntry(command, response, System.currentTimeMillis()));
         return response;
     }
@@ -225,18 +274,27 @@ public final class LoggingSession implements SmartCardSession {
     @Override
     public byte[] transmit(byte[] rawApdu) {
         if (printToLog) {
-            LOG.info("[JCX] >> " + Hex.encodeSpaced(rawApdu));
+            print(TranscriptFormat.command(rawApdu));
         }
-
+        long start = delegate.history().position();
         byte[] rawResponse = delegate.transmit(rawApdu);
         APDUResponse response = new APDUResponse(rawResponse);
 
         if (printToLog) {
             logResponse(response);
+            printNotesSince(start);
         }
 
         entries.add(new APDULogEntry(rawApdu.clone(), response, System.currentTimeMillis()));
         return rawResponse;
+    }
+
+    /**
+     * Prints the notes the wrapped session recorded during an exchange after its response, such as what an applet
+     * on jCardSim threw ({@code # applet threw ...}) next to the '6F00'.
+     */
+    private void printNotesSince(long start) {
+        delegate.history().notesSince(start).forEach(note -> print(TranscriptFormat.note(note)));
     }
 
     @Override
@@ -246,18 +304,40 @@ public final class LoggingSession implements SmartCardSession {
 
     // ── Internal ──
 
-    private void logResponse(APDUResponse response) {
-        StringBuilder sb = new StringBuilder("[JCX] << ");
-        if (response.data().length > 0) {
-            sb.append(Hex.encodeSpaced(response.data())).append(' ');
-        }
-        sb.append('[').append(String.format("%04X", response.sw())).append("] ");
-        sb.append(response.data().length).append(" bytes");
-        LOG.info(sb.toString());
+    /**
+     * Prints a transcript line through java.util.logging (logger {@code name.velikodniy.jcexpress}, level INFO, prefix
+     * {@code [JCX]}): the channel of {@code logged(true)} and of {@value JavaCardExtension#LOG_PARAMETER}. Unless the
+     * logger has a handler of its own, it gets {@link ConsoleLines} first: one line on standard output per call.
+     *
+     * @param line a line in the transcript format
+     */
+    static void print(String line) {
+        ConsoleLines.installUnlessConfigured(LOG);
+        LOG.info("[JCX] " + line);
     }
 
-    private static byte[] buildCommandBytes(int cla, int ins, int p1, int p2,
-                                             byte[] data, int le) {
-        return APDUCodec.encode(cla, ins, p1, p2, data, le);
+    private void logResponse(APDUResponse response) {
+        print(TranscriptFormat.response(response.toBytes()));
     }
+
+    /**
+     * Runs an operation of the wrapped session that sends commands of its own (SELECT) and logs the exchanges the
+     * wrapped session recorded in its history meanwhile.
+     */
+    private void logDelegated(Runnable operation) {
+        APDUHistory history = delegate.history();
+        long start = history.position();
+        try {
+            operation.run();
+        } finally {
+            for (APDULogEntry entry : history.entriesSince(start)) {
+                if (printToLog) {
+                    print(TranscriptFormat.command(entry.command()));
+                    logResponse(entry.response());
+                }
+                entries.add(entry);
+            }
+        }
+    }
+
 }

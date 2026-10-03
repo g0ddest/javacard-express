@@ -16,7 +16,7 @@ class PinSessionTest {
 
     @BeforeEach
     void setUp() {
-        session = new EmbeddedSession(false);
+        session = new EmbeddedSession();
         session.install(PinApplet.class);
         pin = PinSession.on(session);
     }

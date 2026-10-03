@@ -15,31 +15,60 @@
     <name>JavaCard Express :: Core</name>
     <description>Core testing library for JavaCard applets — sessions, APDU, TLV, assertions, embedded mode</description>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- Aligns junit-platform-* versions (e.g. the test kit) with ${junit.version} -->
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- JavaCard simulator -->
         <dependency>
             <groupId>com.klinec</groupId>
             <artifactId>jcardsim</artifactId>
+            <!-- jCardSim's POM declares ASM 7.2 at compile scope, but no class of the jCardSim jar references ASM
+                 (it is used by jCardSim's own build tooling). Excluded so that consumers do not get a 2019 ASM that
+                 cannot read current class files. -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.ow2.asm</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
-        <!-- JUnit 5 (provided — user already has it) -->
+        <!--
+            JUnit Jupiter API and AssertJ are part of the public API (JavaCardExtension, JCXAssertions) and are
+            compile-scoped so that they reach consumers transitively: a test project that declares only
+            javacard-express-core (scope test) compiles the README example. Maven Surefire adds the matching
+            junit-jupiter-engine automatically when only the API is on the test classpath.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <scope>provided</scope>
         </dependency>
-
-        <!-- AssertJ (provided) -->
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <scope>provided</scope>
         </dependency>
 
         <!-- For testing the library itself -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Runs JavaCardExtension scenarios through the JUnit Platform in tests -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-testkit</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

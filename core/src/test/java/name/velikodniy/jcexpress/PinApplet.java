@@ -1,6 +1,10 @@
 package name.velikodniy.jcexpress;
 
-import javacard.framework.*;
+import javacard.framework.APDU;
+import javacard.framework.Applet;
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
+import javacard.framework.OwnerPIN;
 
 /**
  * Test applet that implements PIN verification, change, and unblock.
