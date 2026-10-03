@@ -3,7 +3,12 @@
 [![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-pace)](https://search.maven.org/artifact/name.velikodniy/javacard-express-pace)
 [![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-pace/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-pace)
 
-PACE (Password Authenticated Connection Establishment) per BSI TR-03110 / ICAO 9303 Part 11. Supports ECDH with Generic Mapping on Brainpool and NIST curves, with AES-CBC-CMAC key agreement. After authentication, the result integrates directly with the [Secure Messaging module](../sm/README.md) for subsequent protected communication. Part of the [JavaCard Express](../README.md) toolkit.
+The inspection-system (terminal) side of the ICAO Doc 9303-11 access control protocols: **PACE** with ECDH Generic
+Mapping and AES (Section 4.4) and **Basic Access Control** (Section 4.3). Both return the session keys for the
+[Secure Messaging module](../sm/README.md), so you can test ePassport and eID applets and cards end to end. Part of
+the [JavaCard Express](../README.md) toolkit.
+
+> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
 
 ## Installation
 
@@ -11,7 +16,7 @@ PACE (Password Authenticated Connection Establishment) per BSI TR-03110 / ICAO 9
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-pace</artifactId>
-    <version>0.1.0</version>
+    <version>0.4.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -20,213 +25,161 @@ Depends on `javacard-express-core` and `javacard-express-sm` (both pulled transi
 
 ## Table of Contents
 
-- [Supported Algorithms](#supported-algorithms)
-- [Supported Curves](#supported-curves)
-- [Quick Start — MRZ Password](#quick-start--mrz-password)
-  - [Complete ePassport Session](#complete-epassport-session)
-- [CAN/PIN Password](#canpin-password)
-- [MRZ Key Derivation](#mrz-key-derivation)
-- [Low-Level EC Operations](#low-level-ec-operations)
-- [Protocol Steps](#protocol-steps)
+- [Scope](#scope)
+- [PACE](#pace)
+  - [Passwords](#passwords)
+  - [Algorithms](#algorithms)
+  - [Domain Parameters](#domain-parameters)
+  - [Reading Data Under Secure Messaging](#reading-data-under-secure-messaging)
+  - [Protocol Steps](#protocol-steps)
+- [Basic Access Control](#basic-access-control)
+- [MRZ Helpers](#mrz-helpers)
+- [Errors and Key Handling](#errors-and-key-handling)
 - [See Also](#see-also)
 
-## Supported Algorithms
+## Scope
 
-| Algorithm | Key Length | OID |
-|-----------|----------|-----|
-| `ECDH_GM_AES_CBC_CMAC_128` | 16 bytes | 0.4.0.127.0.7.2.2.4.2.2 |
-| `ECDH_GM_AES_CBC_CMAC_192` | 24 bytes | 0.4.0.127.0.7.2.2.4.2.3 |
-| `ECDH_GM_AES_CBC_CMAC_256` | 32 bytes | 0.4.0.127.0.7.2.2.4.2.4 |
+| Implemented | Not implemented |
+|-------------|-----------------|
+| PACE with ECDH Generic Mapping, AES-128/192/256 (`id-PACE-ECDH-GM-AES-CBC-CMAC-*`) | PACE with DH, with 3DES, Integrated Mapping, Chip Authentication Mapping |
+| All 11 elliptic curves of Table 12 (NIST and Brainpool), built in — no JCA provider support needed | Explicit domain parameters, the DH groups of Table 12 |
+| MRZ, CAN, PIN and PUK passwords, or a given password key K&pi; | Reading EF.CardAccess / PACEInfo (choose the algorithm and curve yourself) |
+| Validation of the chip's public keys; constant-time token check | Chip Authentication, Terminal Authentication, Active Authentication (EAC) |
+| BAC with 3DES session keys and SSC | |
 
-## Supported Curves
+Tests replay the ICAO worked examples byte for byte — App. G.1 for PACE (brainpoolP256r1) and App. D for BAC and
+3DES Secure Messaging — and run both protocols against independent chip simulators with random keys (PACE on every
+curve of Table 12).
 
-| Parameter ID | Curve | Bit Size |
-|-------------|-------|----------|
-| `BRAINPOOL_P256R1` | brainpoolP256r1 | 256 |
-| `BRAINPOOL_P384R1` | brainpoolP384r1 | 384 |
-| `BRAINPOOL_P512R1` | brainpoolP512r1 | 512 |
-| `NIST_P256` | secp256r1 | 256 |
-| `NIST_P384` | secp384r1 | 384 |
-| `NIST_P521` | secp521r1 | 521 |
-
-## Quick Start — MRZ Password
+## PACE
 
 ```java
 import name.velikodniy.jcexpress.pace.*;
+import name.velikodniy.jcexpress.sm.SMSession;
 
-// Perform PACE with MRZ-derived password
 PaceResult result = PaceSession.builder()
-    .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_128)
-    .parameterId(PaceParameterId.BRAINPOOL_P256R1)
-    .mrzPassword("L898902C<", "690806", "940623")  // docNumber, DOB, DOE
-    .build()
-    .perform(card);
-
-// Use the result for Secure Messaging
-SMSession secure = result.toSMSession(card);
-APDUResponse response = secure.send(0x00, 0xB0, 0x00, 0x00);
-```
-
-### Complete ePassport Session
-
-A full ePassport interaction — PACE authentication followed by reading data groups via Secure Messaging:
-
-```java
-import name.velikodniy.jcexpress.*;
-import name.velikodniy.jcexpress.pace.*;
-import name.velikodniy.jcexpress.sm.*;
-
-import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;
-
-@Test
-void shouldReadPassportDataGroups() {
-    // Step 1: Perform PACE with MRZ data
-    PaceResult result = PaceSession.builder()
         .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_128)
         .parameterId(PaceParameterId.BRAINPOOL_P256R1)
-        .mrzPassword("L898902C<", "690806", "940623")
+        .mrzPassword("T22000129", "640812", "101031")   // document number, date of birth, date of expiry
         .build()
         .perform(card);
 
-    // Step 2: Create SM session with derived keys
-    SMSession passport = result.toSMSession(card);
-
-    // Step 3: Select the ePassport application (eMRTD)
-    passport.send(0x00, 0xA4, 0x04, 0x00,
-        Hex.decode("A0000002471001"));
-
-    // Step 4: Read EF.COM (SFI 0x1E) — lists available data groups
-    APDUResponse efCom = passport.send(
-        0x00, 0xB0, 0x80 | 0x1E, 0x00, null, 256);
-    assertThat(efCom).isSuccess();
-
-    // Step 5: Read DG1 (SFI 0x01) — MRZ data
-    APDUResponse dg1 = passport.send(
-        0x00, 0xB0, 0x80 | 0x01, 0x00, null, 256);
-    assertThat(dg1).isSuccess();
-
-    // Step 6: Read DG2 (SFI 0x02) — facial image
-    APDUResponse dg2 = passport.send(
-        0x00, 0xB0, 0x80 | 0x02, 0x00, null, 256);
-    assertThat(dg2).isSuccess();
-}
+SMSession secure = result.toSMSession(card);              // AES Secure Messaging, SSC = 0
+secure.send(0x00, 0xA4, 0x04, 0x0C, Hex.decode("A0000002471001"));   // SELECT the eMRTD application
 ```
 
-## CAN/PIN Password
+### Passwords
 
-For eID cards that use CAN (Card Access Number) or PIN instead of MRZ:
+| Builder method | Password reference (tag `0x83`) | `f(π)` |
+|----------------|--------------------------------|--------|
+| `mrzPassword(documentNumber, dateOfBirth, dateOfExpiry)` | `MRZ` (`01`) | SHA-1 of the MRZ_information |
+| `canPassword("123456")` | `CAN` (`02`) | ISO/IEC 8859-1 string |
+| `pinPassword(pin)` | `PIN` (`03`) | ISO/IEC 8859-1 string (BSI TR-03110) |
+| `pukPassword(puk)` | `PUK` (`04`) | ISO/IEC 8859-1 string (BSI TR-03110) |
+| `password(PasswordRef ref, byte[] kPi)` | `ref` | — the password key K&pi; itself, used as given |
+
+The builder derives the password key `K_π = KDF(f(π), 3)` (ICAO 9303-11, 9.7.3) with the key length of the
+algorithm. MRZ document numbers shorter than nine characters are padded with `<` as printed in the MRZ (`L898902C`
+and `L898902C<` are the same); longer ones are used completely.
+
+### Algorithms
+
+| `PaceAlgorithm` | Session keys | OID |
+|-----------------|--------------|-----|
+| `ECDH_GM_AES_CBC_CMAC_128` | AES-128 | 0.4.0.127.0.7.2.2.4.2.2 |
+| `ECDH_GM_AES_CBC_CMAC_192` | AES-192 | 0.4.0.127.0.7.2.2.4.2.3 |
+| `ECDH_GM_AES_CBC_CMAC_256` | AES-256 | 0.4.0.127.0.7.2.2.4.2.4 |
+
+### Domain Parameters
+
+The standardized elliptic curves of ICAO 9303-11 Table 12. The ID is the `parameterId` of the chip's PACEInfo and is
+sent in tag `0x84` of MSE:Set AT (`PaceParameterId.fromId(13)` finds `BRAINPOOL_P256R1`).
+
+| ID | `PaceParameterId` | ID | `PaceParameterId` |
+|----|-------------------|----|-------------------|
+| 8 | `NIST_P192` | 14 | `BRAINPOOL_P320R1` |
+| 9 | `BRAINPOOL_P192R1` | 15 | `NIST_P384` |
+| 10 | `NIST_P224` | 16 | `BRAINPOOL_P384R1` |
+| 11 | `BRAINPOOL_P224R1` | 17 | `BRAINPOOL_P512R1` |
+| 12 | `NIST_P256` | 18 | `NIST_P521` |
+| 13 | `BRAINPOOL_P256R1` | | |
+
+Tag `0x84` is CONDITIONAL (required only when the chip offers several parameter sets); `includeParameterId(false)`
+sends the minimal MSE:Set AT of ICAO App. G.1.
+
+### Reading Data Under Secure Messaging
+
+A protected short response has room for at most 223 bytes of plain data under AES (231 under 3DES), so read files
+in chunks:
 
 ```java
-// Derive password key externally and provide directly
-byte[] canKey = deriveCanKey("123456");
-
-PaceResult result = PaceSession.builder()
-    .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_128)
-    .parameterId(PaceParameterId.NIST_P256)
-    .password(PasswordRef.CAN, canKey)
-    .build()
-    .perform(card);
+APDUResponse head = secure.send(0x00, 0xB0, 0x80 | 0x1E, 0x00, null, 4);      // EF.COM (SFI 1E): tag and length
+APDUResponse chunk = secure.send(0x00, 0xB0, 0x00, 0x04, null, 223);          // next bytes, up to 223
 ```
 
-Available password references:
+Asking for more than 256 bytes makes the protected command extended-length, if the card supports it.
 
-| Reference | Usage |
-|-----------|-------|
-| `PasswordRef.MRZ` | Machine Readable Zone (ePassports) |
-| `PasswordRef.CAN` | Card Access Number (eID cards) |
-| `PasswordRef.PIN` | Personal Identification Number |
-| `PasswordRef.PUK` | PIN Unblocking Key |
+### Protocol Steps
 
-## MRZ Key Derivation
+| Step | Command | What happens (ICAO 9303-11) |
+|------|---------|-----------------------------|
+| 0 | MSE:Set AT `00 22 C1 A4` | select protocol (`80`), password (`83`) and domain parameters (`84`), 4.4.4.1 |
+| 1 | GENERAL AUTHENTICATE `10 86 00 00` | encrypted nonce z; `s = D(K_π, z)`, 4.4.3.3 |
+| 2 | GENERAL AUTHENTICATE `10 86 00 00` | mapping keys; `G^ = s·G + H` with `H = SK_Map,IFD · PK_Map,IC`, 4.4.3.3.1 |
+| 3 | GENERAL AUTHENTICATE `10 86 00 00` | ephemeral keys on `G^`; `KSEnc = KDF(K,1)`, `KSMAC = KDF(K,2)`, 4.4.1, 9.7.4 |
+| 4 | GENERAL AUTHENTICATE `00 86 00 00` | authentication tokens, 4.4.3.4 |
 
-The `PaceMrz` utility handles ICAO 9303 MRZ key derivation:
+Every GENERAL AUTHENTICATE asks for `Le = '00'`. The exchange of ICAO App. G.1 (brainpoolP256r1, MRZ password):
+
+```
+>> 00 22 C1 A4 12 80 0A 04007F00070202040202 83 01 01 84 01 0D  << 90 00   (default)
+>> 00 22 C1 A4 0F 80 0A 04007F00070202040202 83 01 01           << 90 00   (includeParameterId(false), App. G.1)
+>> 10 86 00 00 02 7C 00 00                                     << 7C 12 80 10 <z> 90 00
+>> 10 86 00 00 45 7C 43 81 41 <PK_Map,IFD> 00                  << 7C 43 82 41 <PK_Map,IC> 90 00
+>> 10 86 00 00 45 7C 43 83 41 <PK_DH,IFD> 00                   << 7C 43 84 41 <PK_DH,IC> 90 00
+>> 00 86 00 00 0C 7C 0A 85 08 <T_IFD> 00                       << 7C 0A 86 08 <T_IC> 90 00
+```
+
+## Basic Access Control
 
 ```java
-// Compute K_seed from MRZ fields
-byte[] kSeed = PaceMrz.computeKSeed("L898902C<", "690806", "940623");
+BacResult bac = BacSession.builder()
+        .mrz("L898902C", "690806", "940623")      // document number, date of birth, date of expiry
+        .build()
+        .perform(card);                           // GET CHALLENGE + EXTERNAL AUTHENTICATE (4.3.4)
 
-// Derive session keys
-SMKeys keys = PaceMrz.deriveKeys(kSeed, 16);  // 16 bytes for AES-128
-
-// Check digit computation (ICAO 9303 Part 3)
-int cd = PaceMrz.checkDigit("L898902C<");  // -> 3
+SMSession passport = bac.toSMSession(card);       // 3DES Secure Messaging, SSC from the nonces
+passport.send(0x00, 0xA4, 0x02, 0x0C, Hex.decode("011E"));    // SELECT EF.COM
 ```
 
-### MRZ Check Digit Validation
+`BacSession.documentBasicAccessKeys(...)` returns the Document Basic Access Keys KEnc and KMAC (App. D.2), and
+`accessKeys(SMKeys)` uses given keys instead of the MRZ. The terminal checks the chip's checksum, RND.IFD and RND.IC
+before it derives `KSEnc`/`KSMAC = KDF(K.IFD ⊕ K.IC, 1/2)` and `SSC = RND.IC[4..7] ‖ RND.IFD[4..7]`.
+
+## MRZ Helpers
 
 ```java
-// ICAO 9303 check digit computation uses weighted sum (7-3-1 cycle)
-assertThat(PaceMrz.checkDigit("L898902C<")).isEqualTo(3);
-assertThat(PaceMrz.checkDigit("690806")).isEqualTo(7);
-assertThat(PaceMrz.checkDigit("940623")).isEqualTo(6);
-
-// Full MRZ info string: docNumber + checkDigit + DOB + checkDigit + DOE + checkDigit
-String mrzInfo = "L898902C<3" + "6908067" + "9406236";
+PaceMrz.mrzInformation("L898902C", "690806", "940623");   // "L898902C<369080619406236" (App. D.2)
+PaceMrz.checkDigit("690806");                             // 1
+PaceMrz.encodeMrzPassword("T22000129", "640812", "101031"); // K = f(π) = 7E2D2A41...E9032AAD (App. G)
+PaceMrz.bacKeySeed("L898902C", "690806", "940623");       // Kseed = 239AB9CB282DAF66231DC5A4DF6BFBAE (App. D.2)
+PaceMrz.kdf(k, 3, 16);                                    // KDF(K, c) of 9.7.1, here K_π
 ```
 
-## Low-Level EC Operations
+Document numbers may contain `0-9` and `A-Z` (with trailing `<`); dates are `YYMMDD`, with `<` for unknown parts.
+Invalid fields are rejected with an `IllegalArgumentException` that does not repeat the value.
 
-The `PaceCrypto` utility provides elliptic curve operations:
+## Errors and Key Handling
 
-```java
-// EC point arithmetic (BigInteger-based)
-ECPoint sum = PaceCrypto.pointAdd(p, q, curve);
-ECPoint product = PaceCrypto.scalarMultiply(k, p, curve);
-
-// Generic Mapping: G' = s * G + H
-ECPoint mappedG = PaceCrypto.genericMapping(nonce, generator, sharedPoint, curve);
-
-// ECDH shared secret
-byte[] secret = PaceCrypto.ecdh(privateKey, remotePublicPoint, params);
-
-// Authentication token (AES-CMAC, truncated to 8 bytes)
-byte[] token = PaceCrypto.authToken(macKey, oidBytes, publicKeyEncoded);
-```
-
-## Protocol Steps
-
-The PACE protocol executes five APDU commands:
-
-| Step | Command | What Happens |
-|------|---------|-------------|
-| 0 | MSE:Set AT | Select algorithm, curve, and password reference |
-| 1 | GENERAL AUTHENTICATE | Get encrypted nonce from card, decrypt with K_&pi; |
-| 2 | GENERAL AUTHENTICATE | Generic Mapping: ECDH + nonce &rarr; new generator G' |
-| 3 | GENERAL AUTHENTICATE | Key agreement on G' &rarr; KDF &rarr; session keys |
-| 4 | GENERAL AUTHENTICATE | Mutual authentication via AES-CMAC tokens |
-
-After step 4, `PaceResult.toSMSession()` creates an `SMSession` for ISO 7816-4 Secure Messaging with AES.
-
-### Step-by-Step Breakdown
-
-```
-Step 0: MSE:Set AT
-  >> 00 22 C1 A4 0F 80 0A <OID> 83 01 <PasswordRef>
-  << 90 00
-
-Step 1: Get Encrypted Nonce
-  >> 10 86 00 00 02 7C 00 00
-  << 7C XX 80 XX <encrypted nonce> 90 00
-  -> Decrypt nonce with K_pi (password-derived key)
-
-Step 2: Generic Mapping
-  >> 10 86 00 00 XX 7C XX 81 XX <terminal ephemeral public key>
-  << 7C XX 82 XX <card ephemeral public key> 90 00
-  -> ECDH shared secret H, map generator: G' = s*G + H
-
-Step 3: Key Agreement
-  >> 10 86 00 00 XX 7C XX 83 XX <terminal public key on G'>
-  << 7C XX 84 XX <card public key on G'> 90 00
-  -> ECDH on G', derive K_enc and K_mac via KDF
-
-Step 4: Mutual Authentication
-  >> 00 86 00 00 XX 7C XX 85 XX <terminal auth token>
-  << 7C XX 86 XX <card auth token> 90 00
-  -> Verify card's token, establish SM session
-```
+- `PaceException` / `BacException`: a command failed (the message names the step and the status word, e.g. `6300`
+  for a wrong password), or the chip's response failed a check (malformed data, a public key not on the curve, a wrong
+  authentication token or checksum).
+- `toString()` of `PaceResult`, `BacResult` and `SMKeys` does not show the keys.
+- `PaceSession` and `BacSession` keep their password key or access keys so that they can be performed again (e.g.
+  after a reset); call `destroy()` to wipe them.
 
 ## See Also
 
-- [Secure Messaging module](../sm/README.md) — SM session used after PACE authentication
+- [Secure Messaging module](../sm/README.md) — the SM session used after PACE or BAC
 - [Core module](../core/README.md) — SmartCardSession, TLV, assertions
 - [Project root](../README.md) — overview, modules, configuration

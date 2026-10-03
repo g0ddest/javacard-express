@@ -3,9 +3,15 @@
 [![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-sm)](https://search.maven.org/artifact/name.velikodniy/javacard-express-sm)
 [![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-sm/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-sm)
 
-ISO 7816-4 Secure Messaging with DES3 (ePassport BAC) and AES (PACE/EAC) algorithm suites. Wraps and unwraps APDUs with DO87/DO97/DO8E/DO99 data objects, handles Send Sequence Counter (SSC) incrementing automatically. Part of the [JavaCard Express](../README.md) toolkit.
+ISO/IEC 7816-4 Secure Messaging as profiled by ICAO Doc 9303-11, Section 9.8 — the secure channel of ePassports and
+eID cards after Basic Access Control (3DES) or PACE (AES). Commands are wrapped with DO'87'/DO'85', DO'97' and
+DO'8E'; responses are MAC-verified and decrypted, and the Send Sequence Counter (SSC) is kept in step automatically.
+Part of the [JavaCard Express](../README.md) toolkit.
 
-> **Note:** ISO 7816-4 Secure Messaging is a different protocol from GlobalPlatform SCP. SM is used by ePassports (ICAO 9303, BAC/PACE), national ID cards, and other non-GP applications. For GP secure channels, see the [GlobalPlatform module](../gp/README.md).
+> **Note:** ISO 7816-4 Secure Messaging is a different protocol from GlobalPlatform SCP. For GP secure channels, see
+> the [GlobalPlatform module](../gp/README.md). BAC and PACE themselves live in the [PACE module](../pace/README.md).
+
+> Version 0.3.0 on Maven Central behaves differently in several places; see the [changelog](../CHANGELOG.md).
 
 ## Installation
 
@@ -13,7 +19,7 @@ ISO 7816-4 Secure Messaging with DES3 (ePassport BAC) and AES (PACE/EAC) algorit
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-sm</artifactId>
-    <version>0.1.0</version>
+    <version>0.4.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -22,186 +28,139 @@ Depends on `javacard-express-core` (pulled transitively).
 
 ## Table of Contents
 
+- [Scope](#scope)
 - [Algorithm Suites](#algorithm-suites)
 - [Basic Usage](#basic-usage)
+- [Session Lifecycle and Errors](#session-lifecycle-and-errors)
 - [Low-Level Codec](#low-level-codec)
 - [SM Data Objects](#sm-data-objects)
-- [ePassport BAC Example](#epassport-bac-example)
-- [Integration with PACE](#integration-with-pace)
+- [After BAC or PACE](#after-bac-or-pace)
 - [See Also](#see-also)
+
+## Scope
+
+Implemented (ICAO Doc 9303-11, 9.8, on top of ISO/IEC 7816-4):
+
+- SM class byte with the logical channel and chaining bits kept (ISO/IEC 7816-4 5.4.1); the header is always MACed
+- DO'87' for even INS, DO'85' for odd INS (9.8.4), DO'97' with one or two bytes, DO'8E' with an 8-byte MAC
+- protected responses with any status word (e.g. `6282` at end of file), DO'99' required
+- short and extended APDUs, chosen per command (extended when the protected body exceeds 255 bytes or Ne exceeds 256)
+- 3DES with zero IV (9.8.6) and AES with `IV = E(KSEnc, SSC)` (9.8.7)
+
+Not implemented: other ISO/IEC 7816-4 SM formats (e.g. responses without DO'99', control reference templates) and
+GlobalPlatform SCP. When new session keys are agreed under Secure Messaging (e.g. Chip Authentication, 9.8.2), wrap
+the plain session again with a new `SMContext`.
+
+Every rule above is checked against the ICAO worked example (App. D.4) and against vectors from an independent
+reference of ICAO 9303-11 (`src/test/python/icao_ref.py`).
 
 ## Algorithm Suites
 
-Two algorithm suites are supported:
-
-| Suite | Encryption | MAC | Block Size | Use Case |
-|-------|-----------|-----|-----------|----------|
-| `SMAlgorithm.DES3` | 3DES-CBC | Retail MAC (ISO 9797-1 Alg 3) | 8 bytes | ePassport BAC |
-| `SMAlgorithm.AES` | AES-CBC | AES-CMAC (truncated to 8 bytes) | 16 bytes | PACE / EAC |
+| Suite | Encryption | MAC | Block / SSC size | Initial SSC | Established by |
+|-------|------------|-----|------------------|-------------|----------------|
+| `SMAlgorithm.DES3` | two-key 3DES-CBC, zero IV | ISO/IEC 9797-1 MAC algorithm 3 (retail MAC) | 8 bytes | `RND.IC[4..7] ‖ RND.IFD[4..7]` | BAC |
+| `SMAlgorithm.AES` | AES-CBC, `IV = E(KSEnc, SSC)` | AES-CMAC, 8 bytes | 16 bytes | zero | PACE |
 
 ## Basic Usage
 
-Wrap an existing `SmartCardSession` with Secure Messaging — all `send()` calls are automatically protected:
+Wrap a `SmartCardSession`; every `send()`/`transmit()` is then protected:
 
 ```java
 import name.velikodniy.jcexpress.sm.*;
 
-// Set up SM context with keys and initial SSC
-SMKeys keys = new SMKeys(encKey, macKey);
-SMContext ctx = new SMContext(SMAlgorithm.DES3, keys, initialSsc);
-
-// Wrap a session — all send() calls are now SM-protected
+SMContext ctx = new SMContext(SMAlgorithm.DES3, new SMKeys(ksEnc, ksMac), ssc);
 SMSession secure = SMSession.wrap(card, ctx);
 
-// All commands are automatically wrapped with DO87/DO97/DO8E
-// All responses are automatically unwrapped: MAC verified, data decrypted
-APDUResponse response = secure.send(0x00, 0xB0, 0x00, 0x00);
+secure.send(0x00, 0xA4, 0x02, 0x0C, Hex.decode("011E"));             // SELECT EF.COM
+APDUResponse head = secure.send(0x00, 0xB0, 0x00, 0x00, null, 4);    // READ BINARY, Ne = 4
 ```
 
-The SSC is incremented automatically on each command and response. You never need to manage it manually.
+`le` is the expected response length Ne of the plain command: `-1` for none, `256` for Le `'00'`. A protected
+response must also fit DO'87', DO'99' and DO'8E', so with short APDUs read at most **223 bytes** (AES) or **231
+bytes** (3DES) per command; ask for more than 256 bytes to get an extended protected command instead.
+
+## Session Lifecycle and Errors
+
+The chip ends Secure Messaging when it detects an SM error or receives a plain APDU, and deletes its session keys
+(ICAO 9303-11, 9.8.3 and 9.8.5). `SMSession` mirrors this:
+
+| Event | Result |
+|-------|--------|
+| Protected response with a non-9000 status (e.g. `6282`, `6A82`) | MAC verified, data decrypted, status from DO'99' returned |
+| Response MAC wrong or response malformed | `SMException`; the SSC stays counted, in step with the chip |
+| Bare status word (an SM error reported without SM) | context terminated; the status word is returned once |
+| Bare `9000` | context terminated and `SMException` (never accepted as authenticated) |
+| `select()`, `install()`, `reset()`, `close()` on the `SMSession` | delegated in plain, then the context is terminated |
+
+After termination every `send()` fails with an `SMException` that names the cause; start a new session (BAC, PACE)
+and a new context. To select a file or application while staying protected, send SELECT through `send()`.
 
 ## Low-Level Codec
 
-For fine-grained control, use `SMCodec` directly:
+`SMCodec` wraps and unwraps single APDUs. The values below are the 3DES example of ICAO Doc 9303-11 App. D.4
+(session keys and SSC from App. D.3):
 
 ```java
-// Wrap a single command
-byte[] plainApdu = Hex.decode("00A4040007A0000002471001");
-byte[] wrappedApdu = SMCodec.wrapCommand(ctx, plainApdu);
-// -> 0C A4 04 00 Lc DO87 DO8E 00
+SMContext ctx = new SMContext(SMAlgorithm.DES3,
+        new SMKeys(Hex.decode("979EC13B1CBFE9DCD01AB0FED307EAE5"),    // KSEnc
+                   Hex.decode("F1CB1F1FB5ADF208806B89DC579DC1F8")),   // KSMAC
+        Hex.decode("887022120C06C226"));                              // SSC
 
-// Unwrap a single response
-APDUResponse unwrapped = SMCodec.unwrapResponse(ctx, rawResponseBytes);
-// MAC verified, data decrypted, SW extracted from DO99
-```
+byte[] wrapped = SMCodec.wrapCommand(ctx, Hex.decode("00A4020C02011E"));   // SELECT EF.COM
+// 0CA4020C 15 8709016375432908C044F6 8E08BF8B92D635FF24F8 00
 
-### Wrap/Unwrap Cycle
-
-Manual wrap and unwrap with hex output at each step:
-
-```java
-// Set up context
-byte[] encKey = Hex.decode("979EC13B1CBFE9DCD01AB0FED307EAE5");
-byte[] macKey = Hex.decode("F1CB1F1FB5ADF208806B89DC579DC1F8");
-byte[] ssc    = Hex.decode("887022120C06C226");
-
-SMContext ctx = new SMContext(SMAlgorithm.DES3, new SMKeys(encKey, macKey), ssc);
-
-// Wrap a READ BINARY command: 00 B0 00 00 (Le=04)
-byte[] plain = Hex.decode("00B0000004");
-byte[] wrapped = SMCodec.wrapCommand(ctx, plain);
-// Result: 0C B0 00 00 0D 97 01 04 8E 08 <mac bytes> 00
-//  - CLA changed:  0x00 -> 0x0C (SM indicator)
-//  - DO97:         Le byte (04) wrapped in tag 97
-//  - DO8E:         8-byte MAC over SSC + padded header + DO97
-//  - Le:           0x00 appended
-
-// Send the wrapped command, get raw response bytes
-byte[] rawResponse = card.transmit(wrapped);
-
-// Unwrap the response — verifies MAC, decrypts data, extracts SW
-APDUResponse response = SMCodec.unwrapResponse(ctx, rawResponse);
+APDUResponse response = SMCodec.unwrapResponse(ctx, Hex.decode("990290008E08FA855A5D4C50A8ED9000"));
+// response.sw() == 0x9000, ctx.ssc() == 887022120C06C228
 ```
 
 ## SM Data Objects
 
-The wrapped APDU contains these ISO 7816-4 data objects:
+| Tag | In | Content |
+|-----|----|---------|
+| `0x87` | command (even INS), response | `01` (padding-content indicator) ‖ encrypted padded data |
+| `0x85` | command (odd INS), response | encrypted padded data (the plain data field is BER-TLV) |
+| `0x97` | command | Ne: one byte for 1–256 (`00` = 256), two bytes for 257–65536 |
+| `0x99` | response | status word SW1-SW2, covered by the MAC |
+| `0x8E` | both | 8-byte MAC over SSC ‖ (padded header) ‖ the data objects, padded |
 
-| Tag | Name | Description |
-|-----|------|-------------|
-| `0x87` | DO87 | Encrypted data: `0x01` (padding indicator) + encrypted(padded(data)) |
-| `0x97` | DO97 | Le byte from the original command |
-| `0x8E` | DO8E | 8-byte MAC over SSC + padded header + DOs |
-| `0x99` | DO99 | Status word (SW1 SW2) from the card response |
-
-The CLA byte is modified to indicate SM: `CLA' = (CLA & 0xF0) | 0x0C`.
+The class byte gets the SM indication of ISO/IEC 7816-4 5.4.1 without losing the channel and chaining bits:
+`00 → 0C`, `01 → 0D`, `10 → 1C` (first interindustry), `40 → 60`, `4F → 6F` (further interindustry). The reserved
+classes `20`–`3F` and `FF` are rejected.
 
 ### Anatomy of a Wrapped Command
 
 ```
-Original:  00 B0 00 04 00              (READ BINARY, offset=4, Le=0)
-Wrapped:   0C B0 00 04 0D 97 01 00 8E 08 [MAC] 00
-           ── ── ── ── ── ── ── ── ── ── ────── ──
-           │  │  │  │  │  │  │  │  │  │  │      └─ Le (always 0x00)
-           │  │  │  │  │  │  │  │  │  │  └──────── 8-byte MAC
-           │  │  │  │  │  │  │  │  │  └─────────── DO8E tag
-           │  │  │  │  │  │  │  │  └────────────── 8 (MAC length)
-           │  │  │  │  │  │  │  └───────────────── Le value (0x00 = 256)
-           │  │  │  │  │  │  └──────────────────── 1 (Le length)
-           │  │  │  │  │  └─────────────────────── DO97 tag
-           │  │  │  │  └────────────────────────── Lc (total DO length)
-           │  │  │  └───────────────────────────── P2
-           │  │  └──────────────────────────────── P1
-           │  └─────────────────────────────────── INS (preserved)
-           └────────────────────────────────────── CLA' = (0x00 & 0xF0) | 0x0C
+Plain:    00 B0 00 00 04                      READ BINARY, Ne = 4
+Wrapped:  0C B0 00 00 0D 97 01 04 8E 08 <MAC> 00
+          │           │  └──┬───┘ └────┬────┘ └─ Le' = '00'
+          │           │     │          └──────── DO'8E': MAC over SSC ‖ pad(0C B0 00 00) ‖ DO'97'
+          │           │     └─────────────────── DO'97': Ne of the plain command
+          │           └───────────────────────── Lc' = length of the data objects
+          └───────────────────────────────────── CLA' = 0C (SM, header authenticated)
 ```
 
-## ePassport BAC Example
+## After BAC or PACE
 
-After performing Basic Access Control (BAC) key agreement, you have session keys and an initial SSC:
-
-```java
-// BAC session keys derived from MRZ data
-byte[] ksEnc = deriveKsEnc(kSeed);  // 16-byte 3DES encryption key
-byte[] ksMac = deriveKsMac(kSeed);  // 16-byte 3DES MAC key
-byte[] ssc = computeInitialSSC(rndIcc, rndIfd);  // 8-byte SSC
-
-SMSession passport = SMSession.wrap(card,
-    new SMContext(SMAlgorithm.DES3, new SMKeys(ksEnc, ksMac), ssc));
-
-// Read EF.COM
-passport.send(0x00, 0xB0, 0x00, 0x00, null, 256);
-```
-
-### Complete BAC Flow
+`BacResult` and `PaceResult` from the [PACE module](../pace/README.md) create the matching session:
 
 ```java
-// 1. Derive K_seed from MRZ fields (document number, date of birth, date of expiry)
-byte[] kSeed = PaceMrz.computeKSeed("L898902C<", "690806", "940623");
+SMSession passport = BacSession.builder()
+        .mrz("L898902C", "690806", "940623")      // document number, date of birth, date of expiry
+        .build()
+        .perform(card)
+        .toSMSession(card);                       // 3DES, SSC from the BAC nonces
 
-// 2. Derive BAC session keys
-SMKeys bacKeys = PaceMrz.deriveKeys(kSeed, 16);  // 16-byte 3DES keys
-
-// 3. Compute initial SSC from mutual authentication nonces
-//    SSC = last 4 bytes of RND.ICC || last 4 bytes of RND.IFD
-byte[] ssc = computeInitialSSC(rndIcc, rndIfd);
-
-// 4. Create SM session with DES3 algorithm
-SMSession passport = SMSession.wrap(card,
-    new SMContext(SMAlgorithm.DES3, bacKeys, ssc));
-
-// 5. Read EF.COM (master file listing available data groups)
-APDUResponse efCom = passport.send(0x00, 0xB0, 0x80 | 0x1E, 0x00, null, 256);
-
-// 6. Read DG1 (MRZ data group)
-APDUResponse dg1 = passport.send(0x00, 0xB0, 0x80 | 0x01, 0x00, null, 256);
-```
-
-## Integration with PACE
-
-After PACE authentication (see the [PACE module](../pace/README.md)), `PaceResult.toSMSession()` creates an `SMSession` with AES keys:
-
-```java
-import name.velikodniy.jcexpress.pace.*;
-
-// Perform PACE (see pace/README.md for full details)
-PaceResult result = PaceSession.builder()
-    .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_128)
-    .parameterId(PaceParameterId.BRAINPOOL_P256R1)
-    .mrzPassword("L898902C<", "690806", "940623")
-    .build()
-    .perform(card);
-
-// Convert to SM session — keys and SSC are set up automatically
-SMSession secure = result.toSMSession(card);
-
-// All commands now use AES Secure Messaging
-APDUResponse r = secure.send(0x00, 0xB0, 0x00, 0x00, null, 256);
-assertThat(r).isSuccess();
+SMSession eid = PaceSession.builder()
+        .algorithm(PaceAlgorithm.ECDH_GM_AES_CBC_CMAC_128)
+        .parameterId(PaceParameterId.BRAINPOOL_P256R1)
+        .canPassword("123456")
+        .build()
+        .perform(card)
+        .toSMSession(card);                       // AES, SSC = 0
 ```
 
 ## See Also
 
-- [PACE module](../pace/README.md) — PACE authentication that produces SM session keys
-- [Core module](../core/README.md) — SmartCardSession, APDU builder, assertions
+- [PACE module](../pace/README.md) — BAC and PACE, which establish the session keys
+- [Core module](../core/README.md) — SmartCardSession, APDU encoding, assertions
 - [Project root](../README.md) — overview, modules, configuration

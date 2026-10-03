@@ -2,6 +2,7 @@ package name.velikodniy.jcexpress.sm;
 
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
+import name.velikodniy.jcexpress.crypto.CryptoUtil;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -225,13 +226,14 @@ class SMCodecTest {
         }
 
         @Test
-        void nonSuccessOuterSwShouldPassThrough() {
+        void bareStatusWordIsReturnedAndEndsTheSession() {
+            // ICAO 9303-11 9.8.5: only SM errors come back without SM, and they abort the session (9.8.3)
             SMContext ctx = des3Context();
-            // Card error: 6A82 (file not found)
-            byte[] response = {(byte) 0x6A, (byte) 0x82};
+            byte[] response = {(byte) 0x69, (byte) 0x88};
             APDUResponse result = SMCodec.unwrapResponse(ctx, response);
-            assertThat(result.sw()).isEqualTo(0x6A82);
+            assertThat(result.sw()).isEqualTo(0x6988);
             assertThat(result.data()).isEmpty();
+            assertThat(ctx.isTerminated()).isTrue();
         }
     }
 
@@ -284,7 +286,7 @@ class SMCodecTest {
         @Test
         void buildDO87ShouldEncryptAndPad() {
             byte[] data = Hex.decode("01020304");
-            byte[] do87 = SMCodec.buildDO87(SMAlgorithm.DES3, DES3_ENC_KEY, data);
+            byte[] do87 = SMCodec.buildDO87(SMAlgorithm.DES3, DES3_ENC_KEY, data, new byte[8]);
 
             // Should start with tag 0x87
             assertThat(do87[0]).isEqualTo((byte) 0x87);
@@ -387,17 +389,17 @@ class SMCodecTest {
         }
 
         @Test
-        void aesWrapUnwrapRoundTripShouldWork() {
-            // Use two identical contexts
-            SMContext wrapCtx = aesContext();
+        void aesResponseIsDecryptedWithIvEncryptedSsc() {
+            // ICAO 9303-11 9.8.7.1: IV = E(KSEnc, SSC), SSC being the (incremented) response counter.
+            // Known-answer vectors for this rule: AesSecureMessagingVectorTest.
             SMContext verifyCtx = aesContext();
 
             byte[] plainData = Hex.decode("DEADBEEF");
 
-            // Build a valid SM response manually using the verify context
+            verifyCtx.incrementSsc();
+            byte[] iv = CryptoUtil.aesEcbEncrypt(verifyCtx.encKey(), verifyCtx.ssc());
             byte[] padded = SMAlgorithm.AES.pad(plainData);
-            byte[] encrypted = SMAlgorithm.AES.encrypt(
-                    verifyCtx.encKey(), padded, new byte[16]);
+            byte[] encrypted = SMAlgorithm.AES.encrypt(verifyCtx.encKey(), padded, iv);
 
             // DO87
             byte[] do87value = new byte[1 + encrypted.length];
@@ -412,8 +414,7 @@ class SMCodecTest {
             // DO99
             byte[] do99 = {(byte) 0x99, 0x02, (byte) 0x90, 0x00};
 
-            // Compute MAC
-            verifyCtx.incrementSsc();
+            // Compute MAC over SSC || DO87 || DO99 (same SSC as the IV)
             ByteArrayOutputStream macInput = new ByteArrayOutputStream();
             macInput.write(verifyCtx.ssc(), 0, verifyCtx.ssc().length);
             macInput.write(do87tlv.toByteArray(), 0, do87tlv.size());

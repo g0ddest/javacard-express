@@ -13,7 +13,7 @@
     <artifactId>javacard-express-pace</artifactId>
 
     <name>JavaCard Express :: PACE</name>
-    <description>PACE (Password Authenticated Connection Establishment) for ePassport and eID cards</description>
+    <description>PACE and Basic Access Control (ICAO Doc 9303-11) for ePassport and eID cards</description>
 
     <dependencies>
         <dependency>
@@ -26,6 +26,13 @@
         </dependency>
 
         <!-- For testing -->
+        <!-- Core test fakes (ContractCardTerminal: javax.smartcardio reader double, no real reader) -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-core</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

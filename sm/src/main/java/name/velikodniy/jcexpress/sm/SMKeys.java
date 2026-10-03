@@ -1,17 +1,16 @@
 package name.velikodniy.jcexpress.sm;
 
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.Objects;
 
 /**
  * Holds the encryption and MAC keys for ISO 7816-4 Secure Messaging.
  *
  * <p>Defensive copies are made on construction and on access to prevent
- * key material from leaking through shared array references.</p>
+ * key material from leaking through shared array references, and {@link #toString()} does not reveal the keys.</p>
  *
- * @param encKey the encryption key (16 bytes for DES3, 16 or 32 bytes for AES)
- * @param macKey the MAC key (16 bytes for DES3, 16 or 32 bytes for AES)
+ * @param encKey the encryption key (16 or 24 bytes for DES3; 16, 24 or 32 bytes for AES)
+ * @param macKey the MAC key (16 or 24 bytes for DES3; 16, 24 or 32 bytes for AES)
  */
 public record SMKeys(byte[] encKey, byte[] macKey) {
 
@@ -55,10 +54,24 @@ public record SMKeys(byte[] encKey, byte[] macKey) {
         return 31 * Arrays.hashCode(encKey) + Arrays.hashCode(macKey);
     }
 
+    /**
+     * Describes the keys without revealing them: only their lengths are shown, so that keys do not end up in logs
+     * or assertion messages.
+     *
+     * @return e.g. {@code SMKeys[encKey=<16 bytes, redacted>, macKey=<16 bytes, redacted>]}
+     */
     @Override
     public String toString() {
-        HexFormat hex = HexFormat.of();
-        return "SMKeys[encKey=" + hex.formatHex(encKey)
-                + ", macKey=" + hex.formatHex(macKey) + "]";
+        return "SMKeys[encKey=" + redacted(encKey) + ", macKey=" + redacted(macKey) + "]";
+    }
+
+    /**
+     * Describes a secret by its length only.
+     *
+     * @param secret the secret
+     * @return e.g. {@code <16 bytes, redacted>}
+     */
+    private static String redacted(byte[] secret) {
+        return "<" + secret.length + " bytes, redacted>";
     }
 }
