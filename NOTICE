@@ -15,6 +15,8 @@ stubs and the protocol modules are derived from.
 Third-party software:
 - javacard-express-core depends on jCardSim (com.klinec:jcardsim,
   https://github.com/licel/jcardsim), Apache License 2.0.
-- javacard-express-container bundles a simulator server jar that contains
-  jCardSim (Apache License 2.0); its notices are in
-  META-INF/THIRD-PARTY-NOTICES.txt inside that jar.
+- javacard-express-container bundles a simulator server jar (also the content
+  of the simulator Docker image) that contains jCardSim (Apache License 2.0)
+  and the software jCardSim bundles: Bouncy Castle (MIT License), Kryo, MinLog,
+  ReflectASM and ASM (BSD 3-Clause License) and Objenesis (Apache License 2.0).
+  Their licence texts are in META-INF/THIRD-PARTY-NOTICES.txt inside that jar.
