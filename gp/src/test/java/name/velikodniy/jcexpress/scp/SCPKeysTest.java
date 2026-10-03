@@ -82,4 +82,29 @@ class SCPKeysTest {
         assertThat(s).contains("length=16");
         assertThat(s).doesNotContain("4041");
     }
+
+    @Test
+    void typedKeySetsCarryTheirKeyTypeForPutKey() {
+        byte[] k = Hex.decode("00112233445566778899AABBCCDDEEFF");
+
+        assertThat(SCPKeys.aes(k, k, k).keyType()).contains(KeyInfo.KeyType.AES);
+        assertThat(SCPKeys.des3(k, k, k).keyType()).contains(KeyInfo.KeyType.DES3);
+        assertThat(SCPKeys.of(k, k, k).keyType()).isEmpty();
+        assertThat(SCPKeys.of(k, k, k).withKeyType(KeyInfo.KeyType.AES).keyType()).contains(KeyInfo.KeyType.AES);
+        assertThat(SCPKeys.aes(k, k, k).toString()).contains("type=AES").doesNotContain("0011");
+    }
+
+    @Test
+    void tripleDesKeysAreNot32Bytes() {
+        byte[] k32 = new byte[32];
+
+        assertThatThrownBy(() -> SCPKeys.des3(k32, k32, k32)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void allThreeKeysMustHaveTheSameLength() {
+        assertThatThrownBy(() -> SCPKeys.of(new byte[16], new byte[16], new byte[32]))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("same length");
+    }
 }

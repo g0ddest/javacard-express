@@ -4,15 +4,13 @@ import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.apdu.APDUBuilder;
+import name.velikodniy.jcexpress.apdu.APDUCodec;
 import name.velikodniy.jcexpress.apdu.APDUSequence;
-import name.velikodniy.jcexpress.crypto.CryptoUtil;
 import name.velikodniy.jcexpress.scp.GP;
 import name.velikodniy.jcexpress.scp.KeyInfo;
 import name.velikodniy.jcexpress.scp.SCP02;
 import name.velikodniy.jcexpress.scp.SCP03;
-import name.velikodniy.jcexpress.tlv.TLV;
-import name.velikodniy.jcexpress.tlv.TLVList;
-import name.velikodniy.jcexpress.tlv.TLVParser;
+import name.velikodniy.jcexpress.scp.SCPException;
 import name.velikodniy.jcexpress.scp.SCPKeys;
 import name.velikodniy.jcexpress.scp.SecureChannel;
 
@@ -21,43 +19,46 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.BiFunction;
 
 /**
  * High-level GlobalPlatform session helper that automates the SCP authentication flow.
  *
- * <p>Wraps a {@link SmartCardSession} and provides GP-specific operations.
- * All commands sent through an opened GPSession are automatically wrapped
- * with the secure channel (C-MAC, optionally C-ENC).</p>
+ * <p>Wraps a {@link SmartCardSession} and provides GP-specific operations (GlobalPlatform Card
+ * Specification v2.3.1 chapter 11). All commands sent through an opened GPSession are wrapped with the
+ * secure channel (C-MAC, optionally C-ENC) and their responses unwrapped (R-MAC, R-ENC).</p>
  *
  * <h2>Authentication flow (performed by {@link #open()}):</h2>
  * <ol>
- *   <li>Sends INITIALIZE UPDATE (INS=0x50) with random 8-byte host challenge</li>
- *   <li>Parses response → auto-detects SCP02 vs SCP03</li>
- *   <li>Derives session keys and verifies card cryptogram</li>
- *   <li>Sends EXTERNAL AUTHENTICATE (INS=0x82) with host cryptogram, wrapped with C-MAC</li>
+ *   <li>Optionally SELECTs the Security Domain ({@link #securityDomain(String)})</li>
+ *   <li>Sends INITIALIZE UPDATE with a fresh random host challenge and Le '00' (Table E-7, Amd D 7.1.1)</li>
+ *   <li>Detects SCP02 or SCP03 from the response, derives the session keys and verifies the card
+ *       cryptogram; on a mismatch EXTERNAL AUTHENTICATE is never sent</li>
+ *   <li>Sends EXTERNAL AUTHENTICATE (MACed, never encrypted); a failure is reported, never retried</li>
  * </ol>
+ *
+ * <p><b>Responses:</b> a protected command is transmitted once, also when the card answers '61XX' (completed with
+ * plain GET RESPONSE commands, GPCS v2.3.1 11.1.5.2) or '6CXX' (the command is protected again with the corrected
+ * Le, never re-sent with the C-MAC the card has verified, E.4.4). After an error status word the session stays
+ * open, also with R-MAC (E.4.5, Amendment D 6.2.5); the command helpers report it as {@link GPException}.</p>
  *
  * <h2>Usage:</h2>
  * <pre>
  * GPSession gp = GPSession.on(session)
- *     .keys(SCPKeys.defaultKeys())
+ *     .keys(SCPKeys.defaultKeys())       // explicit: there is no fallback to test keys
  *     .open();
  *
- * // All commands auto-wrapped with secure channel
- * APDUResponse r = gp.send(0x80, 0xF2, 0x40, 0x00, data);
- *
+ * List&lt;AppletInfo&gt; apps = gp.getStatus();
  * gp.close();
  * </pre>
  *
  * <h2>Custom configuration:</h2>
  * <pre>
  * GPSession gp = GPSession.on(session)
+ *     .securityDomain("A000000151000000")
  *     .keys(SCPKeys.of(enc, mac, dek))
  *     .securityLevel(GP.SECURITY_C_MAC_C_ENC)
  *     .keyVersion(0x30)
- *     .scpVersion(3)  // force SCP03
  *     .open();
  * </pre>
  *
@@ -67,13 +68,28 @@ import java.util.function.BiFunction;
  */
 public final class GPSession implements AutoCloseable {
 
+    /** Ne = 256, i.e. Le '00': "all GlobalPlatform APDU commands that expect response data" (11.1.5). */
+    private static final int LE_ALL = 256;
+    /** LOAD and STORE DATA block numbers are coded from '00' to 'FF' (11.6.2.2, 11.11.2.2). */
+    private static final int MAX_BLOCKS = 256;
+    /** GET STATUS P2: response data structure per Tables 11-36/11-37 (b2 = 1). */
+    private static final int GET_STATUS_TLV = 0x02;
+    /** GET STATUS P2 b1: get next occurrence(s) (Table 11-34). */
+    private static final int GET_STATUS_NEXT = 0x01;
+    private static final int SW_MORE_DATA = 0x6310;
+    private static final int SW_NOT_FOUND = 0x6A88;
+    private static final int MAX_GET_STATUS_COMMANDS = 128;
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final SmartCardSession session;
     private SCPKeys keys;
     private int securityLevel = GP.SECURITY_C_MAC;
     private int keyVersion = 0;
     private int forcedScpVersion = 0; // 0 = auto-detect
-    private boolean pseudoRandomChallenge = false;
-    private byte[] hostChallenge;
+    private int scp02Option = SCP02.DEFAULT_OPTION;
+    private boolean s16;
+    private byte[] testHostChallenge;
+    private byte[] securityDomainAid;
     private BiFunction<SCPKeys, byte[], SCPKeys> diversifier;
 
     private SecureChannel channel;
@@ -87,7 +103,7 @@ public final class GPSession implements AutoCloseable {
     /**
      * Creates a new GPSession wrapping the given smart card session.
      *
-     * @param session the underlying session (embedded or container)
+     * @param session the underlying session (embedded, container or PC/SC)
      * @return a new GPSession ready for configuration and {@link #open()}
      */
     public static GPSession on(SmartCardSession session) {
@@ -98,7 +114,8 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Sets the key set for authentication. Default: {@link SCPKeys#defaultKeys()}.
+     * Sets the static key set for authentication. Required: {@link #open()} fails without keys (there is
+     * no silent fallback to the well-known test keys; use {@link SCPKeys#defaultKeys()} explicitly).
      *
      * @param keys the static key set
      * @return this session for chaining
@@ -109,28 +126,35 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Sets the security level for the session.
+     * Sets the security level requested in EXTERNAL AUTHENTICATE (P1).
      *
-     * <p>Default: {@link GP#SECURITY_C_MAC} (command integrity only).</p>
+     * <p>Default: {@link GP#SECURITY_C_MAC}. The level is validated against the protocol (GPCS v2.3.1
+     * Table E-11, Amendment D Table 7-6) and the card's implementation option during {@link #open()},
+     * before EXTERNAL AUTHENTICATE is sent.</p>
      *
      * @param level the security level (e.g., {@link GP#SECURITY_C_MAC_C_ENC})
      * @return this session for chaining
      */
     public GPSession securityLevel(int level) {
+        if (level < 0 || level > 0xFF) {
+            throw new IllegalArgumentException("Security level must be a byte, got: " + level);
+        }
         this.securityLevel = level;
         return this;
     }
 
     /**
-     * Sets the key version number sent in INITIALIZE UPDATE (P2).
+     * Sets the Key Version Number sent in INITIALIZE UPDATE (P1, GPCS v2.3.1 E.5.1.3).
      *
-     * <p>Default: 0 (any key version). Set to a specific value if the card
-     * has multiple key sets.</p>
+     * <p>Default: 0 (the first available key set chosen by the Security Domain).</p>
      *
-     * @param version the key version (0-127)
+     * @param version the key version (0-255)
      * @return this session for chaining
      */
     public GPSession keyVersion(int version) {
+        if (version < 0 || version > 0xFF) {
+            throw new IllegalArgumentException("Key version must be 0x00-0xFF, got: " + version);
+        }
         this.keyVersion = version;
         return this;
     }
@@ -138,10 +162,10 @@ public final class GPSession implements AutoCloseable {
     /**
      * Forces a specific SCP version instead of auto-detecting from the response.
      *
-     * <p>Default: 0 (auto-detect from INITIALIZE UPDATE response byte[11]).
-     * Set to 2 or 3 to override detection for non-compliant cards.</p>
+     * <p>Default: 0 (auto-detect from INITIALIZE UPDATE response byte 11). Set to 2 or 3 to override
+     * detection for non-compliant cards.</p>
      *
-     * @param version the SCP version (2 or 3)
+     * @param version the SCP version (0 = auto, 2 or 3)
      * @return this session for chaining
      */
     public GPSession scpVersion(int version) {
@@ -153,46 +177,89 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Enables SCP03 pseudo-random card challenge mode (i=60).
+     * Sets the SCP02 implementation option ("i" parameter, GPCS v2.3.1 Table E-1) of the card.
      *
-     * <p>When enabled, the INITIALIZE UPDATE response is parsed with 3-byte sequence
-     * counter + 6-byte card challenge (29 bytes total), instead of the default 8-byte
-     * card challenge (28 bytes). The key derivation context includes the sequence counter.</p>
+     * <p>SCP02 cards do not report "i" in INITIALIZE UPDATE; it is published in the Card Recognition Data
+     * (GET DATA '66', OID 1.2.840.114283.4.2.i). Default: {@link SCP02#DEFAULT_OPTION} ('15': ICV
+     * encryption, no R-MAC). Use '55' or '15' for most cards, '05'/'45' for cards without ICV encryption,
+     * and an option with R-MAC support (e.g. '75') for security levels '11'/'13'. Ignored for SCP03, whose
+     * cards report "i" themselves.</p>
      *
-     * <p>Default: false (explicit challenge, i=70).</p>
-     *
-     * @param enabled true for pseudo-random (i=60), false for explicit (i=70)
+     * @param option the SCP02 "i" parameter
      * @return this session for chaining
      */
-    public GPSession pseudoRandomChallenge(boolean enabled) {
-        this.pseudoRandomChallenge = enabled;
+    public GPSession scp02Option(int option) {
+        if (option < 0 || option > 0x7F) {
+            throw new IllegalArgumentException("SCP02 option must be 0x00-0x7F, got: " + option);
+        }
+        this.scp02Option = option;
         return this;
     }
 
     /**
-     * Sets a fixed host challenge instead of a random one.
+     * Selects SCP03 S16 mode (Amendment D v1.2): 16-byte host challenge, cryptograms and MACs.
      *
-     * <p>For testing only. In production, the host challenge should be random.</p>
+     * <p>Default: false (S8). The host challenge length must be known before INITIALIZE UPDATE, so S16
+     * cards need this option.</p>
      *
-     * @param challenge the 8-byte host challenge
+     * @param enabled true for S16 mode
+     * @return this session for chaining
+     */
+    public GPSession scp03S16(boolean enabled) {
+        this.s16 = enabled;
+        return this;
+    }
+
+    /**
+     * Formerly selected the SCP03 pseudo-random challenge layout.
+     *
+     * @param enabled ignored
+     * @return this session for chaining
+     * @deprecated the INITIALIZE UPDATE response tells whether the card uses pseudo-random challenges
+     *             (Amendment D Table 5-1 "i" parameter, Table 7-3); this setting has no effect
+     */
+    @Deprecated
+    public GPSession pseudoRandomChallenge(boolean enabled) {
+        return this;
+    }
+
+    /**
+     * Sets a fixed host challenge for the next {@link #open()} only (testing with known-answer vectors).
+     *
+     * <p>The challenge is used exactly once; every other open() generates a fresh random challenge, which
+     * is what makes the card cryptogram a proof of freshness (GPCS v2.3.1 E.5.1.5).</p>
+     *
+     * @param challenge the 8-byte host challenge (16 bytes for SCP03 S16)
      * @return this session for chaining
      */
     public GPSession hostChallenge(byte[] challenge) {
-        if (challenge == null || challenge.length != 8) {
-            throw new IllegalArgumentException("Host challenge must be exactly 8 bytes");
+        if (challenge == null || (challenge.length != 8 && challenge.length != 16)) {
+            throw new IllegalArgumentException("Host challenge must be 8 bytes (16 bytes for SCP03 S16)");
         }
-        this.hostChallenge = challenge.clone();
+        this.testHostChallenge = challenge.clone();
+        return this;
+    }
+
+    /**
+     * Makes {@link #open()} SELECT the given Security Domain before INITIALIZE UPDATE.
+     *
+     * <p>Without it, INITIALIZE UPDATE goes to the currently selected application, which must then be the
+     * Security Domain (e.g. the default-selected ISD).</p>
+     *
+     * @param aidHex the Security Domain AID, e.g. "A000000151000000"
+     * @return this session for chaining
+     */
+    public GPSession securityDomain(String aidHex) {
+        this.securityDomainAid = Hex.decode(aidHex);
         return this;
     }
 
     /**
      * Sets a key diversification function to derive card-specific keys.
      *
-     * <p>When set, the master keys are diversified using the card's diversification
-     * data (first 10 bytes of the INITIALIZE UPDATE response) before creating
-     * the secure channel session.</p>
+     * <p>When set, the master keys are diversified using the card's diversification data (first 10 bytes
+     * of the INITIALIZE UPDATE response) before creating the secure channel session.</p>
      *
-     * <p><strong>Example:</strong></p>
      * <pre>
      * GPSession gp = GPSession.on(card)
      *     .keys(SCPKeys.fromMasterKey(masterKey))
@@ -214,78 +281,32 @@ public final class GPSession implements AutoCloseable {
     /**
      * Opens the secure channel by performing INITIALIZE UPDATE + EXTERNAL AUTHENTICATE.
      *
-     * <p>After successful return, all commands sent via {@link #send} are automatically
-     * wrapped with the negotiated secure channel protocol.</p>
+     * <p>After successful return, all commands sent via {@link #send} are wrapped with the negotiated
+     * secure channel protocol. Authentication is never retried automatically.</p>
      *
      * @return this GPSession (now authenticated)
-     * @throws GPException if authentication fails
+     * @throws GPException  if no keys are configured or the card rejects a command
+     * @throws SCPException if the card cryptogram is wrong (EXTERNAL AUTHENTICATE is then not sent) or
+     *                      the security level is not supported
      */
     public GPSession open() {
         if (opened) {
             throw new GPException("GPSession is already open");
         }
         if (keys == null) {
-            keys = SCPKeys.defaultKeys();
+            throw new GPException("No keys configured: call keys(...) before open()"
+                    + " (SCPKeys.defaultKeys() provides the well-known test keys of development cards)");
         }
-
-        // Generate host challenge
-        if (hostChallenge == null) {
-            hostChallenge = new byte[8];
-            new SecureRandom().nextBytes(hostChallenge);
+        byte[] hostChallenge = nextHostChallenge();
+        if (securityDomainAid != null) {
+            selectSecurityDomain();
         }
-
-        // Step 1: INITIALIZE UPDATE
-        APDUResponse initResponse = session.send(
-                GP.CLA_GP, GP.INS_INITIALIZE_UPDATE,
-                keyVersion, 0x00, hostChallenge);
-
-        if (!initResponse.isSuccess()) {
-            throw new GPException("INITIALIZE UPDATE failed", initResponse.sw());
-        }
-
-        byte[] responseData = initResponse.data();
-        cardInfo = CardInfo.parse(responseData, pseudoRandomChallenge);
-
-        // Apply key diversification if configured
-        if (diversifier != null) {
-            byte[] divData = Arrays.copyOf(responseData, 10);
-            keys = diversifier.apply(keys, divData);
-        }
-
-        // Determine SCP version
-        int scpVersion = forcedScpVersion != 0 ? forcedScpVersion : cardInfo.scpVersion();
-
-        // Step 2: Create secure channel and verify card cryptogram
-        byte[] hostCryptogram;
-        if (scpVersion == 2) {
-            SCP02 scp02 = SCP02.from(keys, responseData, securityLevel);
-            scp02.verifyCardCryptogram(hostChallenge);
-            hostCryptogram = scp02.computeHostCryptogram(hostChallenge);
-            channel = scp02;
-        } else if (scpVersion == 3) {
-            SCP03 scp03 = SCP03.from(keys, hostChallenge, responseData, securityLevel, pseudoRandomChallenge);
-            // SCP03.from() verifies card cryptogram automatically
-            hostCryptogram = scp03.hostCryptogram();
-            channel = scp03;
-        } else {
-            throw new GPException("Unsupported SCP version: " + scpVersion);
-        }
-
-        // Step 3: EXTERNAL AUTHENTICATE
-        byte[] extAuthApdu = APDUBuilder.command()
-                .cla(GP.CLA_GP_SECURE).ins(GP.INS_EXTERNAL_AUTHENTICATE)
-                .p1(securityLevel).p2(0x00)
-                .data(hostCryptogram)
-                .build();
-
-        byte[] wrappedExtAuth = channel.wrap(extAuthApdu);
-        byte[] rawExtAuthResponse = session.transmit(wrappedExtAuth);
-        APDUResponse extAuthResponse = new APDUResponse(rawExtAuthResponse);
-
-        if (!extAuthResponse.isSuccess()) {
-            throw new GPException("EXTERNAL AUTHENTICATE failed", extAuthResponse.sw());
-        }
-
+        byte[] response = initializeUpdate(hostChallenge);
+        cardInfo = forcedScpVersion != 0 ? CardInfo.parse(response, forcedScpVersion) : CardInfo.parse(response);
+        SCPKeys sessionKeys = diversifier != null ? diversifier.apply(keys, cardInfo.diversificationData()) : keys;
+        SecureChannel candidate = createChannel(sessionKeys, hostChallenge, response);
+        SecureChannelTransport.externalAuthenticate(session, candidate);
+        channel = candidate;
         opened = true;
         return this;
     }
@@ -300,9 +321,10 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Returns the card information parsed from the INITIALIZE UPDATE response.
+     * Returns the card information parsed from the last INITIALIZE UPDATE response (also available after
+     * a failed authentication, for diagnostics).
      *
-     * @return the card info, or null if not yet opened
+     * @return the card info, or null before {@link #open()} and after {@link #close()}
      */
     public CardInfo cardInfo() {
         return cardInfo;
@@ -311,7 +333,7 @@ public final class GPSession implements AutoCloseable {
     /**
      * Returns the underlying secure channel (SCP02 or SCP03).
      *
-     * @return the secure channel, or null if not yet opened
+     * @return the secure channel, or null if not open
      */
     public SecureChannel secureChannel() {
         return channel;
@@ -320,11 +342,11 @@ public final class GPSession implements AutoCloseable {
     // ── Command dispatch ──
 
     /**
-     * Sends a command through the secure channel with automatic wrapping.
+     * Sends a command without Le through the secure channel.
      *
-     * <p>The command is wrapped with C-MAC (and optionally C-ENC), then
-     * sent through the session. GET RESPONSE chaining (SW=61XX) is handled
-     * automatically.</p>
+     * <p>The command is wrapped with C-MAC (and optionally C-ENC), sent through the session with
+     * automatic GET RESPONSE chaining (SW=61XX), and its response unwrapped; see
+     * {@link #send(int, int, int, int, byte[], int)}.</p>
      *
      * @param cla  the CLA byte (will be modified by secure channel wrapping)
      * @param ins  the INS byte
@@ -335,16 +357,33 @@ public final class GPSession implements AutoCloseable {
      * @throws GPException if the session is not open
      */
     public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data) {
-        requireOpen();
-        byte[] apdu = APDUBuilder.command()
-                .cla(cla).ins(ins).p1(p1).p2(p2)
-                .data(data)
-                .build();
-        return transmitWrapped(apdu);
+        return send(cla, ins, p1, p2, data, -1);
     }
 
     /**
-     * Sends a command without data.
+     * Sends a command through the secure channel.
+     *
+     * <p>The command is protected and transmitted once; '61XX' is completed with plain GET RESPONSE commands and
+     * the reassembled response unwrapped (GPCS v2.3.1 11.1.5.2). After '6CXX' the command is protected again with
+     * Le = SW2 and sent once more (ISO/IEC 7816-4:2005 5.1.3): the card has verified the first C-MAC (E.4.4).</p>
+     *
+     * @param cla  the CLA byte (will be modified by secure channel wrapping)
+     * @param ins  the INS byte
+     * @param p1   the P1 byte
+     * @param p2   the P2 byte
+     * @param data the command data (may be null)
+     * @param le   the expected response length Ne: 256 encodes Le '00' (as GlobalPlatform commands that
+     *             expect data require, GPCS v2.3.1 11.1.5), 1-255 a short Le, -1 no Le
+     * @return the unwrapped APDU response
+     * @throws GPException if the session is not open
+     */
+    public APDUResponse send(int cla, int ins, int p1, int p2, byte[] data, int le) {
+        requireOpen();
+        return transmitWrapped(APDUCodec.encode(cla, ins, p1, p2, data, le));
+    }
+
+    /**
+     * Sends a command without data or Le.
      *
      * @param cla the CLA byte
      * @param ins the INS byte
@@ -357,133 +396,98 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Wraps and transmits a raw APDU through the secure channel.
+     * Wraps and transmits a raw APDU through the secure channel and unwraps the response, like
+     * {@link #send(int, int, int, int, byte[], int)}.
      *
-     * @param rawApdu the raw APDU bytes (will be wrapped)
-     * @return the raw response bytes
+     * @param rawApdu the raw short APDU (will be wrapped)
+     * @return the unwrapped response bytes (data followed by SW1 SW2)
      */
     public byte[] transmit(byte[] rawApdu) {
         requireOpen();
-        byte[] wrapped = channel.wrap(rawApdu);
-        return session.transmit(wrapped);
+        APDUResponse response = transmitWrapped(rawApdu);
+        byte[] data = response.data();
+        byte[] raw = Arrays.copyOf(data, data.length + 2);
+        raw[data.length] = (byte) response.sw1();
+        raw[data.length + 1] = (byte) response.sw2();
+        return raw;
     }
 
     // ── GET DATA ──
 
     /**
-     * Sends a GET DATA command with the specified P1 and P2.
+     * Sends a GET DATA command ({@code 80 CA P1 P2 00}, GPCS v2.3.1 Table 11-27).
      *
      * @param p1 the P1 parameter
      * @param p2 the P2 parameter
      * @return the APDU response
      */
     public APDUResponse getData(int p1, int p2) {
-        requireOpen();
-        return send(GP.CLA_GP, GP.INS_GET_DATA, p1, p2);
+        return command(GP.INS_GET_DATA, p1, p2, null, LE_ALL);
     }
 
     /**
-     * Retrieves the Issuer Identification Number (IIN).
+     * Retrieves the Issuer Identification Number (GET DATA '0042').
      *
-     * <p>Sends GET DATA P1P2=0042.</p>
-     *
-     * @return the IIN bytes
+     * @return the IIN data object as returned by the card
      * @throws GPException if the command fails
      */
     public byte[] getIIN() {
-        APDUResponse r = getData(0x00, 0x42);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (IIN) failed", r.sw());
-        }
-        return r.data();
+        return requireData(getData(0x00, 0x42), "GET DATA (IIN)");
     }
 
     /**
-     * Retrieves the Card Image Number (CIN).
+     * Retrieves the Card Image Number (GET DATA '0045').
      *
-     * <p>Sends GET DATA P1P2=0045.</p>
-     *
-     * @return the CIN bytes
+     * @return the CIN data object as returned by the card
      * @throws GPException if the command fails
      */
     public byte[] getCIN() {
-        APDUResponse r = getData(0x00, 0x45);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (CIN) failed", r.sw());
-        }
-        return r.data();
+        return requireData(getData(0x00, 0x45), "GET DATA (CIN)");
     }
 
     /**
-     * Retrieves the Card Data (contains Card Recognition Data).
-     *
-     * <p>Sends GET DATA P1P2=0066. The response contains the Card Data template
-     * (tag 0x66) with nested Card Recognition Data (tag 0x73) describing the card's
-     * capabilities and supported protocols.</p>
+     * Retrieves the Card Data (GET DATA '0066') with the Card Recognition Data.
      *
      * @return parsed CardData
      * @throws GPException if the command fails
      */
     public CardData getCardData() {
-        APDUResponse r = getData(0x00, 0x66);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (Card Data) failed", r.sw());
-        }
-        return CardData.parse(r.data());
+        return CardData.parse(requireData(getData(0x00, 0x66), "GET DATA (Card Data)"));
     }
 
     /**
-     * Retrieves the Key Information Template (all keys on the card).
-     *
-     * <p>Sends GET DATA P1P2=00E0. Returns a list of key entries, each describing
-     * a key set with its identifier, version, and cryptographic components.</p>
+     * Retrieves the Key Information Template (GET DATA '00E0', GPCS v2.3.1 11.3.3.1.1).
      *
      * @return list of key entries
      * @throws GPException if the command fails
      */
     public List<KeyInfoEntry> getKeyInformation() {
-        APDUResponse r = getData(0x00, 0xE0);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (Key Information) failed", r.sw());
-        }
-        return KeyInfoEntry.parseAll(r.data());
+        return KeyInfoEntry.parseAll(requireData(getData(0x00, 0xE0), "GET DATA (Key Information)"));
     }
 
     /**
-     * Retrieves the Card Production Life Cycle (CPLC) data.
-     *
-     * <p>Sends GET DATA P1P2=9F7F. The CPLC contains the complete production
-     * history of the card: IC fabrication, module packaging, card embedding,
-     * pre-personalization, and personalization details.</p>
+     * Retrieves the Card Production Life Cycle data (GET DATA '9F7F').
      *
      * @return parsed CPLCData
      * @throws GPException if the command fails
      */
     public CPLCData getCPLC() {
-        APDUResponse r = getData(0x9F, 0x7F);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (CPLC) failed", r.sw());
-        }
-        return CPLCData.parse(r.data());
+        return CPLCData.parse(requireData(getData(0x9F, 0x7F), "GET DATA (CPLC)"));
     }
 
     /**
-     * Retrieves the sequence counter value.
-     *
-     * <p>Sends GET DATA P1P2=00C1.</p>
+     * Retrieves the sequence counter of the default key version (GET DATA '00C1').
      *
      * @return the sequence counter as an integer
      * @throws GPException if the command fails
      */
     public int getSequenceCounter() {
-        APDUResponse r = getData(0x00, 0xC1);
-        if (!r.isSuccess()) {
-            throw new GPException("GET DATA (Sequence Counter) failed", r.sw());
-        }
-        byte[] data = r.data();
+        byte[] data = requireData(getData(0x00, 0xC1), "GET DATA (Sequence Counter)");
+        // GP class byte: the response is the TLV coded data object 'C1' (GPCS v2.3.1 11.3.3.1)
+        boolean tlv = data.length > 2 && (data[0] & 0xFF) == 0xC1 && (data[1] & 0xFF) == data.length - 2;
         int counter = 0;
-        for (byte b : data) {
-            counter = (counter << 8) | (b & 0xFF);
+        for (int i = tlv ? 2 : 0; i < data.length; i++) {
+            counter = (counter << 8) | (data[i] & 0xFF);
         }
         return counter;
     }
@@ -491,12 +495,13 @@ public final class GPSession implements AutoCloseable {
     // ── GP Commands ──
 
     /**
-     * Queries card content using GET STATUS.
+     * Queries card content using GET STATUS (GPCS v2.3.1 11.4) with the search criterion {@code '4F' '00'}.
      *
-     * <p>Sends GET STATUS (INS=F2) with TLV response format and parses
-     * the result into a list of {@link AppletInfo} entries.</p>
+     * <p>The response format of Tables 11-36/11-37 is requested (P2.b2 = 1). While the card answers
+     * '6310' (more data available), GET STATUS [get next occurrence(s)] is sent and the entries are
+     * accumulated. '6A88' (referenced data not found) for the first command yields an empty list.</p>
      *
-     * <p><strong>Scope values:</strong></p>
+     * <p><strong>Scope values (P1, Table 11-33):</strong></p>
      * <ul>
      *   <li>{@code 0x80} — Issuer Security Domain only</li>
      *   <li>{@code 0x40} — Applications and Security Domains</li>
@@ -504,34 +509,37 @@ public final class GPSession implements AutoCloseable {
      *   <li>{@code 0x10} — Executable Load Files and their Executable Modules</li>
      * </ul>
      *
-     * @param scope the P2 scope byte
-     * @return list of parsed applet/package entries
-     * @throws GPException if the command fails
+     * @param scope the P1 scope byte
+     * @return all entries returned by the card
+     * @throws GPException if a command fails or a response is malformed
      */
     public List<AppletInfo> getStatus(int scope) {
-        requireOpen();
-        // GET STATUS: CLA=80, INS=F2, P1=scope, P2=02 (TLV format)
-        // Data = 4F 00 (tag 4F, length 0 = all AIDs)
-        APDUResponse response = send(0x80, GP.INS_GET_STATUS, scope, 0x02,
-                Hex.decode("4F00"));
-
-        if (!response.isSuccess() && response.sw() != 0x6310) {
-            // 6310 = more data available (GET STATUS chaining)
-            throw new GPException("GET STATUS failed", response.sw());
+        List<AppletInfo> entries = new ArrayList<>();
+        int p2 = GET_STATUS_TLV;
+        for (int i = 0; i < MAX_GET_STATUS_COMMANDS; i++) {
+            APDUResponse response = command(GP.INS_GET_STATUS, scope, p2, Hex.decode("4F00"), LE_ALL);
+            if (response.sw() == SW_NOT_FOUND && i == 0) {
+                return entries;
+            }
+            if (!response.isSuccess() && response.sw() != SW_MORE_DATA) {
+                throw new GPException("GET STATUS failed", response.sw());
+            }
+            entries.addAll(GetStatusParser.parse(response.data()));
+            if (response.sw() != SW_MORE_DATA) {
+                return entries;
+            }
+            p2 = GET_STATUS_TLV | GET_STATUS_NEXT;
         }
-
-        return parseGetStatusResponse(response.data());
+        throw new GPException("GET STATUS still reports more data after " + MAX_GET_STATUS_COMMANDS + " commands");
     }
 
     /**
-     * Queries all applications and security domains.
-     *
-     * <p>Equivalent to {@code getStatus(0x40)}.</p>
+     * Queries all applications and security domains, i.e. {@code getStatus(0x40)}.
      *
      * @return list of application entries
      */
     public List<AppletInfo> getStatus() {
-        return getStatus(0x40);
+        return getStatus(Lifecycle.SCOPE_APPS);
     }
 
     /**
@@ -546,77 +554,87 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Sends a DELETE command for the given AID.
+     * Sends a DELETE [card content] command for the given AID (object only, P2 '00').
      *
      * @param aid the AID bytes to delete
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse deleteAid(byte[] aid) {
-        requireOpen();
-        byte[] data = InstallParams.forDelete(aid);
-        APDUResponse response = send(0x80, GP.INS_DELETE, 0x00, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("DELETE failed for AID " + Hex.encode(aid), response.sw());
-        }
-        return response;
+        return deleteAid(aid, false);
     }
 
     /**
-     * Sends INSTALL [for load] command.
+     * Sends a DELETE [card content] command ({@code 80 E4 00 P2 Lc '4F' len AID 00}, GPCS v2.3.1 11.2).
      *
-     * @param packageAidHex the package AID as hex
-     * @param sdAidHex      the security domain AID as hex (null or empty = ISD)
+     * @param aid            the AID of the Executable Load File or Application
+     * @param deleteRelated  true to delete the object and its related objects (P2 '80', e.g. a load file
+     *                       and all its applications), false for the object only (P2 '00')
+     * @return the APDU response
+     * @throws GPException if the command fails
+     */
+    public APDUResponse deleteAid(byte[] aid, boolean deleteRelated) {
+        APDUResponse response = command(GP.INS_DELETE, 0x00, deleteRelated ? 0x80 : 0x00,
+                InstallParams.forDelete(aid), LE_ALL);
+        return requireSuccess(response, "DELETE failed for AID " + Hex.encode(aid));
+    }
+
+    /**
+     * Sends INSTALL [for load] without Load File Data Block hash and load parameters.
+     *
+     * @param packageAidHex the Load File AID as hex
+     * @param sdAidHex      the security domain AID as hex (null or empty = the selected Security Domain)
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse installForLoad(String packageAidHex, String sdAidHex) {
-        requireOpen();
-        byte[] pkgAid = Hex.decode(packageAidHex);
         byte[] sdAid = (sdAidHex != null && !sdAidHex.isEmpty()) ? Hex.decode(sdAidHex) : new byte[0];
-        byte[] data = InstallParams.forLoad(pkgAid, sdAid);
-        APDUResponse response = send(0x80, GP.INS_INSTALL, 0x02, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("INSTALL [for load] failed", response.sw());
-        }
-        return response;
+        return installForLoad(Hex.decode(packageAidHex), sdAid, new byte[0], new byte[0]);
     }
 
     /**
-     * Sends INSTALL [for install and make selectable] command.
+     * Sends INSTALL [for load] ({@code 80 E6 02 00 Lc data 00}, GPCS v2.3.1 Table 11-42).
      *
-     * @param packageAidHex  the package AID as hex
-     * @param moduleAidHex   the module (applet class) AID as hex
-     * @param instanceAidHex the instance AID as hex
-     * @param privileges     the privilege byte (e.g., 0x00 for no special privileges)
-     * @param installParams  the install parameters (may be null)
+     * @param loadFileAid           the Load File AID
+     * @param sdAid                 the Security Domain AID (empty = the selected Security Domain)
+     * @param loadFileDataBlockHash the Load File Data Block hash, see {@link CAPFile#loadFileDataBlockHash}
+     *                              (empty if not required by the card)
+     * @param loadParameters        the Load Parameters field (Table 11-48), may be empty
+     * @return the APDU response
+     * @throws GPException if the command fails
+     */
+    public APDUResponse installForLoad(byte[] loadFileAid, byte[] sdAid, byte[] loadFileDataBlockHash,
+                                       byte[] loadParameters) {
+        byte[] data = InstallParams.forLoad(loadFileAid, sdAid, loadFileDataBlockHash, loadParameters);
+        return requireSuccess(command(GP.INS_INSTALL, GP.INSTALL_FOR_LOAD, 0x00, data, LE_ALL),
+                "INSTALL [for load] failed");
+    }
+
+    /**
+     * Sends INSTALL [for install and make selectable] ({@code 80 E6 0C 00 Lc data 00}, Table 11-43).
+     *
+     * @param packageAidHex  the Executable Load File AID as hex
+     * @param moduleAidHex   the Executable Module (applet class) AID as hex, see {@link CAPFile#appletAids()}
+     * @param instanceAidHex the Application (instance) AID as hex
+     * @param privileges     the privileges: 0x00-0xFF for one byte, larger values for three bytes
+     * @param installParams  the application specific parameters (tag 'C9'), may be null
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse installForInstall(String packageAidHex, String moduleAidHex,
-                                           String instanceAidHex, int privileges,
-                                           byte[] installParams) {
-        requireOpen();
-        byte[] pkgAid = Hex.decode(packageAidHex);
-        byte[] modAid = Hex.decode(moduleAidHex);
-        byte[] instAid = Hex.decode(instanceAidHex);
-        byte[] data = InstallParams.forInstall(pkgAid, modAid, instAid, privileges, installParams);
-        APDUResponse response = send(0x80, GP.INS_INSTALL, 0x0C, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("INSTALL [for install] failed", response.sw());
-        }
-        return response;
+                                          String instanceAidHex, int privileges,
+                                          byte[] installParams) {
+        byte[] data = InstallParams.forInstall(Hex.decode(packageAidHex), Hex.decode(moduleAidHex),
+                Hex.decode(instanceAidHex), InstallParams.privileges(privileges), installParams);
+        return requireSuccess(command(GP.INS_INSTALL, GP.INSTALL_FOR_INSTALL_AND_SELECTABLE, 0x00, data, LE_ALL),
+                "INSTALL [for install] failed");
     }
 
     /**
      * Sends LOAD commands to transfer a CAP file to the card.
      *
-     * <p>The CAP file's load data (C4-wrapped component bytes) is split into
-     * blocks and sent via sequential LOAD commands (INS=0xE8). This must be
-     * preceded by {@link #installForLoad(String, String)}.</p>
-     *
      * @param cap the parsed CAP file
-     * @return the final APDU response
+     * @return the response to the last LOAD command
      * @throws GPException if any LOAD block fails
      * @see #installForLoad(String, String)
      */
@@ -625,238 +643,208 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Sends LOAD commands with raw load data (C4-wrapped or plain bytes).
+     * Sends LOAD commands ({@code 80 E8 P1 P2 Lc block 00}, GPCS v2.3.1 11.6) with raw load data.
      *
-     * <p>The data is split into blocks of 247 bytes (255 - 8 for C-MAC) and
-     * transmitted sequentially. P1 indicates first/last block, P2 is the block number.</p>
+     * <p>The data is split into blocks of {@link SecureChannel#maxCommandDataLength()} bytes (247 with
+     * C-MAC, 239 with C-ENC); P1 '80' marks the last block and P2 is the block number ('00'-'FF').
+     * More than 256 blocks are rejected before anything is sent.</p>
      *
-     * @param loadData the load file data
-     * @return the final APDU response
-     * @throws GPException if any LOAD block fails
+     * @param loadData the load file (e.g. {@link CAPFile#loadFileData()})
+     * @return the response to the last LOAD command
+     * @throws GPException if the data needs more than 256 blocks or any LOAD block fails
      */
     public APDUResponse load(byte[] loadData) {
         requireOpen();
-        int maxBlockSize = 247; // 255 - 8 for C-MAC
-        int offset = 0;
-        int blockNumber = 0;
-
-        while (offset < loadData.length) {
-            int remaining = loadData.length - offset;
-            int blockSize = Math.min(remaining, maxBlockSize);
-            boolean lastBlock = (offset + blockSize >= loadData.length);
-
-            byte[] block = new byte[blockSize];
-            System.arraycopy(loadData, offset, block, 0, blockSize);
-
-            int p1 = lastBlock ? 0x80 : 0x00;
-            APDUResponse response = send(0x80, GP.INS_LOAD, p1, blockNumber, block);
-            if (!response.isSuccess()) {
-                throw new GPException("LOAD failed at block " + blockNumber, response.sw());
-            }
-
-            offset += blockSize;
-            blockNumber++;
-        }
-
-        if (loadData.length == 0) {
-            return send(0x80, GP.INS_LOAD, 0x80, 0x00, new byte[0]);
-        }
-
-        return new APDUResponse(new byte[0], 0x9000);
-    }
-
-    /**
-     * Performs the complete applet loading flow: INSTALL [for load] + LOAD + INSTALL [for install].
-     *
-     * <p>This convenience method executes the three GP commands needed to load and
-     * install an applet from a CAP file in a single call.</p>
-     *
-     * @param cap            the parsed CAP file
-     * @param instanceAidHex the instance AID as hex (if null, uses package AID)
-     * @param privileges     the privilege byte (e.g., 0x00)
-     * @param installParams  the install parameters (may be null)
-     * @return the final INSTALL [for install] response
-     * @throws GPException if any command fails
-     */
-    public APDUResponse loadAndInstall(CAPFile cap, String instanceAidHex,
-                                        int privileges, byte[] installParams) {
-        String pkgAid = cap.packageAidHex();
-        String instAid = (instanceAidHex != null) ? instanceAidHex : pkgAid;
-
-        installForLoad(pkgAid, null);
-        load(cap);
-        return installForInstall(pkgAid, pkgAid, instAid, privileges, installParams);
-    }
-
-    /**
-     * Sends STORE DATA with automatic chaining for large payloads.
-     *
-     * <p>If the data exceeds 247 bytes (255 - 8 for MAC), it is split
-     * into multiple STORE DATA commands with P1 indicating first/last block.</p>
-     *
-     * @param data the data to store
-     * @return the final APDU response
-     * @throws GPException if any block fails
-     */
-    public APDUResponse storeData(byte[] data) {
-        requireOpen();
-        int maxBlockSize = 247; // 255 - 8 for C-MAC
-        int offset = 0;
-        int blockNumber = 0;
-
-        while (offset < data.length) {
-            int remaining = data.length - offset;
-            int blockSize = Math.min(remaining, maxBlockSize);
-            boolean lastBlock = (offset + blockSize >= data.length);
-
-            byte[] block = new byte[blockSize];
-            System.arraycopy(data, offset, block, 0, blockSize);
-
-            int p1 = lastBlock ? 0x80 : 0x00;
-            APDUResponse response = send(0x80, GP.INS_STORE_DATA, p1, blockNumber, block);
-            if (!response.isSuccess()) {
-                throw new GPException("STORE DATA failed at block " + blockNumber, response.sw());
-            }
-
-            offset += blockSize;
-            blockNumber++;
-        }
-
-        // Handle empty data as single block
-        if (data.length == 0) {
-            return send(0x80, GP.INS_STORE_DATA, 0x80, 0x00, new byte[0]);
-        }
-
-        return new APDUResponse(new byte[0], 0x9000);
-    }
-
-    /**
-     * Replaces all three keys (ENC, MAC, DEK) on the card using PUT KEY.
-     *
-     * <p>Uses the current session's key version as the existing key version (P1).
-     * The new key version is placed in the command data. Each key is encrypted
-     * with the session DEK (SCP02) or static DEK (SCP03) and accompanied by
-     * a 3-byte Key Check Value.</p>
-     *
-     * @param newKeys       the new key set to install
-     * @param newKeyVersion the version number for the new keys (1-127)
-     * @return the APDU response
-     * @throws GPException if the PUT KEY command fails
-     */
-    public APDUResponse putKeys(SCPKeys newKeys, int newKeyVersion) {
-        return putKeys(newKeys, newKeyVersion, cardInfo.keyVersion());
-    }
-
-    /**
-     * Replaces all three keys with explicit control over the existing key version.
-     *
-     * <p>Use {@code existingKeyVersion = 0} to add a new key set without
-     * replacing an existing one.</p>
-     *
-     * @param newKeys             the new key set to install
-     * @param newKeyVersion       the version number for the new keys (1-127)
-     * @param existingKeyVersion  the version of keys being replaced (0 = add new)
-     * @return the APDU response
-     * @throws GPException if the PUT KEY command fails
-     */
-    public APDUResponse putKeys(SCPKeys newKeys, int newKeyVersion, int existingKeyVersion) {
-        requireOpen();
-
-        boolean isScp03 = channel instanceof SCP03;
-        byte[] dekKey = channel.dek();
-
-        ByteArrayOutputStream data = new ByteArrayOutputStream();
-        data.write(newKeyVersion);
-
-        byte[][] keyComponents = {newKeys.enc(), newKeys.mac(), newKeys.dek()};
-        for (byte[] keyComponent : keyComponents) {
-            if (isScp03) {
-                writeAesKeyData(data, keyComponent, dekKey);
-            } else {
-                writeDes3KeyData(data, keyComponent, dekKey);
-            }
-        }
-
-        // P1 = existing key version (0 = new set), P2 = 0x81 (index 1 | multiple keys)
-        APDUResponse response = send(0x80, GP.INS_PUT_KEY,
-                existingKeyVersion, 0x81, data.toByteArray());
-        if (!response.isSuccess()) {
-            throw new GPException("PUT KEY failed", response.sw());
+        List<byte[]> blocks = blocks(loadData, channel.maxCommandDataLength(), "LOAD");
+        APDUResponse response = null;
+        for (int i = 0; i < blocks.size(); i++) {
+            int p1 = i == blocks.size() - 1 ? 0x80 : 0x00;
+            response = requireSuccess(command(GP.INS_LOAD, p1, i, blocks.get(i), LE_ALL),
+                    "LOAD failed at block " + i);
         }
         return response;
     }
 
     /**
-     * Replaces a single key on the card using PUT KEY.
+     * Performs the complete applet loading flow for a CAP file defining exactly one applet: INSTALL
+     * [for load] + LOAD + INSTALL [for install and make selectable] with that applet as Executable Module.
      *
-     * @param keyIndex           the key index (1=ENC, 2=MAC, 3=DEK)
+     * @param cap            the parsed CAP file
+     * @param instanceAidHex the instance AID as hex (null = the applet AID)
+     * @param privileges     the privileges (e.g., 0x00)
+     * @param installParams  the install parameters (may be null)
+     * @return the final INSTALL [for install] response
+     * @throws GPException if the CAP file does not define exactly one applet or any command fails
+     */
+    public APDUResponse loadAndInstall(CAPFile cap, String instanceAidHex,
+                                       int privileges, byte[] installParams) {
+        return loadAndInstall(cap, Hex.encode(cap.singleAppletAid()), instanceAidHex, privileges, installParams);
+    }
+
+    /**
+     * Performs the complete applet loading flow: INSTALL [for load] + LOAD + INSTALL [for install and
+     * make selectable]. The Executable Module AID must be one of the applet AIDs of the CAP file's Applet
+     * component (GPCS v2.3.1 11.5.2.3.2, JCVM 3.1 section 6.6); this and the number of LOAD blocks are
+     * checked before anything is sent.
+     *
+     * @param cap            the parsed CAP file
+     * @param moduleAidHex   the applet (Executable Module) AID as hex
+     * @param instanceAidHex the instance AID as hex (null = the module AID)
+     * @param privileges     the privileges (e.g., 0x00)
+     * @param installParams  the install parameters (may be null)
+     * @return the final INSTALL [for install] response
+     * @throws GPException if the module is not an applet of the CAP file or any command fails
+     */
+    public APDUResponse loadAndInstall(CAPFile cap, String moduleAidHex, String instanceAidHex,
+                                       int privileges, byte[] installParams) {
+        requireOpen();
+        byte[] module = Hex.decode(moduleAidHex);
+        if (cap.appletAids().stream().noneMatch(aid -> Arrays.equals(aid, module))) {
+            throw new GPException("CAP file " + cap.packageAidHex() + " defines no applet " + moduleAidHex
+                    + "; its applets are " + cap.appletAids().stream().map(Hex::encode).toList());
+        }
+        byte[] loadFile = cap.loadFileData();
+        blocks(loadFile, channel.maxCommandDataLength(), "LOAD");
+        installForLoad(cap.packageAidHex(), null);
+        load(loadFile);
+        return installForInstall(cap.packageAidHex(), moduleAidHex,
+                instanceAidHex != null ? instanceAidHex : moduleAidHex, privileges, installParams);
+    }
+
+    /**
+     * Sends STORE DATA ({@code 80 E2 P1 P2 Lc data}, GPCS v2.3.1 11.11) with automatic segmentation.
+     *
+     * <p>The data is split into blocks of {@link SecureChannel#maxCommandDataLength()} bytes; P1 '80'
+     * marks the last block (no structure or encryption information) and P2 is the block number.</p>
+     *
+     * @param data the data to store
+     * @return the response to the last STORE DATA command
+     * @throws GPException if the data needs more than 256 blocks or any block fails
+     */
+    public APDUResponse storeData(byte[] data) {
+        requireOpen();
+        List<byte[]> blocks = blocks(data, channel.maxCommandDataLength(), "STORE DATA");
+        APDUResponse response = null;
+        for (int i = 0; i < blocks.size(); i++) {
+            int p1 = i == blocks.size() - 1 ? 0x80 : 0x00;
+            response = requireSuccess(command(GP.INS_STORE_DATA, p1, i, blocks.get(i), -1),
+                    "STORE DATA failed at block " + i);
+        }
+        return response;
+    }
+
+    /**
+     * Replaces (or, for factory key sets with a Key Version Number above '7F', adds) the three keys of the
+     * current key set using PUT KEY.
+     *
+     * @param newKeys       the new key set to install (its key type decides the key data format)
+     * @param newKeyVersion the version number for the new keys (1-127)
+     * @return the APDU response
+     * @throws GPException if the PUT KEY command fails
+     * @see #putKeys(SCPKeys, int, int)
+     */
+    public APDUResponse putKeys(SCPKeys newKeys, int newKeyVersion) {
+        requireOpen();
+        int current = cardInfo.keyVersion();
+        return putKeys(newKeys, newKeyVersion, current > 0x7F ? 0 : current);
+    }
+
+    /**
+     * Replaces or adds a key set with PUT KEY ({@code 80 D8 P1 81 Lc data 00}, GPCS v2.3.1 11.8).
+     *
+     * <p>The key type is taken from {@link SCPKeys#keyType()}; key sets without an explicit type use the
+     * type of the current secure channel protocol (SCP02: DES, SCP03: AES). The key values are encrypted
+     * with the channel's DEK (SCP02 session DEK, SCP03 static Key-DEK) and sent with their key check
+     * values. Use {@code existingKeyVersion = 0} to add a new key set.</p>
+     *
+     * @param newKeys             the new key set to install
+     * @param newKeyVersion       the version number for the new keys (1-127)
+     * @param existingKeyVersion  the version of keys being replaced (0 = add new, at most 127)
+     * @return the APDU response
+     * @throws GPException if the PUT KEY command fails
+     */
+    public APDUResponse putKeys(SCPKeys newKeys, int newKeyVersion, int existingKeyVersion) {
+        requireOpen();
+        requireKeyVersions(newKeyVersion, existingKeyVersion);
+        KeyInfo.KeyType type = newKeys.keyType().orElseGet(this::channelKeyType);
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        data.write(newKeyVersion);
+        data.writeBytes(PutKeyData.keyDataField(newKeys.enc(), type, channel));
+        data.writeBytes(PutKeyData.keyDataField(newKeys.mac(), type, channel));
+        data.writeBytes(PutKeyData.keyDataField(newKeys.dek(), type, channel));
+        // P2 = '81': Key Identifier 1, multiple keys (Table 11-66)
+        return requireSuccess(command(GP.INS_PUT_KEY, existingKeyVersion, 0x81, data.toByteArray(), LE_ALL),
+                "PUT KEY failed");
+    }
+
+    /**
+     * Replaces a single key using PUT KEY, with the key type of the current secure channel protocol.
+     *
+     * @param keyIndex           the key identifier (1=ENC, 2=MAC, 3=DEK)
      * @param newKey             the new key bytes
      * @param newKeyVersion      the version number for the new key
      * @param existingKeyVersion the version of the key being replaced (0 = add new)
      * @return the APDU response
      * @throws GPException if the PUT KEY command fails
      */
-    public APDUResponse putKey(int keyIndex, byte[] newKey, int newKeyVersion,
-                                int existingKeyVersion) {
+    public APDUResponse putKey(int keyIndex, byte[] newKey, int newKeyVersion, int existingKeyVersion) {
         requireOpen();
+        return putKey(keyIndex, newKey, channelKeyType(), newKeyVersion, existingKeyVersion);
+    }
 
-        boolean isScp03 = channel instanceof SCP03;
-        byte[] dekKey = channel.dek();
-
+    /**
+     * Replaces or adds a single key using PUT KEY ({@code 80 D8 P1 P2 Lc data 00}, GPCS v2.3.1 11.8).
+     *
+     * @param keyIndex           the key identifier (P2, 1-127, single key)
+     * @param newKey             the new key bytes
+     * @param keyType            the key type of the new key
+     * @param newKeyVersion      the version number for the new key (1-127)
+     * @param existingKeyVersion the version of the key being replaced (0 = add new)
+     * @return the APDU response
+     * @throws GPException if the PUT KEY command fails
+     */
+    public APDUResponse putKey(int keyIndex, byte[] newKey, KeyInfo.KeyType keyType, int newKeyVersion,
+                               int existingKeyVersion) {
+        requireOpen();
+        requireKeyVersions(newKeyVersion, existingKeyVersion);
+        if (keyIndex < 0 || keyIndex > 0x7F) {
+            throw new GPException("Key identifier must be 0x00-0x7F (GPCS v2.3.1 Table 11-66), got: " + keyIndex);
+        }
         ByteArrayOutputStream data = new ByteArrayOutputStream();
         data.write(newKeyVersion);
-
-        if (isScp03) {
-            writeAesKeyData(data, newKey, dekKey);
-        } else {
-            writeDes3KeyData(data, newKey, dekKey);
-        }
-
-        // P2 = key index (no 0x80 flag for single key)
-        APDUResponse response = send(0x80, GP.INS_PUT_KEY,
-                existingKeyVersion, keyIndex, data.toByteArray());
-        if (!response.isSuccess()) {
-            throw new GPException("PUT KEY failed for key index " + keyIndex, response.sw());
-        }
-        return response;
+        data.writeBytes(PutKeyData.keyDataField(newKey, keyType, channel));
+        return requireSuccess(command(GP.INS_PUT_KEY, existingKeyVersion, keyIndex, data.toByteArray(), LE_ALL),
+                "PUT KEY failed for key index " + keyIndex);
     }
 
     // ── Lifecycle management ──
 
     /**
-     * Changes the lifecycle state of an application, security domain, or load file.
+     * Changes a Life Cycle State with SET STATUS ({@code 80 F0 P1 P2 Lc AID}, GPCS v2.3.1 11.10).
      *
-     * <p>Sends SET STATUS (INS=0xF0) with the specified scope, AID, and new state.</p>
+     * <p>The data field is the raw AID of the target (11.10.2.3); for the Issuer Security Domain scope
+     * ('80') no data is sent. A Security Domain changing the state of another application can only lock
+     * it (P2 b8 = 1) or unlock it (P2 b8 = 0) (11.10.2.2). <strong>Scope '80' sets the card Life Cycle
+     * State</strong>: read the warnings of {@link #lockCard()} and {@link #terminateCard()} first.</p>
      *
-     * <p><strong>Scope values:</strong></p>
-     * <ul>
-     *   <li>{@link Lifecycle#SCOPE_ISD} (0x80) — Issuer Security Domain</li>
-     *   <li>{@link Lifecycle#SCOPE_APPS} (0x40) — Applications and Security Domains</li>
-     *   <li>{@link Lifecycle#SCOPE_LOAD_FILES} (0x20) — Executable Load Files</li>
-     * </ul>
-     *
-     * @param scope    the entity type (see {@link Lifecycle} scope constants)
+     * @param scope    the status type (P1): {@link Lifecycle#SCOPE_ISD}, {@link Lifecycle#SCOPE_APPS} or
+     *                 {@link Lifecycle#SCOPE_SD_AND_APPS}
      * @param aid      the AID of the target entity
-     * @param newState the new lifecycle state value
+     * @param newState the state control (P2)
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse setStatus(int scope, byte[] aid, int newState) {
-        requireOpen();
-        byte[] data = (scope == Lifecycle.SCOPE_ISD) ? null : InstallParams.forDelete(aid);
-        APDUResponse response = send(0x80, GP.INS_SET_STATUS, scope, newState, data);
-        if (!response.isSuccess()) {
-            throw new GPException("SET STATUS failed", response.sw());
-        }
-        return response;
+        byte[] data = (scope == Lifecycle.SCOPE_ISD) ? null : aid;
+        return requireSuccess(command(GP.INS_SET_STATUS, scope, newState, data, -1), "SET STATUS failed");
     }
 
     /**
-     * Changes the lifecycle state of an application, security domain, or load file.
+     * Changes a Life Cycle State with SET STATUS, see {@link #setStatus(int, byte[], int)} (scope '80': the card).
      *
-     * @param scope    the entity type
+     * @param scope    the status type (P1)
      * @param aidHex   the AID as a hex string
-     * @param newState the new lifecycle state value
+     * @param newState the state control (P2)
      * @return the APDU response
      * @throws GPException if the command fails
      */
@@ -865,14 +853,14 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Locks an application (sets the LOCKED bit in its lifecycle state).
+     * Locks an application (SET STATUS P1 '40', P2 '80': transition to LOCKED, GPCS v2.3.1 11.10.2.2).
      *
      * @param aidHex the application AID as a hex string
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse lockApp(String aidHex) {
-        return setStatus(Lifecycle.SCOPE_APPS, aidHex, Lifecycle.APP_LOCKED);
+        return lockApp(Hex.decode(aidHex));
     }
 
     /**
@@ -887,14 +875,15 @@ public final class GPSession implements AutoCloseable {
     }
 
     /**
-     * Unlocks an application (reverts to SELECTABLE state).
+     * Unlocks an application (SET STATUS P1 '40', P2 '00': transition from LOCKED back to the previous
+     * state, GPCS v2.3.1 11.10.2.2).
      *
      * @param aidHex the application AID as a hex string
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse unlockApp(String aidHex) {
-        return setStatus(Lifecycle.SCOPE_APPS, aidHex, Lifecycle.APP_SELECTABLE);
+        return unlockApp(Hex.decode(aidHex));
     }
 
     /**
@@ -905,206 +894,227 @@ public final class GPSession implements AutoCloseable {
      * @throws GPException if the command fails
      */
     public APDUResponse unlockApp(byte[] aid) {
-        return setStatus(Lifecycle.SCOPE_APPS, aid, Lifecycle.APP_SELECTABLE);
+        return setStatus(Lifecycle.SCOPE_APPS, aid, 0x00);
     }
 
     /**
-     * Terminates an application (irreversible).
+     * Not supported: a Security Domain cannot terminate another application with SET STATUS.
      *
      * @param aidHex the application AID as a hex string
-     * @return the APDU response
-     * @throws GPException if the command fails
+     * @return never returns normally
+     * @throws GPException always
+     * @deprecated GPCS v2.3.1 11.10.2.2: "For a Security Domain setting the Life Cycle State of another
+     *             Application ..., the only possible transitions are to the LOCKED state and subsequently
+     *             back"; use {@link #lockApp(String)} or {@link #deleteAid(String)}
      */
+    @Deprecated
     public APDUResponse terminateApp(String aidHex) {
-        return setStatus(Lifecycle.SCOPE_APPS, aidHex, Lifecycle.APP_TERMINATED);
+        throw new GPException("SET STATUS cannot terminate another application (GPCS v2.3.1 11.10.2.2):"
+                + " use lockApp() or deleteAid()");
     }
 
     /**
-     * Terminates an application (irreversible).
+     * Not supported: a Security Domain cannot terminate another application with SET STATUS.
      *
      * @param aid the application AID bytes
-     * @return the APDU response
-     * @throws GPException if the command fails
+     * @return never returns normally
+     * @throws GPException always
+     * @deprecated see {@link #terminateApp(String)}
      */
+    @Deprecated
     public APDUResponse terminateApp(byte[] aid) {
-        return setStatus(Lifecycle.SCOPE_APPS, aid, Lifecycle.APP_TERMINATED);
+        return terminateApp(Hex.encode(aid));
     }
 
     /**
-     * Locks the card (Issuer Security Domain enters CARD_LOCKED state).
+     * Locks the card: SET STATUS P1 '80', P2 '7F', card Life Cycle State SECURED to CARD_LOCKED (GPCS v2.3.1
+     * 5.1.1.4, 9.6.3, 11.10, Table 11-6).
      *
-     * <p>All applications become inaccessible. The card can still be
-     * unlocked by the issuer.</p>
+     * <p><strong>Warning:</strong> in CARD_LOCKED only the application with the Final Application privilege can be
+     * selected, Security Domains accept only GET DATA, GET STATUS and SET STATUS, and no card content, key or data
+     * may change (5.1.1.4, Table 11-1). Locking and unlocking ({@link #unlockCard()}) need a Security Domain with
+     * the Card Lock privilege (normally the Issuer Security Domain) and a secure channel authenticated with its keys
+     * (9.6.3, 11.10.2.2); once the current session ends, that domain can be selected again only if it holds the
+     * Final Application privilege (by default the ISD, 6.6.2). Where it does not, or the card restricts unlocking,
+     * a lock is irreversible in practice: see {@link Lifecycle#CARD_LOCKED}.</p>
      *
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse lockCard() {
-        requireOpen();
-        APDUResponse response = send(0x80, GP.INS_SET_STATUS,
-                Lifecycle.SCOPE_ISD, Lifecycle.CARD_LOCKED);
-        if (!response.isSuccess()) {
-            throw new GPException("SET STATUS (lock card) failed", response.sw());
-        }
-        return response;
-    }
-
-    // ── Security Domain management ──
-
-    /**
-     * Queries all Security Domains on the card.
-     *
-     * <p>Retrieves applications and Security Domains (scope=0x40) and filters
-     * to return only entries with the Security Domain privilege bit set.</p>
-     *
-     * @return list of Security Domain entries
-     * @throws GPException if the GET STATUS command fails
-     * @see Privileges#isSecurityDomain(int)
-     */
-    public List<AppletInfo> getDomains() {
-        return getStatus(0x40).stream()
-                .filter(AppletInfo::isSecurityDomain)
-                .toList();
+        return setStatus(Lifecycle.SCOPE_ISD, new byte[0], Lifecycle.CARD_LOCKED);
     }
 
     /**
-     * Queries Executable Load Files on the card (scope=0x20).
+     * Unlocks the card: SET STATUS P1 '80', P2 '0F', CARD_LOCKED back to SECURED (GPCS v2.3.1 5.1.1.4, 9.6.3).
      *
-     * @return list of load file entries
-     * @throws GPException if the GET STATUS command fails
-     */
-    public List<AppletInfo> getLoadFiles() {
-        return getStatus(0x20);
-    }
-
-    /**
-     * Sends INSTALL [for extradition] to move an applet to another Security Domain.
+     * <p>Needs the Security Domain with the Card Lock privilege, a secure channel authenticated with its keys (9.6.3)
+     * and that domain still selectable in CARD_LOCKED: see the warning of {@link #lockCard()}.</p>
      *
-     * @param appletAidHex       the applet AID as hex
-     * @param targetDomainAidHex the target Security Domain AID as hex
      * @return the APDU response
      * @throws GPException if the command fails
      */
-    public APDUResponse extradite(String appletAidHex, String targetDomainAidHex) {
-        requireOpen();
-        byte[] appletAid = Hex.decode(appletAidHex);
-        byte[] sdAid = Hex.decode(targetDomainAidHex);
-        byte[] data = InstallParams.forExtradition(sdAid, appletAid);
-        APDUResponse response = send(0x80, GP.INS_INSTALL,
-                GP.INSTALL_FOR_EXTRADITION, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("INSTALL [for extradition] failed", response.sw());
-        }
-        return response;
+    public APDUResponse unlockCard() {
+        return setStatus(Lifecycle.SCOPE_ISD, new byte[0], Lifecycle.CARD_SECURED);
     }
 
     /**
-     * Sends INSTALL [for personalization] to personalize a Security Domain.
+     * Terminates the card: SET STATUS P1 '80', P2 'FF', card Life Cycle State TERMINATED (GPCS v2.3.1 5.1.1.5, 9.6.4).
      *
-     * @param domainAidHex the Security Domain AID as hex
-     * @return the APDU response
-     * @throws GPException if the command fails
-     */
-    public APDUResponse personalize(String domainAidHex) {
-        requireOpen();
-        byte[] domainAid = Hex.decode(domainAidHex);
-        byte[] data = InstallParams.forPersonalization(domainAid);
-        APDUResponse response = send(0x80, GP.INS_INSTALL,
-                GP.INSTALL_FOR_PERSONALIZATION, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("INSTALL [for personalization] failed", response.sw());
-        }
-        return response;
-    }
-
-    /**
-     * Sends INSTALL [for registry update] to change applet privileges (GP 2.2+).
-     *
-     * @param appletAidHex  the applet AID as hex
-     * @param newPrivileges the new privilege byte
-     * @return the APDU response
-     * @throws GPException if the command fails
-     */
-    public APDUResponse registryUpdate(String appletAidHex, int newPrivileges) {
-        requireOpen();
-        byte[] appletAid = Hex.decode(appletAidHex);
-        byte[] data = InstallParams.forRegistryUpdate(appletAid, newPrivileges);
-        APDUResponse response = send(0x80, GP.INS_INSTALL,
-                GP.INSTALL_FOR_REGISTRY_UPDATE, 0x00, data);
-        if (!response.isSuccess()) {
-            throw new GPException("INSTALL [for registry update] failed", response.sw());
-        }
-        return response;
-    }
-
-    /**
-     * Terminates the card (irreversible).
-     *
-     * <p>The card becomes permanently unusable. This cannot be undone.</p>
+     * <p><strong>Warning: irreversible</strong> ("The state transition from any other state to TERMINATED is
+     * irreversible", 5.1.1.5). Card content management and life cycle changes are disabled for good; only the
+     * application with the Final Application privilege can be selected, and a Security Domain with it processes
+     * GET DATA only (Table 11-1). Needs a Security Domain with the Card Terminate privilege (11.10.2.2) and its
+     * keys; see {@link Lifecycle#CARD_TERMINATED}.</p>
      *
      * @return the APDU response
      * @throws GPException if the command fails
      */
     public APDUResponse terminateCard() {
-        requireOpen();
-        APDUResponse response = send(0x80, GP.INS_SET_STATUS,
-                Lifecycle.SCOPE_ISD, Lifecycle.CARD_TERMINATED);
-        if (!response.isSuccess()) {
-            throw new GPException("SET STATUS (terminate card) failed", response.sw());
-        }
-        return response;
+        return setStatus(Lifecycle.SCOPE_ISD, new byte[0], Lifecycle.CARD_TERMINATED);
     }
 
+    // ── Security Domain management ──
+
+    /**
+     * Queries all Security Domains (GET STATUS scope '40', filtered by the Security Domain privilege).
+     *
+     * @return list of Security Domain entries
+     * @throws GPException if the GET STATUS command fails
+     */
+    public List<AppletInfo> getDomains() {
+        return getStatus(Lifecycle.SCOPE_APPS).stream()
+                .filter(AppletInfo::isSecurityDomain)
+                .toList();
+    }
+
+    /**
+     * Queries Executable Load Files on the card (scope '20').
+     *
+     * @return list of load file entries
+     * @throws GPException if the GET STATUS command fails
+     */
+    public List<AppletInfo> getLoadFiles() {
+        return getStatus(Lifecycle.SCOPE_LOAD_FILES);
+    }
+
+    /**
+     * Sends INSTALL [for extradition] (P1 '10', Table 11-45) to move an application to another Security
+     * Domain.
+     *
+     * @param appletAidHex       the application AID as hex
+     * @param targetDomainAidHex the target Security Domain AID as hex
+     * @return the APDU response
+     * @throws GPException if the command fails
+     */
+    public APDUResponse extradite(String appletAidHex, String targetDomainAidHex) {
+        byte[] data = InstallParams.forExtradition(Hex.decode(targetDomainAidHex), Hex.decode(appletAidHex));
+        return requireSuccess(command(GP.INS_INSTALL, GP.INSTALL_FOR_EXTRADITION, 0x00, data, LE_ALL),
+                "INSTALL [for extradition] failed");
+    }
+
+    /**
+     * Sends INSTALL [for personalization] (P1 '20', Table 11-47).
+     *
+     * @param domainAidHex the application AID as hex
+     * @return the APDU response
+     * @throws GPException if the command fails
+     */
+    public APDUResponse personalize(String domainAidHex) {
+        byte[] data = InstallParams.forPersonalization(Hex.decode(domainAidHex));
+        return requireSuccess(command(GP.INS_INSTALL, GP.INSTALL_FOR_PERSONALIZATION, 0x00, data, LE_ALL),
+                "INSTALL [for personalization] failed");
+    }
+
+    /**
+     * Sends INSTALL [for registry update] (P1 '40', Table 11-46) to change application privileges.
+     *
+     * @param appletAidHex  the application AID as hex
+     * @param newPrivileges the new privileges: 0x00-0xFF for one byte, larger values for three bytes
+     * @return the APDU response
+     * @throws GPException if the command fails
+     */
+    public APDUResponse registryUpdate(String appletAidHex, int newPrivileges) {
+        byte[] data = InstallParams.forRegistryUpdate(Hex.decode(appletAidHex),
+                InstallParams.privileges(newPrivileges));
+        return requireSuccess(command(GP.INS_INSTALL, GP.INSTALL_FOR_REGISTRY_UPDATE, 0x00, data, LE_ALL),
+                "INSTALL [for registry update] failed");
+    }
+
+    /**
+     * Ends the session: destroys the session keys and forgets the card information. A new
+     * {@link #open()} performs a new authentication with a fresh host challenge.
+     */
     @Override
     public void close() {
-        opened = false;
+        if (channel != null) {
+            channel.destroy();
+        }
         channel = null;
+        cardInfo = null;
+        opened = false;
     }
 
     // ── Internal ──
 
-    /**
-     * Writes a 3DES key component for PUT KEY (SCP02 format).
-     * Format: keyType(1) | keyLen(1) | encryptedKey(16) | kcvLen(1) | kcv(3)
-     */
-    private void writeDes3KeyData(ByteArrayOutputStream out, byte[] key, byte[] dekKey) {
-        byte[] encrypted = CryptoUtil.des3EcbEncrypt(dekKey, key);
-        byte[] kcv = KeyInfo.kcvDes3(key);
-
-        out.write(KeyInfo.KeyType.DES3.code()); // 0x80
-        out.write(encrypted.length);
-        out.writeBytes(encrypted);
-        out.write(kcv.length); // 0x03
-        out.writeBytes(kcv);
-    }
-
-    /**
-     * Writes an AES key component for PUT KEY (SCP03 format).
-     * Format: keyType(1) | dataLen(1) | actualKeyLen(1) | encryptedKey(N) | kcvLen(1) | kcv(3)
-     */
-    private void writeAesKeyData(ByteArrayOutputStream out, byte[] key, byte[] dekKey) {
-        // Pad key to multiple of 16 if needed, then encrypt with AES-CBC
-        byte[] toEncrypt;
-        if (key.length % 16 != 0) {
-            toEncrypt = CryptoUtil.pad80(key, 16);
-        } else {
-            toEncrypt = key.clone();
+    private byte[] nextHostChallenge() {
+        if (testHostChallenge != null) {
+            byte[] challenge = testHostChallenge;
+            testHostChallenge = null;
+            return challenge;
         }
-        byte[] encrypted = CryptoUtil.aesCbcEncrypt(dekKey, toEncrypt);
-        byte[] kcv = KeyInfo.kcvAes(key);
-
-        out.write(KeyInfo.KeyType.AES.code()); // 0x88
-        out.write(1 + encrypted.length); // data length = actualKeyLen(1) + encrypted
-        out.write(key.length); // actual key length
-        out.writeBytes(encrypted);
-        out.write(kcv.length); // 0x03
-        out.writeBytes(kcv);
+        byte[] challenge = new byte[s16 ? 16 : 8];
+        RANDOM.nextBytes(challenge);
+        return challenge;
     }
 
+    private void selectSecurityDomain() {
+        byte[] select = APDUBuilder.select(securityDomainAid).le(LE_ALL).build();
+        APDUResponse response = APDUSequence.on(session).transmit(select);
+        if (!response.isSuccess()) {
+            throw new GPException("SELECT of Security Domain " + Hex.encode(securityDomainAid) + " failed",
+                    response.sw());
+        }
+    }
+
+    /** INITIALIZE UPDATE: {@code 80 50 KVN 00 Lc host-challenge 00} (GPCS Table E-7, Amd D Table 7-2). */
+    private byte[] initializeUpdate(byte[] hostChallenge) {
+        byte[] apdu = APDUCodec.encode(GP.CLA_GP, GP.INS_INITIALIZE_UPDATE, keyVersion, 0x00, hostChallenge,
+                LE_ALL);
+        APDUResponse response = APDUSequence.on(session).transmit(apdu);
+        if (!response.isSuccess()) {
+            throw new GPException("INITIALIZE UPDATE failed", response.sw());
+        }
+        return response.data();
+    }
+
+    /** Creates the channel and verifies the card cryptogram; nothing is sent to the card here. */
+    private SecureChannel createChannel(SCPKeys sessionKeys, byte[] hostChallenge, byte[] response) {
+        if (cardInfo.scpVersion() == 2) {
+            SCP02 scp02 = SCP02.from(sessionKeys, response, securityLevel, scp02Option);
+            try {
+                scp02.verifyCardCryptogram(hostChallenge);
+            } catch (SCPException e) {
+                scp02.destroy();
+                throw e;
+            }
+            return scp02;
+        }
+        return SCP03.from(sessionKeys, hostChallenge, response, securityLevel);
+    }
+
+    private APDUResponse command(int ins, int p1, int p2, byte[] data, int le) {
+        requireOpen();
+        return transmitWrapped(APDUCodec.encode(GP.CLA_GP, ins, p1, p2, data, le));
+    }
+
+    /** Transmits a protected command exactly once (fail closed), see {@link SecureChannelTransport}. */
     private APDUResponse transmitWrapped(byte[] plainApdu) {
-        byte[] wrapped = channel.wrap(plainApdu);
-        APDUResponse response = APDUSequence.on(session).transmit(wrapped);
-        return channel.unwrap(response);
+        return SecureChannelTransport.transmit(session, channel, plainApdu, this::close);
+    }
+
+    private KeyInfo.KeyType channelKeyType() {
+        return channel instanceof SCP03 ? KeyInfo.KeyType.AES : KeyInfo.KeyType.DES3;
     }
 
     private void requireOpen() {
@@ -1113,47 +1123,35 @@ public final class GPSession implements AutoCloseable {
         }
     }
 
-    /**
-     * Parses GET STATUS TLV response into AppletInfo entries.
-     *
-     * <p>Each entry is a constructed TLV with tag E3 containing:</p>
-     * <ul>
-     *   <li>Tag 4F: AID</li>
-     *   <li>Tag 9F70: Life cycle state</li>
-     *   <li>Tag C5: Privileges</li>
-     * </ul>
-     */
-    private List<AppletInfo> parseGetStatusResponse(byte[] data) {
-        List<AppletInfo> result = new ArrayList<>();
-        if (data == null || data.length == 0) {
-            return result;
+    private static APDUResponse requireSuccess(APDUResponse response, String message) {
+        if (!response.isSuccess()) {
+            throw new GPException(message, response.sw());
         }
+        return response;
+    }
 
-        try {
-            TLVList list = TLVParser.parse(data);
-            for (TLV entry : list) {
-                if (entry.tag() == 0xE3) {
-                    TLVList children = entry.children();
-                    byte[] aid = children.find(0x4F)
-                            .map(TLV::value)
-                            .orElse(new byte[0]);
+    private static byte[] requireData(APDUResponse response, String command) {
+        return requireSuccess(response, command + " failed").data();
+    }
 
-                    int lifecycle = children.find(0x9F70)
-                            .map(t -> t.value().length > 0 ? t.value()[0] & 0xFF : 0)
-                            .orElse(0);
-
-                    int privileges = children.find(0xC5)
-                            .map(t -> t.value().length > 0 ? t.value()[0] & 0xFF : 0)
-                            .orElse(0);
-
-                    result.add(new AppletInfo(aid, lifecycle, privileges));
-                }
-            }
-        } catch (Exception e) {
-            // If TLV parsing fails, return empty list rather than crashing
-            // (some cards return non-standard formats)
+    private static void requireKeyVersions(int newKeyVersion, int existingKeyVersion) {
+        if (newKeyVersion < 1 || newKeyVersion > 0x7F || existingKeyVersion < 0 || existingKeyVersion > 0x7F) {
+            throw new GPException("Key Version Numbers are coded '01'-'7F' (existing: '00' = add new key set),"
+                    + " GPCS v2.3.1 11.8.2.1; got new=" + newKeyVersion + ", existing=" + existingKeyVersion);
         }
+    }
 
-        return result;
+    /** Splits data into blocks for a sequence of numbered commands (block numbers '00'-'FF'). */
+    private static List<byte[]> blocks(byte[] data, int blockSize, String command) {
+        int count = Math.max(1, (data.length + blockSize - 1) / blockSize);
+        if (count > MAX_BLOCKS) {
+            throw new GPException(command + " of " + data.length + " bytes needs " + count + " blocks of "
+                    + blockSize + " bytes, more than the 256 block numbers '00'-'FF' (GPCS v2.3.1 11.6.2.2)");
+        }
+        List<byte[]> blocks = new ArrayList<>(count);
+        for (int offset = 0; offset < data.length || blocks.isEmpty(); offset += blockSize) {
+            blocks.add(Arrays.copyOfRange(data, offset, Math.min(data.length, offset + blockSize)));
+        }
+        return blocks;
     }
 }

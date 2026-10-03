@@ -37,6 +37,7 @@ package name.velikodniy.jcexpress.scp;
  *   <li>{@link #SCP03_DERIVE_ENC} — encryption session key</li>
  *   <li>{@link #SCP03_DERIVE_CARD_CRYPTO} — card cryptogram derivation</li>
  *   <li>{@link #SCP03_DERIVE_HOST_CRYPTO} — host cryptogram derivation</li>
+ *   <li>{@link #SCP03_DERIVE_CARD_CHALLENGE} — pseudo-random card challenge derivation</li>
  * </ul>
  *
  * @see SCP02
@@ -141,8 +142,17 @@ public final class GP {
     /** SCP03 derivation constant for encryption session key. */
     public static final byte SCP03_DERIVE_ENC = 0x04;
 
-    /** SCP03 derivation constant for DEK session key. */
+    /**
+     * SCP03 derivation constant 0x05.
+     *
+     * @deprecated '05' is RFU in Amendment D Table 4-1: SCP03 derives no DEK session key (6.2.1, the static
+     *             Key-DEK is used, 6.2.8). Kept for source compatibility only.
+     */
+    @Deprecated
     public static final byte SCP03_DERIVE_DEK = 0x05;
+
+    /** SCP03 derivation constant for pseudo-random card challenge generation (Amd D Table 4-1, 6.2.2.1). */
+    public static final byte SCP03_DERIVE_CARD_CHALLENGE = 0x02;
 
     // ── Security levels ──
 
@@ -164,11 +174,45 @@ public final class GP {
     /** C-MAC, C-DECRYPTION, R-MAC, and R-ENCRYPTION (full protection). */
     public static final int SECURITY_C_MAC_C_ENC_R_MAC_R_ENC = 0x33;
 
-    // ── SCP03 implementation options (i parameter) ──
+    /** R-MAC bit of the security level (GPCS v2.3.1 Table E-11, Amendment D Table 7-6). */
+    public static final int SECURITY_R_MAC = 0x10;
 
-    /** SCP03 option: pseudo-random card challenge (i=60). */
+    /** R-ENCRYPTION bit of the security level (Amendment D Table 7-6, SCP03 only). */
+    public static final int SECURITY_R_ENC = 0x20;
+
+    // ── Implementation options (i parameter) ──
+
+    /**
+     * SCP02 option i=15: explicit initiation, C-MAC on modified APDU, ICV set to zero, ICV encryption,
+     * 3 Secure Channel keys, no R-MAC (GPCS v2.3.1 E.1.1, mandatory option list).
+     */
+    public static final int SCP02_I15 = 0x15;
+
+    /**
+     * SCP02 option i=55: as i=15 with a well-known pseudo-random card challenge (GPCS v2.3.1 E.1.1).
+     */
+    public static final int SCP02_I55 = 0x55;
+
+    /**
+     * SCP03 option i=60: random card challenge, R-MAC and R-ENCRYPTION support (Amendment D Table 5-1).
+     */
     public static final int SCP03_I60 = 0x60;
 
-    /** SCP03 option: explicit card challenge (i=70, default). */
+    /**
+     * SCP03 option i=70: pseudo-random card challenge (3-byte sequence counter in the INITIALIZE UPDATE
+     * response), R-MAC and R-ENCRYPTION support (Amendment D Table 5-1).
+     */
     public static final int SCP03_I70 = 0x70;
+
+    /**
+     * Returns true for the status words after which secure messaging protects a response: '9000' and the
+     * warnings '62xx' and '63xx'; all other status words are errors (Amendment D 6.2.5, GPCS v2.3.1 E.4.5).
+     *
+     * @param sw the status word
+     * @return true for success or warning status words
+     */
+    public static boolean isSuccessOrWarning(int sw) {
+        int sw1 = (sw >> 8) & 0xFF;
+        return sw == 0x9000 || sw1 == 0x62 || sw1 == 0x63;
+    }
 }

@@ -2,6 +2,9 @@ package name.velikodniy.jcexpress.scp;
 
 import name.velikodniy.jcexpress.crypto.CryptoUtil;
 
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
+
 /**
  * Key diversification algorithms for deriving card-specific keys from a master key.
  *
@@ -13,7 +16,7 @@ import name.velikodniy.jcexpress.crypto.CryptoUtil;
  * <ul>
  *   <li>{@link #visa2} — VISA2 diversification (3DES, used with SCP02)</li>
  *   <li>{@link #emvCps11} — EMV CPS 1.1 diversification (3DES, used with SCP02)</li>
- *   <li>{@link #kdf3} — KDF3 diversification (AES-CMAC, used with SCP03)</li>
+ *   <li>{@link #kdf3} — "KDF3" diversification of AES key sets (AES-CMAC counter-mode KDF, used with SCP03)</li>
  * </ul>
  *
  * <h2>Usage with GPSession:</h2>
@@ -27,6 +30,11 @@ import name.velikodniy.jcexpress.crypto.CryptoUtil;
  * @see name.velikodniy.jcexpress.gp.GPSession
  */
 public final class KeyDiversification {
+
+    private static final int KDD_LENGTH = 10;
+    private static final int KDF3_ENC = 0x01;
+    private static final int KDF3_MAC = 0x02;
+    private static final int KDF3_DEK = 0x03;
 
     private KeyDiversification() {
     }
@@ -55,7 +63,7 @@ public final class KeyDiversification {
         byte[] mac = visa2DeriveKey(masterKeys.mac(), d[0], d[1], d[4], d[5], d[6], d[7], 2);
         byte[] dek = visa2DeriveKey(masterKeys.dek(), d[0], d[1], d[4], d[5], d[6], d[7], 3);
 
-        return SCPKeys.of(enc, mac, dek);
+        return SCPKeys.des3(enc, mac, dek);
     }
 
     /**
@@ -82,35 +90,52 @@ public final class KeyDiversification {
         byte[] mac = visa2DeriveKey(masterKeys.mac(), d[4], d[5], d[6], d[7], d[8], d[9], 2);
         byte[] dek = visa2DeriveKey(masterKeys.dek(), d[4], d[5], d[6], d[7], d[8], d[9], 3);
 
-        return SCPKeys.of(enc, mac, dek);
+        return SCPKeys.des3(enc, mac, dek);
     }
 
     /**
-     * KDF3 key diversification for SCP03 (AES).
+     * "KDF3" key diversification for SCP03 (AES) key sets.
      *
-     * <p>Uses the same AES-CMAC based KDF as SCP03 session key derivation,
-     * but with the diversification data as context instead of the challenges.</p>
+     * <p>This is the scheme of the GlobalPlatformPro tool's {@code kdf3} key template; it is not defined by a
+     * GlobalPlatform specification. Each key is derived from its master key with the NIST SP 800-108 KDF in
+     * counter mode, AES-CMAC (NIST SP 800-38B) as PRF and the counter first; the i-th PRF input is:</p>
+     * <pre>
+     * i (1 byte, '01', '02') || '00 00 00' || key type ('01' ENC, '02' MAC, '03' DEK) || '00' || KDD (10 bytes)
+     * </pre>
+     * <p>The output is truncated to the master key length (AES-128, AES-192 or AES-256). The scheme
+     * reproduces the public GlobalPlatformPro test vectors (key check values for AES-128/192/256 master
+     * keys and an external 256-bit vector). It differs from the session key derivation of Amendment D
+     * 4.1.5, which has a 12-byte label and an L field.</p>
      *
-     * @param masterKeys          the master key set
-     * @param diversificationData the 10-byte diversification data from INITIALIZE UPDATE
-     * @return diversified key set
-     * @throws SCPException if the crypto operation fails
+     * @param masterKeys          the AES master key set
+     * @param diversificationData the key diversification data from INITIALIZE UPDATE (the first 10 bytes are used)
+     * @return the diversified AES key set
+     * @throws SCPException if the diversification data is shorter than 10 bytes or the master keys are 3DES keys
      */
     public static SCPKeys kdf3(SCPKeys masterKeys, byte[] diversificationData) {
         validateDiversificationData(diversificationData);
-        int keyBits = masterKeys.keyLength() * 8;
-
-        byte[] enc = CryptoUtil.deriveSCP03SessionKey(
-                masterKeys.enc(), diversificationData, GP.SCP03_DERIVE_ENC, keyBits);
-        byte[] mac = CryptoUtil.deriveSCP03SessionKey(
-                masterKeys.mac(), diversificationData, GP.SCP03_DERIVE_C_MAC, keyBits);
-        byte[] dek = CryptoUtil.deriveSCP03SessionKey(
-                masterKeys.dek(), diversificationData, GP.SCP03_DERIVE_DEK, keyBits);
-
-        return SCPKeys.of(enc, mac, dek);
+        if (masterKeys.keyType().filter(type -> type != KeyInfo.KeyType.AES).isPresent()) {
+            throw new SCPException("KDF3 diversifies AES (SCP03) key sets, but the master key set is typed 3DES");
+        }
+        byte[] kdd = Arrays.copyOf(diversificationData, KDD_LENGTH);
+        return SCPKeys.aes(kdf3Key(masterKeys.enc(), KDF3_ENC, kdd), kdf3Key(masterKeys.mac(), KDF3_MAC, kdd),
+                kdf3Key(masterKeys.dek(), KDF3_DEK, kdd));
     }
 
     // ── Internal ──
+
+    /** One KDF3 key: counter-mode KDF with AES-CMAC, output truncated to the master key length. */
+    private static byte[] kdf3Key(byte[] masterKey, int keyType, byte[] kdd) {
+        ByteArrayOutputStream derived = new ByteArrayOutputStream();
+        for (int counter = 1; derived.size() < masterKey.length; counter++) {
+            byte[] input = new byte[6 + KDD_LENGTH];
+            input[0] = (byte) counter;
+            input[4] = (byte) keyType;
+            System.arraycopy(kdd, 0, input, 6, KDD_LENGTH);
+            derived.writeBytes(CryptoUtil.aesCmac(masterKey, input));
+        }
+        return Arrays.copyOf(derived.toByteArray(), masterKey.length);
+    }
 
     /**
      * Derives a single 16-byte key using the VISA2/EMV CPS scheme.

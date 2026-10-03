@@ -5,145 +5,108 @@ import name.velikodniy.jcexpress.tlv.TLVBuilder;
 import name.velikodniy.jcexpress.tlv.Tags;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests for {@link CardData} parsing.
+ * Tests for {@link CardData}: the Card Recognition Data of GPCS v2.3.1 Appendix H.2, Table H-1.
  */
 class CardDataTest {
 
-    // GlobalPlatform OID: 1.2.840.114283.1 = 2A 86 48 86 FC 6B 01
-    private static final byte[] GP_OID = Hex.decode("2A864886FC6B01");
-
-    // GlobalPlatform SCP03 OID: 1.2.840.114283.4.0 = 2A 86 48 86 FC 6B 04 00
-    private static final byte[] SCP03_OID = Hex.decode("2A864886FC6B0400");
-
     /**
-     * Builds a realistic Card Data (0x66) response with Card Recognition Data.
+     * Card Recognition Data of the public real SCP02 card (GlobalPlatformPro log, pastebin ZQSDaJFm):
+     * GP 2.1.1 ('60'), SCP02 with i=15 ('64'), Java Card 2 ('66').
      */
-    private byte[] buildCardDataResponse() {
-        return TLVBuilder.create()
-                .addConstructed(Tags.GP_CARD_DATA, card -> card
-                        .addConstructed(Tags.GP_CARD_RECOGNITION_DATA, rec -> rec
-                                .add(Tags.GP_OID, GP_OID)
-                                .addConstructed(0x60, scheme -> scheme
-                                        .add(Tags.GP_OID, SCP03_OID))))
-                .build();
+    private static final String REAL_CARD = "663F733D06072A864886FC6B01600C060A2A864886FC6B02020101630906072A864886FC"
+            + "6B03640B06092A864886FC6B040215660C060A2B060104012A026E0102";
+
+    @Test
+    void table_h_1_allOidsOfTheRealCard() {
+        CardData data = CardData.parse(Hex.decode(REAL_CARD));
+
+        assertThat(data.oidStrings()).containsExactly("1.2.840.114283.1", "1.2.840.114283.2.2.1.1",
+                "1.2.840.114283.3", "1.2.840.114283.4.2.21", "1.3.6.1.4.1.42.2.110.1.2");
+        assertThat(data.rawData()).isEqualTo(Hex.decode(REAL_CARD));
     }
 
     @Test
-    void shouldParseCardDataResponse() {
-        byte[] response = buildCardDataResponse();
+    void table_h_1_cardManagementTypeAndVersionComesFromTag60() {
+        CardData data = CardData.parse(Hex.decode(REAL_CARD));
 
-        CardData data = CardData.parse(response);
-
-        assertThat(data.rawData()).isEqualTo(response);
-        assertThat(data.recognitionData()).isNotNull();
-        assertThat(data.recognitionData().isEmpty()).isFalse();
+        assertThat(data.gpVersion()).contains("1.2.840.114283.2.2.1.1");
     }
 
     @Test
-    void shouldExtractOids() {
-        byte[] response = buildCardDataResponse();
+    void table_h_1_secureChannelProtocolAndItsIParameterComeFromTag64() {
+        CardData data = CardData.parse(Hex.decode(REAL_CARD));
 
-        CardData data = CardData.parse(response);
-        List<byte[]> oids = data.oids();
-
-        assertThat(oids).isNotEmpty();
-        assertThat(oids.get(0)).isEqualTo(GP_OID);
+        assertThat(data.scpVersions()).containsExactly("1.2.840.114283.4.2.21");
+        assertThat(data.secureChannelProtocols()).containsExactly(new CardData.SecureChannelProtocol(2, 0x15));
     }
 
     @Test
-    void shouldConvertOidsToStrings() {
-        byte[] response = buildCardDataResponse();
-
-        CardData data = CardData.parse(response);
-        List<String> oidStrings = data.oidStrings();
-
-        assertThat(oidStrings).contains("1.2.840.114283.1");
-    }
-
-    @Test
-    void shouldHandleEmptyRecognitionData() {
-        // Response with 0x66 but no 0x73 inside
+    void table_h_1_severalSecureChannelProtocols() {
         byte[] response = TLVBuilder.create()
                 .addConstructed(Tags.GP_CARD_DATA, card -> card
-                        .add(Tags.GP_IIN, "0102030405"))
+                        .addConstructed(Tags.GP_CARD_RECOGNITION_DATA, rec -> rec
+                                .add(Tags.GP_OID, "2A864886FC6B01")
+                                .addConstructed(0x64, scp -> scp.add(Tags.GP_OID, "2A864886FC6B040370"))
+                                .addConstructed(0x64, scp -> scp.add(Tags.GP_OID, "2A864886FC6B040255"))))
+                .build();
+
+        CardData data = CardData.parse(response);
+
+        assertThat(data.secureChannelProtocols()).containsExactly(new CardData.SecureChannelProtocol(3, 0x70),
+                new CardData.SecureChannelProtocol(2, 0x55));
+        assertThat(data.gpVersion()).isEmpty();
+    }
+
+    /** Table H-2 (format 2) and note 4: a single '64' embedding several {globalPlatform 4 scp i} OIDs. */
+    @Test
+    void table_h_2_oneTag64WithSeveralSecureChannelProtocols() {
+        byte[] response = TLVBuilder.create()
+                .addConstructed(Tags.GP_CARD_DATA, card -> card
+                        .addConstructed(Tags.GP_CARD_RECOGNITION_DATA, rec -> rec
+                                .add(Tags.GP_OID, "2A864886FC6B01")
+                                .addConstructed(0x60, version -> version.add(Tags.GP_OID, "2A864886FC6B020203"))
+                                .addConstructed(0x64, scp -> scp
+                                        .add(Tags.GP_OID, "2A864886FC6B040370")
+                                        .add(Tags.GP_OID, "2A864886FC6B040215"))))
+                .build();
+
+        CardData data = CardData.parse(response);
+
+        assertThat(data.gpVersion()).contains("1.2.840.114283.2.2.3");
+        assertThat(data.scpVersions()).containsExactly("1.2.840.114283.4.3.112", "1.2.840.114283.4.2.21");
+        assertThat(data.secureChannelProtocols()).containsExactly(new CardData.SecureChannelProtocol(3, 0x70),
+                new CardData.SecureChannelProtocol(2, 0x15));
+    }
+
+    @Test
+    void missingRecognitionDataGivesEmptyResults() {
+        byte[] response = TLVBuilder.create()
+                .addConstructed(Tags.GP_CARD_DATA, card -> card.add(Tags.GP_IIN, "0102030405"))
                 .build();
 
         CardData data = CardData.parse(response);
 
         assertThat(data.recognitionData().isEmpty()).isTrue();
         assertThat(data.oids()).isEmpty();
+        assertThat(data.gpVersion()).isEmpty();
+        assertThat(data.scpVersions()).isEmpty();
+        assertThat(data.secureChannelProtocols()).isEmpty();
+    }
+
+    @Test
+    void oidToStringDecodesBase128Arcs() {
+        assertThat(CardData.oidToString(Hex.decode("2A864886FC6B01"))).isEqualTo("1.2.840.114283.1");
+        assertThat(CardData.oidToString(Hex.decode("550403"))).isEqualTo("2.5.4.3");
+        assertThat(CardData.oidToString(new byte[0])).isEmpty();
     }
 
     @Test
     void toStringShouldContainInfo() {
-        byte[] response = buildCardDataResponse();
+        CardData data = CardData.parse(Hex.decode(REAL_CARD));
 
-        CardData data = CardData.parse(response);
-
-        assertThat(data.toString()).contains("CardData");
-        assertThat(data.toString()).contains("rawLength=");
-    }
-
-    @Test
-    void oidToStringShouldDecodeCorrectly() {
-        // GlobalPlatform OID: 1.2.840.114283.1
-        assertThat(CardData.oidToString(GP_OID)).isEqualTo("1.2.840.114283.1");
-
-        // Common Name OID: 2.5.4.3
-        assertThat(CardData.oidToString(Hex.decode("550403"))).isEqualTo("2.5.4.3");
-    }
-
-    @Test
-    void shouldExtractGpVersion() {
-        byte[] response = buildCardDataResponse();
-
-        CardData data = CardData.parse(response);
-
-        assertThat(data.gpVersion()).isPresent();
-        assertThat(data.gpVersion().get()).isEqualTo("1.2.840.114283.1");
-    }
-
-    @Test
-    void gpVersionShouldReturnEmptyWhenNoGpOid() {
-        // Build response with non-GP OID only
-        byte[] response = TLVBuilder.create()
-                .addConstructed(Tags.GP_CARD_DATA, card -> card
-                        .addConstructed(Tags.GP_CARD_RECOGNITION_DATA, rec -> rec
-                                .add(Tags.GP_OID, "550403"))) // 2.5.4.3 — not GP
-                .build();
-
-        CardData data = CardData.parse(response);
-
-        assertThat(data.gpVersion()).isEmpty();
-    }
-
-    @Test
-    void shouldExtractScpVersions() {
-        byte[] response = buildCardDataResponse();
-
-        CardData data = CardData.parse(response);
-        List<String> versions = data.scpVersions();
-
-        assertThat(versions).hasSize(1);
-        assertThat(versions.get(0)).isEqualTo("1.2.840.114283.4.0");
-    }
-
-    @Test
-    void scpVersionsShouldReturnEmptyWhenNoScheme() {
-        // Build response without 0x60 constructed tag
-        byte[] response = TLVBuilder.create()
-                .addConstructed(Tags.GP_CARD_DATA, card -> card
-                        .addConstructed(Tags.GP_CARD_RECOGNITION_DATA, rec -> rec
-                                .add(Tags.GP_OID, GP_OID)))
-                .build();
-
-        CardData data = CardData.parse(response);
-
-        assertThat(data.scpVersions()).isEmpty();
+        assertThat(data.toString()).contains("CardData").contains("rawLength=65");
     }
 }
