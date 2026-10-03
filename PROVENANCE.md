@@ -93,9 +93,9 @@ These are decisions for the owner; nothing in this repository settles them.
 3. **API stub skeletons.** The 2026 completion of the stubs was bootstrapped from jCardSim's public API
    surface (Apache License 2.0). Only names, signatures and constants were used; whether an attribution in
    `NOTICE` is required is open (it is given there as a precaution).
-4. **Early design notes.** `maven-plugin/DESIGN.md` lists open-source projects as background references for
-   the converter (caprunner, which has no licence; martinpaljak/capfile, MIT; jCardSim, Apache License 2.0;
-   an academic paper). Whether any of them was consulted beyond the specifications while the converter was
+4. **Early design notes.** Design notes of 2026 that are not part of this repository list open-source projects
+   as background references for the converter (caprunner, which has no licence; martinpaljak/capfile, MIT;
+   jCardSim, Apache License 2.0; an academic paper). Whether any of them was consulted beyond the specifications while the converter was
    first written is for the original author to state.
 5. **Git history.** The Oracle-generated CAP files removed from the tree are still in the history of every
    branch. Removing them needs a history rewrite and a force push, and forks keep their copies.

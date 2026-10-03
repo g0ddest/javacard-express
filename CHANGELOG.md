@@ -22,6 +22,8 @@ jCardSim, on a simulated GlobalPlatform card or on a card in a PC/SC reader. The
   `javacard-express-applet-parent` and name the plugin (README, Quick Start); without either the goal does not run.
   The goal runs in `process-classes`, before the tests, and needs Maven 3.9.0 or later. Applet AIDs are the package
   AID followed by an index (`A00000006212` → `A0000000621201`); in 0.3.0 they had a foreign RID, which cards reject.
+- **`APDUResponse.requireSuccess()`** throws `UnexpectedStatusWordError`, an `AssertionError` that shows the exchange,
+  instead of `IllegalStateException`; outside tests check `isSuccess()` or catch `AssertionError`.
 - **GlobalPlatform:** `GPSession.open()` needs explicit keys (`keys(SCPKeys.defaultKeys())` for development cards).
 - **Tests on jCardSim:** `EmbeddedSession.reset()` is a card reset that keeps the applets and their data (it wiped the
   card), and the applet's `install` method gets the install data in the Java Card layout `[Li AID][Lc][La data]`, as
