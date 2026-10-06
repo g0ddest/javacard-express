@@ -34,6 +34,9 @@ import static org.junit.platform.engine.discovery.DiscoverySelectors.selectClass
  */
 class SameTestOnEveryBackendTest {
 
+    /** The time of an exchange at the end of a response line: {@code R: 00019000  (0.4 ms)}. */
+    private static final String TIME = " {2}\\(\\d+\\.\\d ms\\)";
+
     @BeforeEach
     void clear() {
         BackendScenarios.SEEN.clear();
@@ -67,8 +70,9 @@ class SameTestOnEveryBackendTest {
     }
 
     /**
-     * {@code jcx.log=true} prints the card's exchanges on every backend: on the simulated GlobalPlatform card also the
-     * commands of the card content management (INSTALL [for install] with the C-MAC of the secure channel).
+     * {@code jcx.log=true} prints the card's exchanges on every backend, each response with the time of its exchange:
+     * on the simulated GlobalPlatform card also the commands of the card content management (INSTALL [for install]
+     * with the C-MAC of the secure channel).
      */
     @ParameterizedTest
     @ValueSource(strings = {"embedded", "simulated-gp"})
@@ -101,8 +105,11 @@ class SameTestOnEveryBackendTest {
             logger.removeHandler(handler);
         }
 
-        assertThat(lines).contains("[JCX] ## PerTest", "[JCX] ## PerTest > first()", "[JCX] ## PerTest > second()",
-                "[JCX] C: 8030000002", "[JCX] R: 00019000");
+        assertThat(lines).filteredOn(line -> line.startsWith("[JCX] R: ")).isNotEmpty()
+                .allSatisfy(line -> assertThat(line).matches("\\[JCX] R: [0-9A-F]+" + TIME));
+        assertThat(lines.stream().map(line -> line.replaceFirst(TIME + "$", "")).toList())
+                .contains("[JCX] ## PerTest", "[JCX] ## PerTest > first()", "[JCX] ## PerTest > second()",
+                        "[JCX] C: 8030000002", "[JCX] R: 00019000");
         if (backend.equals("simulated-gp")) {
             assertThat(lines).anyMatch(line -> line.startsWith("[JCX] C: 84E60C"));
         }

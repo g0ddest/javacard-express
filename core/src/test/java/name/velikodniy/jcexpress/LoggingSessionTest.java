@@ -2,6 +2,7 @@ package name.velikodniy.jcexpress;
 
 import javacard.framework.Applet;
 import name.velikodniy.jcexpress.embedded.EmbeddedSession;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -10,6 +11,7 @@ import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -160,7 +162,7 @@ class LoggingSessionTest {
         assertThat(logged.entries()).isEmpty();
     }
 
-    /** The dump uses the transcript format of the whole toolkit: C: command, R: response. */
+    /** The dump uses the transcript format of the whole toolkit: C: command, R: response and the time it took. */
     @Test
     void dumpShouldFormatEntries() {
         StubSession stub = new StubSession();
@@ -169,12 +171,15 @@ class LoggingSessionTest {
         logged.send(0x80, 0x01, 0x00, 0x00);
         logged.send(0x00, 0xA4, 0x04, 0x00);
 
-        assertThat(logged.dump()).isEqualTo("""
+        String dump = logged.dump();
+        assertThat(withoutTimes(dump)).isEqualTo("""
                 C: 80010000
                 R: 01029000
                 C: 00A40400
                 R: A0009000
                 """);
+        assertThat(dump.lines().filter(line -> line.startsWith("R: ")))
+                .hasSize(2).allSatisfy(line -> assertThat(line).matches(Transcripts.TIMED_RESPONSE));
     }
 
     /** SELECTs and installs made through the logging session are logged like every other command. */
@@ -189,7 +194,7 @@ class LoggingSessionTest {
             logged.select(aid);
 
             assertThat(logged.entries()).extracting(APDULogEntry::ins).containsExactly(0xA4, 0x01, 0xA4);
-            assertThat(logged.dump()).isEqualTo("""
+            assertThat(withoutTimes(logged.dump())).isEqualTo("""
                     C: 00A4040005F00000000100
                     R: 9000
                     C: 80010000
@@ -225,7 +230,9 @@ class LoggingSessionTest {
             logger.removeHandler(handler);
         }
 
-        assertThat(lines).containsExactly("[JCX] C: 80010000", "[JCX] R: 01029000");
+        assertThat(lines).satisfiesExactly(
+                line -> assertThat(line).isEqualTo("[JCX] C: 80010000"),
+                line -> assertThat(line).matches("\\[JCX] R: 01029000" + Transcripts.TIME));
     }
 
     @Test

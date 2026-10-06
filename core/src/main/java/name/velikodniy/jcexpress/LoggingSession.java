@@ -3,6 +3,7 @@ package name.velikodniy.jcexpress;
 import name.velikodniy.jcexpress.apdu.APDUCodec;
 import javacard.framework.Applet;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -13,8 +14,9 @@ import java.util.logging.Logger;
  * A decorator that records all APDU exchanges for programmatic access and debugging.
  *
  * <p>Wraps any {@link SmartCardSession} and intercepts all {@code send}/{@code transmit}
- * calls, recording each exchange as an {@link APDULogEntry}. Optionally prints the exchanges to standard output,
- * one line each.</p>
+ * calls, recording each exchange as an {@link APDULogEntry} with when its command was sent and how long it took
+ * (measured around the call of the wrapped session). Optionally prints the exchanges to standard output, one line
+ * each, the response lines with that time.</p>
  *
  * <h2>Usage — programmatic access:</h2>
  * <pre>
@@ -33,7 +35,7 @@ import java.util.logging.Logger;
  * LoggingSession logged = LoggingSession.wrap(card, true);
  * // printed to standard output as the exchanges happen, one line each:
  * // [JCX] C: 80010000
- * // [JCX] R: 9000
+ * // [JCX] R: 9000  (0.3 ms)
  * </pre>
  *
  * <p>The lines go through java.util.logging: logger {@code name.velikodniy.jcexpress}, level INFO, message
@@ -157,7 +159,8 @@ public final class LoggingSession implements SmartCardSession {
 
     /**
      * Returns the recorded exchanges in the transcript format of {@link APDUHistory}: a {@code C:} line with the
-     * command and an {@code R:} line with the response (data and SW1 SW2) per exchange, as upper-case hex.
+     * command and an {@code R:} line with the response (data and SW1 SW2) and the time of the exchange per exchange,
+     * as upper-case hex.
      *
      * @return multi-line text dump, every line ended by a line break
      */
@@ -165,7 +168,7 @@ public final class LoggingSession implements SmartCardSession {
         StringBuilder sb = new StringBuilder();
         for (APDULogEntry entry : entries) {
             sb.append(TranscriptFormat.command(entry.command())).append('\n');
-            sb.append(TranscriptFormat.response(entry.response().toBytes())).append('\n');
+            sb.append(TranscriptFormat.response(entry.response().toBytes(), entry.duration())).append('\n');
         }
         return sb.toString();
     }
@@ -262,12 +265,15 @@ public final class LoggingSession implements SmartCardSession {
             print(TranscriptFormat.command(command));
         }
         long start = delegate.history().position();
+        long sentAt = System.currentTimeMillis();
+        long started = System.nanoTime();
         APDUResponse response = forward.get().inReplyTo(command);
+        Duration duration = Duration.ofNanos(System.nanoTime() - started);
         if (printToLog) {
-            logResponse(response);
+            logResponse(response, duration);
             printNotesSince(start);
         }
-        entries.add(new APDULogEntry(command, response, System.currentTimeMillis()));
+        entries.add(new APDULogEntry(command, response, sentAt, duration));
         return response;
     }
 
@@ -277,15 +283,18 @@ public final class LoggingSession implements SmartCardSession {
             print(TranscriptFormat.command(rawApdu));
         }
         long start = delegate.history().position();
+        long sentAt = System.currentTimeMillis();
+        long started = System.nanoTime();
         byte[] rawResponse = delegate.transmit(rawApdu);
+        Duration duration = Duration.ofNanos(System.nanoTime() - started);
         APDUResponse response = new APDUResponse(rawResponse);
 
         if (printToLog) {
-            logResponse(response);
+            logResponse(response, duration);
             printNotesSince(start);
         }
 
-        entries.add(new APDULogEntry(rawApdu.clone(), response, System.currentTimeMillis()));
+        entries.add(new APDULogEntry(rawApdu.clone(), response, sentAt, duration));
         return rawResponse;
     }
 
@@ -316,8 +325,8 @@ public final class LoggingSession implements SmartCardSession {
         LOG.info("[JCX] " + line);
     }
 
-    private void logResponse(APDUResponse response) {
-        print(TranscriptFormat.response(response.toBytes()));
+    private void logResponse(APDUResponse response, Duration duration) {
+        print(TranscriptFormat.response(response.toBytes(), duration));
     }
 
     /**
@@ -333,7 +342,7 @@ public final class LoggingSession implements SmartCardSession {
             for (APDULogEntry entry : history.entriesSince(start)) {
                 if (printToLog) {
                     print(TranscriptFormat.command(entry.command()));
-                    logResponse(entry.response());
+                    logResponse(entry.response(), entry.duration());
                 }
                 entries.add(entry);
             }

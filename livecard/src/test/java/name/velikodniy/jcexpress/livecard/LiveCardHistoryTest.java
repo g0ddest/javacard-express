@@ -1,6 +1,7 @@
 package name.velikodniy.jcexpress.livecard;
 
 import name.velikodniy.jcexpress.AID;
+import name.velikodniy.jcexpress.APDULogEntry;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.SelectException;
 import name.velikodniy.jcexpress.UnexpectedStatusWordError;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,9 +24,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The history of the guarded session (what a failed {@code @JavaCardTest} test shows and {@code -Djcx.log=true}
  * prints) labels the card content management of the harness, collapses the LOAD commands of a load file into one
  * note (GPCS v2.3.1 11.6) and shows commands the guard blocked; the transcript file keeps every command. Responses
- * know their command, and a failed SELECT says what its status word means (ISO/IEC 7816-4:2005 5.1.3).
+ * know their command, and a failed SELECT says what its status word means (ISO/IEC 7816-4:2005 5.1.3). Every exchange
+ * is timed, in the history and in the transcript file.
  */
 class LiveCardHistoryTest {
+
+    /** A response line with the time of its exchange: {@code R: 9000  (12.3 ms)}. */
+    private static final String TIMED_RESPONSE = "R: [0-9A-F]+ {2}\\(\\d+\\.\\d ms\\)";
 
     @TempDir
     Path transcripts;
@@ -98,5 +104,22 @@ class LiveCardHistoryTest {
                     .isInstanceOf(SelectException.class)
                     .hasMessage("SELECT F04A4358FFFF01 failed: SW=6A82 (file or application not found)");
         }
+    }
+
+    @Test
+    void everyExchangeIsTimedInTheHistoryAndInTheTranscriptFile() throws Exception {
+        try (LiveCard card = connect()) {
+            long before = System.currentTimeMillis();
+            card.session().send(0x80, 0xCA, 0x00, 0x66, null, 256);
+
+            APDULogEntry entry = card.session().history().last();
+            assertThat(entry.ins()).isEqualTo(0xCA);
+            assertThat(entry.timestampMs()).isBetween(before, System.currentTimeMillis());
+            assertThat(entry.duration()).isNotNull().isGreaterThanOrEqualTo(Duration.ZERO);
+            assertThat(card.session().history().transcript().lines().filter(line -> line.startsWith("R: ")))
+                    .isNotEmpty().allSatisfy(line -> assertThat(line).matches(TIMED_RESPONSE));
+        }
+        assertThat(Files.readAllLines(transcripts.resolve("card.txt"))).filteredOn(line -> line.startsWith("R: "))
+                .isNotEmpty().allSatisfy(line -> assertThat(line).matches(TIMED_RESPONSE));
     }
 }

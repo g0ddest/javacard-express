@@ -378,13 +378,12 @@ public class EmbeddedSession implements SmartCardSession {
     }
 
     /**
-     * Sends a command to the simulated card and records the exchange, with a note of what the applet threw
-     * (jCardSim answers it with '6F00', or '6999' for {@code select}) and one for each class the applet code needed
-     * but did not find (jCardSim answers such a failure with '6F00').
+     * Sends a command to the simulated card and records the exchange with its time, with a note of what the applet
+     * threw (jCardSim answers it with '6F00', or '6999' for {@code select}) and one for each class the applet code
+     * needed but did not find (jCardSim answers such a failure with '6F00').
      */
     private byte[] exchange(byte[] command) {
-        byte[] response = simulator.transmitCommand(command);
-        history.record(command, response);
+        byte[] response = history.exchange(command, () -> simulator.transmitCommand(command));
         Optional<AppletFailure> thrown = runtime.takeFailure();
         Set<String> missing = classes.takeMissingClasses();
         if (missing.isEmpty()) {

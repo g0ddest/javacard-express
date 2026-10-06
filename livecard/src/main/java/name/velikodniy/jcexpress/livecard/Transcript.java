@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.livecard;
 
+import name.velikodniy.jcexpress.TranscriptFormat;
+
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.UncheckedIOException;
@@ -11,17 +13,14 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HexFormat;
 
 /**
- * APDU transcript of a live-card run: every command before it is sent ({@code C:}), every response
- * ({@code R:}, with the time the card took) and notes ({@code #}), such as the guard's decisions. The output
- * file can be switched, which gives one transcript per test, and a file can be started anew or continued. Key
- * values are never written.
+ * APDU transcript of a live-card run, in the line format of {@link TranscriptFormat}: every command before it is sent
+ * ({@code C:}), every response ({@code R:}, with the time the exchange took) and notes ({@code #}), such as the
+ * guard's decisions. The output file can be switched, which gives one transcript per test, and a file can be started
+ * anew or continued. Key values are never written.
  */
 public final class Transcript implements AutoCloseable {
-
-    private static final HexFormat HEX = HexFormat.of().withUpperCase();
 
     private PrintWriter out = new PrintWriter(Writer.nullWriter());
     private Path file;
@@ -63,7 +62,8 @@ public final class Transcript implements AutoCloseable {
             throw new UncheckedIOException("Cannot write the APDU transcript " + target, e);
         }
         file = target;
-        out.println("## " + title + "  (" + OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) + ")");
+        out.println(TranscriptFormat.title(title + "  ("
+                + OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) + ")"));
     }
 
     /**
@@ -81,17 +81,18 @@ public final class Transcript implements AutoCloseable {
      * @param command the command APDU
      */
     public synchronized void command(byte[] command) {
-        out.println("C: " + HEX.formatHex(command));
+        out.println(TranscriptFormat.command(command));
     }
 
     /**
-     * Records a response.
+     * Records a response with the time of the exchange, in the line format of
+     * {@link TranscriptFormat#response(byte[], Duration)}, e.g. {@code R: 9000  (12.3 ms)}.
      *
      * @param response the response APDU (data and SW1-SW2)
      * @param elapsed  how long the exchange took
      */
     public synchronized void response(byte[] response, Duration elapsed) {
-        out.println("R: " + HEX.formatHex(response) + "  (" + elapsed.toMillis() + " ms)");
+        out.println(TranscriptFormat.response(response, elapsed));
     }
 
     /**
@@ -100,7 +101,7 @@ public final class Transcript implements AutoCloseable {
      * @param message the note
      */
     public synchronized void note(String message) {
-        out.println("# " + message);
+        out.println(TranscriptFormat.note(message));
     }
 
     /**

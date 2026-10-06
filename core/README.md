@@ -194,16 +194,18 @@ of an IDE run). A backend whose module is missing fails with the dependency to a
 
 ### Diagnostics and Parallel Runs
 
-Every session keeps a bounded history of its exchanges; inside a test, `card.history()` of a `@JavaCardTest` class
-holds that test's exchanges (from its SELECT on), in `@BeforeAll` and `@AfterAll` methods those of the class. A failed
-test carries the last exchanges in its failure (a suppressed exception) and publishes `apdu-transcript.txt` with
-JUnit's file entries (Maven Surefire writes it below `target/junit-jupiter/`; only failed tests write one); failures
-of `@BeforeAll`, `@BeforeEach`, `@AfterEach` and `@AfterAll` methods and of declared installs carry the exchanges as
-well. In the transcript, `# test body: <test>()` marks where the test method starts; on the GlobalPlatform backends
-notes label the card management (`# install`, `# load`, `# delete`, `# secure channel`); when the run installed no
-applet, a note at the top says so. On the embedded backend, an exception that escapes the applet's `process` or
-`select` is noted next to the `6F00` it causes, with the applet's line ([cookbook](../TESTING.md#debugging-a-6f00)).
-`-Djcx.log=true` prints the exchanges while the tests run (see [APDU Logging](#apdu-logging)).
+Every session keeps a bounded history of its exchanges, each with the time its command was sent and how long it took
+(`card.history().last()` is the newest); inside a test, `card.history()` of a `@JavaCardTest` class holds that test's
+exchanges (from its SELECT on), in `@BeforeAll` and `@AfterAll` methods those of the class. A failed test carries the
+last exchanges in its failure (a suppressed exception) and publishes `apdu-transcript.txt` with JUnit's file entries
+(Maven Surefire writes it below `target/junit-jupiter/`; only failed tests write one); failures of `@BeforeAll`,
+`@BeforeEach`, `@AfterEach` and `@AfterAll` methods and of declared installs carry the exchanges as well. In the
+transcript, `# test body: <test>()` marks where the test method starts; on the GlobalPlatform backends notes label the
+card management (`# install`, `# load`, `# delete`, `# secure channel`); when the run installed no applet, a note at the
+top says so. On the embedded backend, an exception that escapes the applet's `process` or `select` is noted next to the
+`6F00` it causes, with the applet's line ([cookbook](../TESTING.md#debugging-a-6f00)). The response lines of the
+transcripts show the time of the exchange, and `-Djcx.log=true` prints the exchanges while the tests run (see
+[APDU Logging](#apdu-logging)).
 
 The methods of a `@JavaCardTest` class run one at a time in the class's thread (a JUnit resource lock per test
 class); with `jcx.backend=livecard` all classes share one lock, because they share the card.
@@ -314,7 +316,7 @@ LoggingSession logged = card.logged(true);
 PinSession pin = PinSession.on(logged);
 pin.verify(1, "1234");
 // Log shows: [JCX] C: 002000010431323334
-//            [JCX] R: 9000
+//            [JCX] R: 9000  (0.8 ms)
 
 // Or directly from the session
 card.pin().verify(1, "1234");
@@ -613,10 +615,20 @@ APDULogEntry last = logged.lastEntry();
 
 System.out.println(logged.dump());
 // C: 00A4040005F000000001
-// R: 9000
+// R: 9000  (0.0 ms)
 // C: 80010000
-// R: 48656C6C6F9000
+// R: 48656C6C6F9000  (0.0 ms)
 ```
+
+Every entry carries when its command was sent (`timestampMs()`) and how long the exchange took (`duration()`); the dump, the transcripts and the printed lines show the time after each response, here jCardSim's, below a tenth of a millisecond. The history of a session keeps the times as well, so a test can check a time budget ([cookbook](../TESTING.md#timing-a-command)):
+
+```java
+card.send(0x80, 0x01);
+APDULogEntry newest = card.history().last();              // the newest exchange of the session
+assertThat(newest).isSuccess().tookAtMost(Duration.ofMillis(200));
+```
+
+On a card in a PC/SC reader the time includes the driver and the reader, and the GET RESPONSE or repeated command that the JDK sends by itself after `61XX` or `6CXX`; on jCardSim it is the simulator's time in the test JVM, which tells nothing about a card. A container session (`@SmartCard(mode = Mode.CONTAINER)`) keeps no history, so it has no times.
 
 In `@JavaCardTest` classes the system property or JUnit configuration parameter `jcx.log=true` prints the exchanges of the card while the tests run, with a title line for every class and test, one line each with the prefix `[JCX]` (an example is in the [cookbook](../TESTING.md#watching-the-exchanges)). Sessions without `@JavaCardTest`: `@SmartCard(log = true)` on a field or parameter, or `jcx.log=true` for all of them; `card.logged(true)` prints the same way.
 

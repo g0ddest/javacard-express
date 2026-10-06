@@ -7,6 +7,7 @@ import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.SelectException;
 import name.velikodniy.jcexpress.apdu.APDUSequence;
 import name.velikodniy.jcexpress.fakes.ContractCardTerminal;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -516,7 +518,8 @@ class PcscSessionTest {
                 card.reset();
                 card.transmit(Hex.decode("80CA9F7F00"));
 
-                assertThat(card.history().transcript()).isEqualTo("""
+                String transcript = card.history().transcript();
+                assertThat(withoutTimes(transcript)).isEqualTo("""
                         C: 00A4040008A00000015100000000
                         R: 9000
                         C: 80CA006600
@@ -525,6 +528,8 @@ class PcscSessionTest {
                         C: 80CA9F7F00
                         R: 01029000
                         """);
+                assertThat(transcript.lines().filter(line -> line.startsWith("R: ")))
+                        .hasSize(3).allSatisfy(line -> assertThat(line).matches(Transcripts.TIMED_RESPONSE));
             }
         }
     }

@@ -4,12 +4,14 @@ import name.velikodniy.jcexpress.embedded.EmbeddedSession;
 import name.velikodniy.jcexpress.fakes.AcceptAnySelectApplet;
 import name.velikodniy.jcexpress.fakes.ProbeApplet;
 import name.velikodniy.jcexpress.fakes.StdInstallApplet;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -411,7 +413,8 @@ class EmbeddedSessionTest {
             session.reset();
             session.select(aid);
 
-            assertThat(session.history().transcript()).isEqualTo("""
+            String transcript = session.history().transcript();
+            assertThat(withoutTimes(transcript)).isEqualTo("""
                     # install name.velikodniy.jcexpress.HelloWorldApplet as F000000001 with parameters 1122
                     C: 00A4040005F00000000100
                     R: 9000
@@ -421,6 +424,8 @@ class EmbeddedSessionTest {
                     C: 00A4040005F00000000100
                     R: 9000
                     """);
+            assertThat(transcript.lines().filter(line -> line.startsWith("R: ")))
+                    .hasSize(3).allSatisfy(line -> assertThat(line).matches(Transcripts.TIMED_RESPONSE));
         }
 
         @Test
@@ -429,7 +434,7 @@ class EmbeddedSessionTest {
             session.transmit(Hex.decode("80020000020102"));
             assertThatThrownBy(() -> session.select(AID.fromHex("A0000000FFFF"))).isInstanceOf(SelectException.class);
 
-            assertThat(session.history().transcript()).endsWith("""
+            assertThat(withoutTimes(session.history().transcript())).endsWith("""
                     C: 80020000020102
                     R: 01029000
                     C: 00A4040006A0000000FFFF00

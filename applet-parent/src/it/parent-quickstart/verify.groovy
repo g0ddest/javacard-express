@@ -35,4 +35,14 @@ def card = transcript.text
 assert card.contains('package com.example.hello built by com.example:hello-applet: converted for Java Card 3.0.5 as the build')
 assert card.contains('AIDs of the build -> this run: package A00000006212 -> F0')
 assert card.contains('cleanup verified with GET STATUS')
+
+// The applet parent measures coverage with JaCoCo: the applet classes ran in the test JVM on both backends, so the
+// report covers the applet code
+def coverage = new File(basedir, 'target/site/jacoco/jacoco.xml')
+assert coverage.isFile() : 'the applet parent wrote no JaCoCo report'
+def applet = (coverage.text =~ /(?s)<class name="com\/example\/hello\/HelloWorldApplet".*?<\/class>/)
+assert applet.find() : "HelloWorldApplet is not in the coverage report"
+// the class's own counters follow those of its methods
+def lines = (applet.group() =~ /<counter type="LINE" missed="(\d+)" covered="(\d+)"\/>/).collect { it }
+assert lines && (lines[-1][2] as int) > 0 : "no covered line of HelloWorldApplet: ${applet.group()}"
 return true

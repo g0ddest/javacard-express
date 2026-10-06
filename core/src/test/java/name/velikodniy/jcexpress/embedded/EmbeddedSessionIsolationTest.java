@@ -21,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -248,7 +249,7 @@ class EmbeddedSessionIsolationTest {
                 card.install(applet, FIRST);
 
                 assertThat(card.send(0x80, 0x01)).statusWord(0x6F00);
-                assertThat(card.history().transcript()).endsWith("""
+                assertThat(withoutTimes(card.history().transcript())).endsWith("""
                         R: 6F00
                         # the applet code needs name.velikodniy.jcexpress.fakes.library.Counter, which is not on\
                          the test class path

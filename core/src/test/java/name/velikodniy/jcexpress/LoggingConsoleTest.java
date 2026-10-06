@@ -2,6 +2,7 @@ package name.velikodniy.jcexpress;
 
 import name.velikodniy.jcexpress.embedded.EmbeddedSession;
 import name.velikodniy.jcexpress.fakes.ThrowingApplet;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -67,7 +69,9 @@ class LoggingConsoleTest {
             card.logged(true).send(0x80, 0x01, 0x00, 0x00);
         }
 
-        assertThat(printed()).containsExactly("[JCX] C: 80010000", "[JCX] R: 6986");
+        assertThat(printed()).satisfiesExactly(
+                line -> assertThat(line).isEqualTo("[JCX] C: 80010000"),
+                line -> assertThat(line).matches("\\[JCX] R: 6986" + Transcripts.TIME));
         assertThat(LOGGER.getUseParentHandlers()).isFalse();
     }
 
@@ -80,7 +84,7 @@ class LoggingConsoleTest {
             card.logged(true).send(0x80, 0x01, 0x00, 0x00);
         }
 
-        assertThat(received).containsExactly("[JCX] C: 80010000", "[JCX] R: 6986");
+        assertThat(withoutTimes(received)).containsExactly("[JCX] C: 80010000", "[JCX] R: 6986");
         assertThat(printed()).isEmpty();
         assertThat(LOGGER.getHandlers()).hasSize(1);
         assertThat(LOGGER.getUseParentHandlers()).isTrue();
@@ -102,7 +106,7 @@ class LoggingConsoleTest {
         }
 
         assertThat(received).containsExactly("unverified CAP files");
-        assertThat(printed()).containsExactly("[JCX] C: 80010000", "[JCX] R: 6986");
+        assertThat(withoutTimes(printed())).containsExactly("[JCX] C: 80010000", "[JCX] R: 6986");
     }
 
     @Test
@@ -112,10 +116,11 @@ class LoggingConsoleTest {
             card.logged(true).send(0x80, 0x01, 0x00, 0x00);
         }
 
-        assertThat(printed()).contains("[JCX] C: 80010000", "[JCX] R: 6F00")
+        List<String> lines = withoutTimes(printed());
+        assertThat(lines).contains("[JCX] C: 80010000", "[JCX] R: 6F00")
                 .anySatisfy(line -> assertThat(line).startsWith("[JCX] # applet threw"
                         + " java.lang.ArrayIndexOutOfBoundsException"));
-        assertThat(printed().indexOf("[JCX] R: 6F00") + 1).isEqualTo(indexOfNote(printed()));
+        assertThat(lines.indexOf("[JCX] R: 6F00") + 1).isEqualTo(indexOfNote(lines));
     }
 
     private static int indexOfNote(List<String> lines) {
