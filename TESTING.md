@@ -33,6 +33,7 @@ a few lines.
 - [Watching the exchanges](#watching-the-exchanges)
 - [Timing a command](#timing-a-command)
 - [Debugging a 6F00](#debugging-a-6f00)
+- [Coverage of the applet code](#coverage-of-the-applet-code)
 - [One test class, several backends](#one-test-class-several-backends)
 - [On CI](#on-ci)
 - [Your own test annotation](#your-own-test-annotation)
@@ -433,6 +434,15 @@ The applet runs as class files in the test JVM, on the default backend and on `s
 `process()` (or an exception breakpoint) stops where it throws when you debug the test in the IDE. `simulated-gp`
 reports only the status word, and a real card can tell nothing more: reproduce such a failure on the default
 backend.
+
+## Coverage of the applet code
+
+On the default backend and on `simulated-gp` the applet classes run in the test JVM, so a coverage tool measures the
+applet code like any other code. The applet parent runs JaCoCo: after `mvn test` the report is in
+`target/site/jacoco/index.html` (and `jacoco.xml` for CI services), and `-Djacoco.skip=true` turns it off. Without the
+applet parent, add `jacoco-maven-plugin` with its `prepare-agent` and `report` goals.
+
+Tests on a real card run the applet on the card, so they add nothing to the report.
 
 ## One test class, several backends
 

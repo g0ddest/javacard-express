@@ -242,7 +242,7 @@ in Docker (for `@SmartCard` fields). The two GlobalPlatform backends add a few r
 
 Recipes for the everyday tasks (commands as constants, status words, response data, the SELECT response,
 data-driven tests, install parameters, several applets, a scenario across tests, reset and deselect, PIN, TLV,
-watching the exchanges, timing a command, debugging a `6F00`, CI, your own test annotation) are in the
+watching the exchanges, timing a command, debugging a `6F00`, coverage, CI, your own test annotation) are in the
 **[testing cookbook](TESTING.md)**; this section is the reference.
 
 A test class marked `@JavaCardTest` declares the applets it needs; the card is a `SmartCardSession` parameter

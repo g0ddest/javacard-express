@@ -32,6 +32,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- Reproducible jars (the CAP file is reproducible anyway) -->
         <project.build.outputTimestamp>1980-02-01T00:00:00Z</project.build.outputTimestamp>
+        <!-- Coverage of the applet code with JaCoCo (see below); -Djacoco.skip=true turns it off -->
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
     </properties>
 
     <dependencies>
@@ -140,6 +142,24 @@
                         <classpathDependencyExclude>name.velikodniy:javacard-express-api</classpathDependencyExclude>
                     </classpathDependencyExcludes>
                 </configuration>
+            </plugin>
+            <!-- Coverage: on the default backend and on simulated-gp the tests run the applet classes in the test JVM,
+                 so JaCoCo measures the applet code; the report is in target/site/jacoco/ after mvn test. A real card
+                 or a container runs the applet elsewhere and adds nothing to it. -Djacoco.skip=true turns it off. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

@@ -19,6 +19,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.
   time, `record(command, response, sentAtMillis, duration)` records a measured one, and `TranscriptFormat` (now
   public) writes the transcript lines.
 
+- The applet parent measures the coverage of the applet code with JaCoCo: on the default backend and on
+  `simulated-gp` the applet runs in the test JVM, so after `mvn test` the report in `target/site/jacoco/` covers it;
+  `-Djacoco.skip=true` turns it off. See [Coverage of the applet code](TESTING.md#coverage-of-the-applet-code).
+
 ### Changed
 
 - `APDULogEntry` has a fourth component, `duration`. The constructor with three arguments stays (without a time), but
