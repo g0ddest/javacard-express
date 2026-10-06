@@ -31,6 +31,7 @@ a few lines.
 - [PIN](#pin)
 - [TLV](#tlv)
 - [Watching the exchanges](#watching-the-exchanges)
+- [Timing a command](#timing-a-command)
 - [Debugging a 6F00](#debugging-a-6f00)
 - [One test class, several backends](#one-test-class-several-backends)
 - [On CI](#on-ci)
@@ -353,27 +354,28 @@ prints every exchange while the tests run, one line each on standard output, her
 page:
 
 ```text
+[JCX] ## WalletAppletTest
 [JCX] ## WalletAppletTest > credits()
 [JCX] # install name.velikodniy.jcexpress.readme.cookbook.WalletApplet as F04A4358D1E5113B
 [JCX] C: 00A4040008F04A4358D1E5113B00
-[JCX] R: 6F0A8408F04A4358D1E5113B9000
+[JCX] R: 6F0A8408F04A4358D1E5113B9000  (1.2 ms)
 [JCX] # test body: credits()
 [JCX] C: 80300000020064
-[JCX] R: 9000
+[JCX] R: 9000  (0.1 ms)
 [JCX] C: 8052000002
-[JCX] R: 00649000
+[JCX] R: 00649000  (0.1 ms)
 [JCX] # deselect F04A4358D1E5113B
 [JCX] # delete F04A4358D1E5113B
 ```
 
-`C:` is a command, `R:` the response (data, then the status word), `#` a note; `# test body` marks where the test
-method starts, after the installs, the SELECT and the `@BeforeEach` methods. In your project the lines name your
-applet class, and its AIDs start with the project's own prefix (`F0` and four bytes, see the
-[README](README.md#testing)) instead of the `F04A4358` of test-source applets like this page's. The lines go through
-java.util.logging, logger `name.velikodniy.jcexpress`, level INFO, to standard output; to send them elsewhere, give
-that logger a handler of your own (`name.velikodniy.jcexpress.handlers=...` in `logging.properties`, or
-`Logger.getLogger("name.velikodniy.jcexpress").addHandler(...)`, for example SLF4J's bridge), and a level above INFO
-silences them.
+`##` is the title of a class or a test, `C:` a command, `R:` the response (data, then the status word) with the time of
+the exchange, `#` a note; `# test body` marks where the test method starts, after the installs, the SELECT and the
+`@BeforeEach` methods. In your project the lines name your applet class, and its AIDs start with the project's own
+prefix (`F0` and four bytes, see the [README](README.md#testing)) instead of the `F04A4358` of test-source applets like
+this page's. The lines go through java.util.logging, logger `name.velikodniy.jcexpress`, level INFO, to standard output;
+to send them elsewhere, give that logger a handler of your own (`name.velikodniy.jcexpress.handlers=...` in
+`logging.properties`, or `Logger.getLogger("name.velikodniy.jcexpress").addHandler(...)`, for example SLF4J's bridge),
+and a level above INFO silences them.
 
 Without the setting, a test that fails carries its exchanges in its failure (a suppressed exception), and so does
 a failing `@BeforeAll`, `@BeforeEach`, `@AfterEach` or `@AfterAll` method. A failed test also publishes them as
@@ -391,6 +393,24 @@ void historyHoldsTheExchangesOfThisTest(SmartCardSession card) {
 }
 ```
 
+## Timing a command
+
+```java
+@Test
+void creditStaysWithinItsTimeBudget(SmartCardSession card) {
+    card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+    assertThat(card.history().last()).tookAtMost(Duration.ofMillis(200));   // the exchange just made
+}
+```
+
+Every exchange in the history carries when its command was sent and how long the exchange took:
+`card.history().last()` is the newest one, an `APDULogEntry` with `timestampMs()` and `duration()`, and transcripts
+and `-Djcx.log=true` show the time after each response. `tookAtMost` takes a `java.time.Duration`; when the exchange
+took longer, it fails with the exchange and both times. On a real card (`-Djcx.backend=livecard`) the time includes
+the PC/SC driver and the reader, and the GET RESPONSE or repeated command that the JDK sends by itself after `61XX`
+or `6CXX`; on the default backend and on `simulated-gp` it is jCardSim's time in the test JVM, which tells nothing
+about a card, so a tight budget belongs in a test for `livecard` (`@EnabledOnBackend(Mode.LIVECARD)`).
+
 ## Debugging a 6F00
 
 A card answers `6F00` when the applet lets an exception escape (an `ISOException` is a status word, anything else
@@ -402,10 +422,10 @@ org.opentest4j.AssertionFailedError: Expected success (SW=9000) but was SW=6F00 
 	Suppressed: name.velikodniy.jcexpress.CardTestLifecycle$CardTranscript: APDU exchanges of the test (most recent last):
 # install name.velikodniy.jcexpress.fakes.ThrowingApplet as F04A4358388A6704
 C: 00A4040008F04A4358388A670400
-R: 9000
+R: 9000  (2.8 ms)
 # test body: crashes()
 C: 80020700
-R: 6F00
+R: 6F00  (0.2 ms)
 # applet threw java.lang.NullPointerException: Cannot store to byte/boolean array because "this.cache" is null at name.velikodniy.jcexpress.fakes.ThrowingApplet.fillCache(ThrowingApplet.java:58)
 ```
 
@@ -500,6 +520,7 @@ converted and loaded the package. jCardSim differs from a card in a few places, 
   under the applet's own AID from the CAP file, so several instances, or an instance AID other than the applet's,
   need `register(bArray, (short) (bOffset + 1), bArray[bOffset])` (the GlobalPlatform backends note an applet that
   does not);
+- the time of an exchange ([Timing a command](#timing-a-command)) is jCardSim's in the test JVM, not a card's;
 - they run the class files, not the CAP file: what the converter wrote runs only on a real card.
 
 The simulated GlobalPlatform card adds a few of its own: it loads a CAP file for any Java Card version (a card

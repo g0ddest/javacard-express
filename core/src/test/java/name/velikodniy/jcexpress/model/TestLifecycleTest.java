@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.platform.engine.discovery.DiscoverySelectors.selectClass;
 
@@ -213,8 +214,8 @@ class TestLifecycleTest {
         List<Throwable> failures = failures(LifecycleScenarios.AppletThrows.class);
 
         assertThat(failures).singleElement().satisfies(failure -> assertThat(transcripts(failure)).singleElement()
-                .satisfies(transcript -> assertThat(transcript).contains("C: 80010000\nR: 6F00\n# applet threw"
-                        + " java.lang.ArrayIndexOutOfBoundsException: Index 5 out of bounds for length 4 at "
-                        + ThrowingApplet.class.getName() + ".process(ThrowingApplet.java:")));
+                .satisfies(transcript -> assertThat(withoutTimes(transcript)).contains("C: 80010000\nR: 6F00\n"
+                        + "# applet threw java.lang.ArrayIndexOutOfBoundsException: Index 5 out of bounds for length 4"
+                        + " at " + ThrowingApplet.class.getName() + ".process(ThrowingApplet.java:")));
     }
 }

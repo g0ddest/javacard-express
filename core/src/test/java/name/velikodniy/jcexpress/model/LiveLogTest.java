@@ -5,6 +5,7 @@ import name.velikodniy.jcexpress.JavaCardExtension;
 import name.velikodniy.jcexpress.JavaCardTest;
 import name.velikodniy.jcexpress.SmartCard;
 import name.velikodniy.jcexpress.SmartCardSession;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.platform.testkit.engine.EngineExecutionResults;
@@ -19,6 +20,7 @@ import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.platform.engine.discovery.DiscoverySelectors.selectClass;
 
@@ -83,9 +85,12 @@ class LiveLogTest {
 
     @Test
     void theLogParameterPrintsTheExchangesOfTheCardWhileTheTestsRun() {
-        List<String> lines = printedWhile(() -> assertThat(failures(run(Logged.class,
+        List<String> printed = printedWhile(() -> assertThat(failures(run(Logged.class,
                 Map.of(JavaCardExtension.LOG_PARAMETER, "true")))).isEmpty());
+        List<String> lines = withoutTimes(printed);
 
+        assertThat(printed).filteredOn(line -> line.startsWith("[JCX] R: ")).isNotEmpty()
+                .allSatisfy(line -> assertThat(line).matches("\\[JCX] " + Transcripts.TIMED_RESPONSE));
         assertThat(lines).allSatisfy(line -> assertThat(line).startsWith("[JCX] "))
                 .contains("[JCX] ## Logged", "[JCX] ## Logged > increments()", "[JCX] C: 8010000002",
                         "[JCX] R: 00019000");

@@ -6,6 +6,7 @@ import name.velikodniy.jcexpress.fakes.ParametersRequiredApplet;
 import name.velikodniy.jcexpress.fakes.ThrowingApplet;
 import org.junit.jupiter.api.Test;
 
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
@@ -20,11 +21,12 @@ class AppletExceptionNoteTest {
     private static final AID AID_1 = AID.fromHex("F0000000010101");
     private static final String APPLET = ThrowingApplet.class.getName();
 
+    /** The transcript from the command on, without the times of the exchanges. */
     private static String transcriptAfter(int ins) {
         try (EmbeddedSession card = new EmbeddedSession()) {
             card.install(ThrowingApplet.class, AID_1);
             card.send(0x80, ins);
-            String transcript = card.history().transcript();
+            String transcript = withoutTimes(card.history().transcript());
             return transcript.substring(transcript.indexOf(String.format("C: 80%02X0000", ins)));
         }
     }

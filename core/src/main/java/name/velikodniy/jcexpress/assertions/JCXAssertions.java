@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.assertions;
 
+import name.velikodniy.jcexpress.APDULogEntry;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.memory.MemoryInfo;
 import name.velikodniy.jcexpress.tlv.TLV;
@@ -21,6 +22,7 @@ import org.assertj.core.api.Assertions;
  * assertThat(response).tlv().containsTag(0x6F);
  * assertThat(response.u16(0)).isEqualTo(70);        // AssertJ's assertThat(int), same import
  * assertThat(response.data()).hasSize(2);            // AssertJ's assertThat(byte[])
+ * assertThat(card.history().last()).tookAtMost(Duration.ofMillis(50));  // the time of an exchange
  * </pre>
  */
 public final class JCXAssertions extends Assertions {
@@ -36,6 +38,17 @@ public final class JCXAssertions extends Assertions {
      */
     public static APDUResponseAssert assertThat(APDUResponse actual) {
         return new APDUResponseAssert(actual);
+    }
+
+    /**
+     * Creates a new assertion for a recorded exchange, such as {@code card.history().last()}: its time and status
+     * word.
+     *
+     * @param actual the exchange to assert on
+     * @return a new {@link APDULogEntryAssert}
+     */
+    public static APDULogEntryAssert assertThat(APDULogEntry actual) {
+        return new APDULogEntryAssert(actual);
     }
 
     /**

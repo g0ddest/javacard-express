@@ -2,6 +2,8 @@ package name.velikodniy.jcexpress;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -43,5 +45,34 @@ class APDULogEntryTest {
         assertThat(entry.toString()).contains("00 A4 04 00");
         assertThat(entry.toString()).contains("6A82");
         assertThat(entry.isSuccess()).isFalse();
+    }
+
+    @Test
+    void anEntryCreatedWithoutADurationHasNone() {
+        APDULogEntry entry = new APDULogEntry(Hex.decode("80010000"), new APDUResponse(new byte[0], 0x9000), 7L);
+
+        assertThat(entry.duration()).isNull();
+        assertThat(entry.toString()).doesNotContain("ms");
+    }
+
+    @Test
+    void anEntryKeepsTheDurationOfItsExchange() {
+        APDULogEntry entry = new APDULogEntry(Hex.decode("80010000"), new APDUResponse(new byte[0], 0x9000), 7L,
+                Duration.ofMillis(12).plusNanos(300_000));
+
+        assertThat(entry.timestampMs()).isEqualTo(7L);
+        assertThat(entry.duration()).isEqualTo(Duration.ofNanos(12_300_000));
+        assertThat(entry.toString()).endsWith("[9000] (12.3 ms)");
+    }
+
+    @Test
+    void theTranscriptOfAnEntryShowsTheExchangeAndItsTime() {
+        APDULogEntry timed = new APDULogEntry(Hex.decode("8052000002"), new APDUResponse(Hex.decode("0064"), 0x9000),
+                7L, Duration.ofNanos(12_300_000));
+        APDULogEntry untimed = new APDULogEntry(Hex.decode("8052000002"), new APDUResponse(Hex.decode("0064"), 0x9000),
+                7L);
+
+        assertThat(timed.transcript()).isEqualTo("C: 8052000002\nR: 00649000  (12.3 ms)");
+        assertThat(untimed.transcript()).isEqualTo("C: 8052000002\nR: 00649000");
     }
 }

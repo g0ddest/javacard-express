@@ -1,8 +1,10 @@
 package name.velikodniy.jcexpress;
 
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.LongFunction;
 
@@ -13,16 +15,21 @@ import java.util.function.LongFunction;
  * <p>The sessions of JavaCard Express record into their {@link SmartCardSession#history()}, SELECT commands
  * included. {@link JavaCardExtension} attaches the last entries to a failed test (and to a failed lifecycle
  * method) and publishes those of a failed test of a {@link JavaCardTest} class as its file
- * {@code apdu-transcript.txt}. The text form is the transcript format used throughout JavaCard Express, one line each:
- * {@code C:} the command and {@code R:} the response (data and SW1 SW2) as upper-case hex, {@code #} a note.</p>
+ * {@code apdu-transcript.txt}. The text form is the transcript format used throughout JavaCard Express
+ * ({@link TranscriptFormat}), one line each: {@code C:} the command and {@code R:} the response (data and SW1 SW2)
+ * as upper-case hex, with the time the exchange took when the session measured it, {@code #} a note.</p>
  *
  * <pre>
  * # install com.example.CounterApplet as F0D3ADA9A6E8B2F4
  * C: 00A4040008F0D3ADA9A6E8B2F400
- * R: 9000
+ * R: 9000  (0.4 ms)
  * C: 8001000000
- * R: 000000019000
+ * R: 000000019000  (0.2 ms)
  * </pre>
+ *
+ * <p>Each exchange keeps when its command was sent and how long it took ({@link APDULogEntry#timestampMs()},
+ * {@link APDULogEntry#duration()}); {@link #last()} gives the newest one, so a test can check the time of a
+ * command it just sent.</p>
  *
  * <p>When more than {@link #capacity()} entries were recorded, the oldest are dropped and the transcript says so.
  * The history holds the bytes as they were exchanged, so it reveals what the commands carry (secure channel
@@ -81,16 +88,51 @@ public final class APDUHistory {
     }
 
     /**
-     * Records an exchange.
+     * Records an exchange without its time: the timestamp is the time of recording and the duration is unknown.
+     * {@link #exchange(byte[], Transmission)} and {@link #record(byte[], byte[], long, Duration)} keep both.
      *
      * @param command  the command APDU as sent
      * @param response the response APDU as received (data followed by SW1 SW2)
      */
     public void record(byte[] command, byte[] response) {
+        add(command, response, System.currentTimeMillis(), null);
+    }
+
+    /**
+     * Records an exchange with when its command was sent and how long it took.
+     *
+     * @param command      the command APDU as sent
+     * @param response     the response APDU as received (data followed by SW1 SW2)
+     * @param sentAtMillis when the command was sent (milliseconds since the epoch)
+     * @param duration     how long the exchange took, from just before sending to the response
+     * @throws NullPointerException if {@code duration} is null
+     */
+    public void record(byte[] command, byte[] response, long sentAtMillis, Duration duration) {
+        add(command, response, sentAtMillis, Objects.requireNonNull(duration, "duration"));
+    }
+
+    /**
+     * Transmits a command and records the exchange with its send time and its duration, measured around the
+     * transmission. A transmission that throws records nothing.
+     *
+     * @param command      the command APDU as sent
+     * @param transmission sends the command and returns the response APDU (data followed by SW1 SW2)
+     * @param <E>          the checked exception the transmission throws
+     * @return the response of the transmission
+     * @throws E if the transmission fails
+     */
+    public <E extends Exception> byte[] exchange(byte[] command, Transmission<E> transmission) throws E {
+        long sentAt = System.currentTimeMillis();
+        long started = System.nanoTime();
+        byte[] response = transmission.transmit();
+        record(command, response, sentAt, Duration.ofNanos(System.nanoTime() - started));
+        return response;
+    }
+
+    private void add(byte[] command, byte[] response, long sentAt, Duration duration) {
         byte[] sent = command.clone();
         byte[] received = response.clone();
-        long now = System.currentTimeMillis();
-        buffer.add(position -> new Exchange(position, sent, received, now));
+        buffer.add(position -> new Exchange(position, sent, received, sentAt, duration));
     }
 
     /**
@@ -112,6 +154,26 @@ public final class APDUHistory {
      */
     public List<APDULogEntry> entries() {
         return entriesSince(start);
+    }
+
+    /**
+     * Returns the newest exchange of this history (of this view, for a view such as the history of the card of a
+     * {@link JavaCardTest} class inside a test), notes left aside: for example the command a test has just sent,
+     * with its time.
+     *
+     * @return the newest exchange, as {@link #entries()} returns it
+     * @throws IllegalStateException if this history holds no exchange
+     */
+    public APDULogEntry last() {
+        if (buffer.capacity == 0) {
+            throw new IllegalStateException("This session keeps no history: no exchange to return");
+        }
+        List<APDULogEntry> exchanges = entriesSince(start);
+        if (exchanges.isEmpty()) {
+            throw new IllegalStateException("The history holds no exchange yet"
+                    + (start > 0 ? " since it starts (the current test, or the current class)" : ""));
+        }
+        return exchanges.getLast();
     }
 
     /**
@@ -278,6 +340,23 @@ public final class APDUHistory {
         }
     }
 
+    /**
+     * A transmission of one command, for {@link #exchange(byte[], Transmission)}.
+     *
+     * @param <E> the checked exception the transmission throws
+     */
+    @FunctionalInterface
+    public interface Transmission<E extends Exception> {
+
+        /**
+         * Sends the command.
+         *
+         * @return the response APDU (data followed by SW1 SW2)
+         * @throws E if the transmission fails
+         */
+        byte[] transmit() throws E;
+    }
+
     /** An entry of the history: an exchange or a note. */
     private sealed interface Entry permits Exchange, Note {
         long position();
@@ -285,16 +364,18 @@ public final class APDUHistory {
         void appendTo(StringBuilder text);
     }
 
-    private record Exchange(long position, byte[] command, byte[] response, long timestampMs) implements Entry {
+    /** An exchange; the duration is null when it was recorded without its time. */
+    private record Exchange(long position, byte[] command, byte[] response, long timestampMs, Duration duration)
+            implements Entry {
         @Override
         public void appendTo(StringBuilder text) {
             text.append(TranscriptFormat.command(command)).append('\n')
-                    .append(TranscriptFormat.response(response)).append('\n');
+                    .append(TranscriptFormat.response(response, duration)).append('\n');
         }
 
         APDULogEntry toLogEntry() {
             byte[] sent = command.clone();
-            return new APDULogEntry(sent, new APDUResponse(response).inReplyTo(sent), timestampMs);
+            return new APDULogEntry(sent, new APDUResponse(response).inReplyTo(sent), timestampMs, duration);
         }
     }
 

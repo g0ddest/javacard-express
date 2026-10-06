@@ -17,6 +17,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import java.time.Duration;
+
 import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;   // also AssertJ's assertThat
 
 /**
@@ -146,6 +148,13 @@ class WalletAppletTest {
         card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
         assertThat(card.history().entries())                       // this test's exchanges: its SELECT, CREDIT
                 .extracting(APDULogEntry::ins).containsExactly(0xA4, 0x30);
+    }
+
+    /** Recipe "Timing a command". */
+    @Test
+    void creditStaysWithinItsTimeBudget(SmartCardSession card) {
+        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        assertThat(card.history().last()).tookAtMost(Duration.ofMillis(200));   // the exchange just made
     }
 
     /** Recipe "One test class, several backends". */

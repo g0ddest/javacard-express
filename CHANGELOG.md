@@ -3,6 +3,36 @@
 Notable changes of each release. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.0 a minor release can change the API.
 
+## [Unreleased]
+
+### Added
+
+- The time of every exchange: `APDULogEntry.duration()`, measured from just before the command is sent until the
+  response has arrived, by the embedded, PC/SC, `simulated-gp` and `livecard` sessions and by `LoggingSession`
+  (`null` for an entry whose session did not measure it). Transcripts (of failed tests, `apdu-transcript.txt`,
+  `APDUHistory.transcript()`, the transcript files of the live-card harness) and the lines of `-Djcx.log=true` and
+  `logged(true)` show it after each response: `R: 00649000  (12.3 ms)`.
+- `APDUHistory.last()`, the newest exchange, and `assertThat(APDULogEntry)` (`APDULogEntryAssert`) with
+  `tookAtMost(Duration)`, `isSuccess()` and `hasStatusWord(int)`, for a time budget of a command; see
+  [Timing a command](TESTING.md#timing-a-command).
+- For sessions of your own: `APDUHistory.exchange(command, transmission)` transmits and records an exchange with its
+  time, `record(command, response, sentAtMillis, duration)` records a measured one, and `TranscriptFormat` (now
+  public) writes the transcript lines.
+
+### Changed
+
+- `APDULogEntry` has a fourth component, `duration`. The constructor with three arguments stays (without a time), but
+  record patterns on `APDULogEntry` need the new component.
+- The transcript files of the live-card harness show the time with one decimal, like the other transcripts.
+- The documentation and the code no longer name release versions (the changelog does); `@Deprecated` has no `since`
+  attribute.
+- NOTICE names the Java Card API classes inside the bundled jCardSim (the simulator server of
+  `javacard-express-container` and its Docker image).
+
+### Fixed
+
+- `APDULogEntry.timestampMs()` is the time the command was sent; it was taken after the response had arrived.
+
 ## [0.4.0] - 2026-10-03
 
 CAP files pass Oracle's off-card verifier, secure channels work on real cards, and one applet test class runs on
@@ -284,6 +314,7 @@ it.
 - `javacard-express-gp` (GlobalPlatform card content management, SCP02 and SCP03), `javacard-express-sm` (ISO/IEC
   7816-4 secure messaging), `javacard-express-pace` (PACE); container mode on Testcontainers.
 
+[Unreleased]: https://github.com/g0ddest/javacard-express/compare/0.4.0...HEAD
 [0.4.0]: https://github.com/g0ddest/javacard-express/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/g0ddest/javacard-express/compare/0.2.1...0.3.0
 [0.2.1]: https://github.com/g0ddest/javacard-express/compare/0.2.0...0.2.1

@@ -292,10 +292,11 @@ public interface SmartCardSession extends AutoCloseable {
      * test to its failure; for the card of a {@link JavaCardTest} class it also publishes them as the file
      * {@code apdu-transcript.txt} of the test.
      *
-     * <p>{@link name.velikodniy.jcexpress.embedded.EmbeddedSession}, the container backend
-     * ({@code ContainerSession}) and {@link name.velikodniy.jcexpress.pcsc.PcscSession} record their exchanges;
-     * {@link LoggingSession} returns the history of the session it wraps. The default implementation records
-     * nothing.</p>
+     * <p>{@link name.velikodniy.jcexpress.embedded.EmbeddedSession} and
+     * {@link name.velikodniy.jcexpress.pcsc.PcscSession} record their exchanges, each with when its command was sent
+     * and how long it took ({@link APDULogEntry}; {@link APDUHistory#last()} gives the newest);
+     * {@link LoggingSession} returns the history of the session it wraps. The container backend
+     * ({@code ContainerSession}) keeps none, like the default implementation.</p>
      *
      * <p>The card of a {@link JavaCardTest} class returns, inside a test (its {@code @BeforeEach} and
      * {@code @AfterEach} methods included), the entries of that test: from its start on, after the installs of the

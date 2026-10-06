@@ -118,6 +118,7 @@ public final class GuardedPcscSession implements SmartCardSession {
         }
         check(command);
         transcript.command(command);
+        long sentAt = System.currentTimeMillis();
         long start = System.nanoTime();
         byte[] response;
         try {
@@ -129,9 +130,10 @@ public final class GuardedPcscSession implements SmartCardSession {
             history.note("transport failure: " + e);
             throw e;
         }
-        transcript.response(response, Duration.ofNanos(System.nanoTime() - start));
+        Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+        transcript.response(response, elapsed);
         guard.observe(command, response);
-        record(command, response);
+        record(command, response, sentAt, elapsed);
         return response;
     }
 
@@ -146,11 +148,14 @@ public final class GuardedPcscSession implements SmartCardSession {
         }
     }
 
-    /** Records an exchange in the history; LOAD commands are counted and noted once (the transcript has them). */
-    private void record(byte[] command, byte[] response) {
+    /**
+     * Records an exchange in the history with its time; LOAD commands are counted and noted once (the transcript has
+     * them).
+     */
+    private void record(byte[] command, byte[] response, long sentAt, Duration elapsed) {
         if (!loadBlocks.add(command, response, history, transcript)) {
             loadBlocks.flush(history, transcript);
-            history.record(command, response);
+            history.record(command, response, sentAt, elapsed);
         }
     }
 

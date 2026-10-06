@@ -20,6 +20,7 @@ import name.velikodniy.jcexpress.apdu.APDUCodec;
 import name.velikodniy.jcexpress.apdu.APDUCommand;
 import name.velikodniy.jcexpress.apdu.APDUSequence;
 import name.velikodniy.jcexpress.fakes.ContractCardTerminal;
+import name.velikodniy.jcexpress.fakes.Transcripts;
 import name.velikodniy.jcexpress.memory.MemoryInfo;
 import name.velikodniy.jcexpress.memory.MemoryProbeApplet;
 import name.velikodniy.jcexpress.pcsc.PcscSession;
@@ -32,11 +33,13 @@ import name.velikodniy.jcexpress.tlv.TLVParser;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 
 import static name.velikodniy.jcexpress.assertions.JCXAssertions.assertThat;
+import static name.velikodniy.jcexpress.fakes.Transcripts.withoutTimes;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -447,12 +450,29 @@ class ReadmeSnippetsTest {
         assertThat(all).hasSize(2);
         assertThat(selects).hasSize(1);
         assertThat(last.ins()).isEqualTo(0x01);
-        assertThat(logged.dump()).isEqualTo("""
+        String dump = logged.dump();
+        assertThat(withoutTimes(dump)).isEqualTo("""
                 C: 00A4040005F000000001
                 R: 9000
                 C: 80010000
                 R: 48656C6C6F9000
                 """);
+        assertThat(dump.lines().filter(line -> line.startsWith("R: ")))
+                .hasSize(2).allSatisfy(line -> assertThat(line).matches(Transcripts.TIMED_RESPONSE));
+    }
+
+    /** The time budget snippet of "APDU Logging": the session's own history keeps the times. */
+    @Test
+    void timeOfAnExchange() {
+        card.install(MyApplet.class);
+
+        card.send(0x80, 0x01);
+        APDULogEntry newest = card.history().last();              // the newest exchange of the session
+        assertThat(newest).isSuccess().tookAtMost(Duration.ofMillis(200));
+
+        assertThat(newest.ins()).isEqualTo(0x01);
+        assertThat(newest.duration()).isNotNull();
+        assertThat(newest.timestampMs()).isPositive();
     }
 
     /** The memory snippet against a card that reports memory (jCardSim does not, see embeddedBackendColumn). */

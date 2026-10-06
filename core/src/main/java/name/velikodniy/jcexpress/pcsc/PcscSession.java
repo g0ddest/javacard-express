@@ -397,9 +397,7 @@ public class PcscSession implements SmartCardSession {
         CommandAPDU command = new CommandAPDU(rawApdu);
         checkThread();
         try {
-            byte[] response = channels.transmit(command);
-            history.record(command.getBytes(), response);
-            return response;
+            return history.exchange(command.getBytes(), () -> channels.transmit(command));
         } catch (CardException e) {
             throw new PcscException("Transmit failed: " + e.getMessage(), e);
         } catch (IllegalStateException e) {
