@@ -28,8 +28,11 @@ import java.util.zip.ZipEntry;
  *       referenced package;</li>
  *   <li>the compile class path (dependency jars and directories), for referenced packages outside
  *       the Java Card API ({@code java.*}, {@code javacard.*}, {@code javacardx.*}, which the
- *       converter knows).</li>
+ *       converter knows). A package whose built-in data is used in a fixed version
+ *       ({@code <globalPlatformApi>} for {@code org.globalplatform}) is not searched here either.</li>
  * </ol>
+ * The converter also has built-in data for {@code org.globalplatform}; an export file of that
+ * package found by any of these lookups takes precedence over it.
  * Searches look where JCVM 3.1 &sect;5.1 and &sect;5.2 put an export file: in the
  * {@code javacard} subdirectory of the package directory, named after the last package name
  * component, e.g. {@code com/example/lib/javacard/lib.exp}. Export files inside jars are copied
@@ -41,14 +44,18 @@ final class ExportFileLookup {
 
     private final Path workDirectory;
     private final Log log;
+    private final Set<String> notOnClassPath;
 
     /**
-     * @param workDirectory where export files found inside jars are extracted
-     * @param log           receives the export files used
+     * @param workDirectory  where export files found inside jars are extracted
+     * @param log            receives the export files used
+     * @param notOnClassPath packages (dot notation) whose export file is not looked up on the class
+     *                       path, because the converter's built-in data is to be used for them
      */
-    ExportFileLookup(Path workDirectory, Log log) {
+    ExportFileLookup(Path workDirectory, Log log, Set<String> notOnClassPath) {
         this.workDirectory = workDirectory;
         this.log = log;
+        this.notOnClassPath = Set.copyOf(notOnClassPath);
     }
 
     /**
@@ -73,7 +80,8 @@ final class ExportFileLookup {
         }
         List<Path> searchPath = configuredPath(exportPath);
         for (String pkg : packages) {
-            search(pkg, searchPath).or(() -> isApi(pkg) ? Optional.empty() : searchQuietly(pkg, classPath))
+            boolean builtIn = isApi(pkg) || notOnClassPath.contains(pkg);
+            search(pkg, searchPath).or(() -> builtIn ? Optional.empty() : searchQuietly(pkg, classPath))
                     .ifPresent(found::add);
         }
         found.forEach(file -> log.debug("Export file: " + file));
