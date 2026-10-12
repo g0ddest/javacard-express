@@ -3,7 +3,7 @@
 Notable changes of each release. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.0 a minor release can change the API.
 
-## [Unreleased]
+## [0.5.0] - 2026-10-12
 
 Applets can use the GlobalPlatform Card API, javac reports code outside the Java Card subset at its line (in the
 build, in IntelliJ IDEA's build and, with the new IDE plugin, in its editor), and one plugin in the POM sets an
@@ -454,7 +454,7 @@ it.
 - `javacard-express-gp` (GlobalPlatform card content management, SCP02 and SCP03), `javacard-express-sm` (ISO/IEC
   7816-4 secure messaging), `javacard-express-pace` (PACE); container mode on Testcontainers.
 
-[Unreleased]: https://github.com/g0ddest/javacard-express/compare/0.4.0...HEAD
+[0.5.0]: https://github.com/g0ddest/javacard-express/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/g0ddest/javacard-express/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/g0ddest/javacard-express/compare/0.2.1...0.3.0
 [0.2.1]: https://github.com/g0ddest/javacard-express/compare/0.2.0...0.2.1
