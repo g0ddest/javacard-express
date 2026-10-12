@@ -17,20 +17,22 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Keeps the root README.md honest. Every line of its {@code ```java} blocks must occur in a source file that this
- * module compiles ({@link RootReadmeSnippets} and the Quick Start applet and test in {@code com.example.hello},
- * which also runs as a test on jCardSim), and its {@code ```xml} block must be the POM of the applet parent's
- * integration test {@code applet-parent/src/it/parent-quickstart}, which builds it verbatim.
+ * module compiles ({@link RootReadmeSnippets}, the Quick Start applet and test in {@code com.example.hello} and the
+ * recipe test of an applet that uses the GlobalPlatform API in {@code cookbook}, which also run as tests on
+ * jCardSim), and its {@code ```xml} block must be the POM of the Maven plugin's integration test
+ * {@code maven-plugin/src/it/readme-quickstart}, which builds it verbatim.
  */
 class RootReadmeSnippetsTest {
 
     /** Surefire runs with the module directory as working directory. */
     private static final Path README = Path.of("../README.md");
     private static final Pattern REVISION = Pattern.compile("^-Drevision=(\\S+)$", Pattern.MULTILINE);
-    private static final Path PARENT_IT_POM = Path.of("../applet-parent/src/it/parent-quickstart/pom.xml");
+    private static final Path QUICK_START_IT_POM = Path.of("../maven-plugin/src/it/readme-quickstart/pom.xml");
     private static final List<Path> MIRRORS = List.of(
             Path.of("src/test/java/name/velikodniy/jcexpress/gp/RootReadmeSnippets.java"),
             Path.of("src/test/java/com/example/hello/HelloWorldApplet.java"),
-            Path.of("src/test/java/com/example/hello/HelloWorldAppletTest.java"));
+            Path.of("src/test/java/com/example/hello/HelloWorldAppletTest.java"),
+            Path.of("src/test/java/name/velikodniy/jcexpress/gp/cookbook/VaultAppletTest.java"));
 
     @Test
     void everyJavaLineOfTheReadmeIsCompiledHere() throws IOException {
@@ -47,16 +49,15 @@ class RootReadmeSnippetsTest {
     }
 
     @Test
-    void theReadmePomIsTheOneTheParentIntegrationTestBuilds() throws IOException {
+    void theReadmePomIsTheOneTheQuickStartIntegrationTestBuilds() throws IOException {
         String release = releaseVersion();
-        List<String> itPom = Files.readAllLines(PARENT_IT_POM).stream().map(String::strip)
+        List<String> itPom = Files.readAllLines(QUICK_START_IT_POM).stream().map(String::strip)
                 .filter(line -> !line.isEmpty() && !line.startsWith("<?xml"))
                 .map(line -> line.replace("@project.version@", release)).toList();
 
         List<String> pomLines = blockLines(Files.readAllLines(README), "xml");
 
-        assertThat(pomLines).contains("<artifactId>javacard-express-applet-parent</artifactId>",
-                "<javacard.packageAid>A00000006212</javacard.packageAid>");
+        assertThat(pomLines).contains("<extensions>true</extensions>", "<packageAid>A00000006212</packageAid>");
         assertThat(pomLines).isEqualTo(itPom);
     }
 
