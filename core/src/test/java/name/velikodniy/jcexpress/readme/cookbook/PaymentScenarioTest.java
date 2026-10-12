@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.readme.cookbook;
 
+import name.velikodniy.jcexpress.Bytes;
 import name.velikodniy.jcexpress.InstallApplet;
 import name.velikodniy.jcexpress.Isolation;
 import name.velikodniy.jcexpress.JavaCardTest;
@@ -24,7 +25,7 @@ class PaymentScenarioTest {
 
     @BeforeAll
     static void fund(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();      // the class's applet is selected already
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();      // the class's applet is selected already
     }
 
     @Test
@@ -36,7 +37,7 @@ class PaymentScenarioTest {
     @Test
     @Order(2)
     void debitsWithThePinOfTheFirstTest(SmartCardSession card) {
-        assertThat(card.send(DEBIT.data(0x00, 0x0A))).isSuccess();   // no SELECT in between: still verified
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(90);
+        assertThat(card.send(DEBIT.data(Bytes.ofShort(10)))).isSuccess();   // no SELECT in between: still verified
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(90);
     }
 }

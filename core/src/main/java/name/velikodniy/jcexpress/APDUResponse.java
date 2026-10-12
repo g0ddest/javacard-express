@@ -189,6 +189,103 @@ public final class APDUResponse {
         return (short) bigEndian16("s16", offset);
     }
 
+    /**
+     * Returns the response data as a {@code byte}: the data must be exactly one byte.
+     *
+     * @return the byte, signed
+     * @throws IllegalStateException if the data is not exactly one byte; the message shows the data
+     */
+    public byte dataAsByte() {
+        requireLength("dataAsByte", 1);
+        return data[0];
+    }
+
+    /**
+     * Returns the response data as a {@code short}: exactly two bytes, big-endian, the value an applet wrote with
+     * {@code Util.setShort} (and {@code Util.getShort} reads), e.g. a balance.
+     *
+     * @return the number, {@code -32768} to {@code 32767}
+     * @throws IllegalStateException if the data is not exactly two bytes; the message shows the data
+     */
+    public short dataAsShort() {
+        requireLength("dataAsShort", 2);
+        return shortAt(0);
+    }
+
+    /**
+     * Returns the response data as an {@code int}: exactly four bytes, big-endian, as {@code JCint.setInt}
+     * ({@code javacardx.framework.util.intx}) writes an int on a platform with the optional int type.
+     *
+     * @return the number
+     * @throws IllegalStateException if the data is not exactly four bytes; the message shows the data
+     */
+    public int dataAsInt() {
+        requireLength("dataAsInt", 4);
+        return intAt(0);
+    }
+
+    /**
+     * Returns the response data as a {@code boolean}: exactly one byte, {@code 00} for {@code false} and {@code 01}
+     * for {@code true}. The Java Card API defines no wire form of a boolean; this is the usual one, which
+     * {@link Bytes#ofBoolean(boolean)} writes.
+     *
+     * @return the value
+     * @throws IllegalStateException if the data is not exactly one byte, or a byte other than {@code 00} and
+     *                               {@code 01}; the message shows the data
+     */
+    public boolean dataAsBoolean() {
+        requireLength("dataAsBoolean", 1);
+        if (data[0] != 0 && data[0] != 1) {
+            throw new IllegalStateException(String.format(
+                    "dataAsBoolean needs 00 (false) or 01 (true), but the response data is %02X", data[0] & 0xFF));
+        }
+        return data[0] == 1;
+    }
+
+    /**
+     * Returns a {@code byte} of the response data; {@link #u8(int)} reads the same byte unsigned.
+     *
+     * @param offset the offset in the data
+     * @return the byte, signed
+     * @throws IndexOutOfBoundsException if the data has no byte at {@code offset}
+     */
+    public byte byteAt(int offset) {
+        check("byteAt", offset, 1);
+        return data[offset];
+    }
+
+    /**
+     * Returns a {@code short} of the response data: two bytes, big-endian, as {@code Util.getShort} reads them;
+     * {@link #u16(int)} reads the same bytes unsigned.
+     *
+     * @param offset the offset of the first (high) byte in the data
+     * @return the number, {@code -32768} to {@code 32767}
+     * @throws IndexOutOfBoundsException if the data has no two bytes at {@code offset}
+     */
+    public short shortAt(int offset) {
+        return (short) bigEndian16("shortAt", offset);
+    }
+
+    /**
+     * Returns an {@code int} of the response data: four bytes, big-endian, as {@code JCint.getInt} reads them.
+     *
+     * @param offset the offset of the first (highest) byte in the data
+     * @return the number
+     * @throws IndexOutOfBoundsException if the data has no four bytes at {@code offset}
+     */
+    public int intAt(int offset) {
+        check("intAt", offset, 4);
+        return ((data[offset] & 0xFF) << 24) | ((data[offset + 1] & 0xFF) << 16) | ((data[offset + 2] & 0xFF) << 8)
+                | (data[offset + 3] & 0xFF);
+    }
+
+    private void requireLength(String reader, int width) {
+        if (data.length != width) {
+            throw new IllegalStateException(String.format("%s needs exactly %d byte%s, but the response data has %s",
+                    reader, width, width == 1 ? "" : "s", describeData()));
+        }
+    }
+
     private int bigEndian16(String reader, int offset) {
         check(reader, offset, 2);
         return ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF);

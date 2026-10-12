@@ -1,0 +1,5 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="name.velikodniy.jcexpress">
+        <checkOptions implementation="name.velikodniy.jcexpress.idea.MavenCheckOptions"/>
+    </extensions>
+</idea-plugin>

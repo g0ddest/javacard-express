@@ -14,7 +14,7 @@
     <packaging>jar</packaging>
 
     <name>JavaCard Express :: API Stubs</name>
-    <description>JavaCard 3.0.5 Classic API stubs for compilation — clean-room reimplementation</description>
+    <description>Java Card 3.0.5 Classic API and GlobalPlatform Card API (org.globalplatform) stubs for compilation — clean-room reimplementation</description>
 
     <properties>
         <!--

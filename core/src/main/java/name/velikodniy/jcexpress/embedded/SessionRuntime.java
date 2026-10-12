@@ -8,9 +8,13 @@ import javacard.framework.AID;
 import javacard.framework.Applet;
 import javacard.framework.ISOException;
 import javacard.framework.SystemException;
+import name.velikodniy.jcexpress.embedded.gp.CardApplication;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformHost;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -33,12 +37,26 @@ import java.util.concurrent.atomic.AtomicInteger;
  * ({@link #takeFailure()}): {@code transmitCommand} gets the applet through {@link #getApplet(AID)}, which hands out
  * a {@link ReportingApplet}, and the install method is called here, with the behaviour of jCardSim's
  * {@code installApplet} otherwise.</p>
+ *
+ * <p>The card has a GlobalPlatform environment ({@link #globalPlatform()}), which the applets reach through
+ * {@code org.globalplatform.GPSystem}. This runtime tells it when an install method starts and how it ends (the
+ * application is registered in the state INSTALLED while the method runs and SELECTABLE afterwards, as after
+ * INSTALL [for install and make selectable], GPCS v2.3.1 11.5.2.1), when an applet is deleted, when an applet is
+ * deselected (which jCardSim also does before it selects one) and when the card is reset.</p>
  */
-final class SessionRuntime extends SimulatorRuntime {
+final class SessionRuntime extends SimulatorRuntime implements GlobalPlatformHost {
 
     private final Map<Applet, ReportingApplet> reporting = new IdentityHashMap<>();
+    private final GlobalPlatformCard globalPlatform = GlobalPlatformCard.withTestKeys();
     private int nextLoadFile;
     private AppletFailure failure;
+    /** The AID under which the application being installed is in the GlobalPlatform Registry. */
+    private name.velikodniy.jcexpress.AID installing;
+
+    @Override
+    public GlobalPlatformCard globalPlatform() {
+        return globalPlatform;
+    }
 
     @Override
     public void loadApplet(AID aid, Class<? extends Applet> appletClass) {
@@ -55,21 +73,46 @@ final class SessionRuntime extends SimulatorRuntime {
     /**
      * Installs like jCardSim (the install method must call {@code register} once; an {@code ISOException} of it is
      * passed on, any other failure becomes {@code SystemException.ILLEGAL_AID}), and keeps what the install method
-     * threw for {@link #takeFailure()}.
+     * threw for {@link #takeFailure()}. The GlobalPlatform Registry has the application from the start of the
+     * install method, with the privileges of the install parameters, and loses it again when the method fails.
      */
     @Override
     public void installApplet(AID loadFileAID, AID moduleAID, AID appletAID, byte[] bArray, short bOffset,
                               byte bLength) {
         activateSimulatorRuntimeInstance();
         Class<? extends Applet> appletClass = appletClass(loadFileAID, moduleAID);
-        Method install;
+        Method install = installMethod(appletClass);
+        byte[] privileges = privileges(bArray, bOffset, bLength);
+        name.velikodniy.jcexpress.AID application = GlobalPlatformCard.aidOf(appletAID);
+        globalPlatform.installStarted(application, privileges);
+        installing = application;
+        boolean installed = false;
         try {
-            install = appletClass.getMethod("install", byte[].class, short.class, byte.class);
+            invokeInstall(install, appletClass, appletAID, privileges, bArray, bOffset, bLength);
+            installed = true;
+        } finally {
+            if (installing != null && installed) {
+                globalPlatform.installSucceeded(installing, CardApplication.SELECTABLE);
+            } else if (installing != null) {
+                globalPlatform.installFailed(installing);
+            }
+            installing = null;
+        }
+    }
+
+    private static Method installMethod(Class<? extends Applet> appletClass) {
+        try {
+            return appletClass.getMethod("install", byte[].class, short.class, byte.class);
         } catch (NoSuchMethodException e) {
             throw new IllegalArgumentException("Class does not provide install method");
         }
+    }
+
+    private void invokeInstall(Method install, Class<? extends Applet> appletClass, AID appletAID, byte[] privileges,
+                               byte[] bArray, short bOffset, byte bLength) {
         AtomicInteger registrations = new AtomicInteger();
-        registrationCallback.set((applet, aid) -> register(applet, aid == null ? appletAID : aid, registrations));
+        registrationCallback.set((applet, aid) -> register(applet, aid == null ? appletAID : aid, registrations,
+                privileges));
         try {
             install.invoke(null, bArray, bOffset, bLength);
         } catch (InvocationTargetException e) {
@@ -84,6 +127,22 @@ final class SessionRuntime extends SimulatorRuntime {
         }
     }
 
+    /**
+     * The Privileges of the install parameters, {@code [Li][instance AID][Lp][Privileges][La][...]} (GPCS v2.3.1
+     * Annex A.1, Installation): one or three bytes; none when the field is empty or the parameters are not coded
+     * this way.
+     */
+    private static byte[] privileges(byte[] bArray, short bOffset, byte bLength) {
+        int end = bOffset + (bLength & 0xFF);
+        int field = bOffset + 1 + (bOffset < bArray.length ? bArray[bOffset] & 0xFF : 0);
+        if (field >= end || end > bArray.length) {
+            return new byte[0];
+        }
+        int length = bArray[field] & 0xFF;
+        boolean coded = (length == 1 || length == 3) && field + 1 + length <= end;
+        return coded ? Arrays.copyOfRange(bArray, field + 1, field + 1 + length) : new byte[0];
+    }
+
     private Class<? extends Applet> appletClass(AID loadFileAID, AID moduleAID) {
         LoadFile loadFile = loadFiles.get(loadFileAID);
         if (loadFile == null) {
@@ -96,10 +155,20 @@ final class SessionRuntime extends SimulatorRuntime {
         return module.getAppletClass();
     }
 
-    /** Registers an applet once per install method (Java Card API {@code Applet.register}). */
-    private void register(Applet applet, AID aid, AtomicInteger registrations) {
+    /**
+     * Registers an applet once per install method (Java Card API {@code Applet.register}). An applet that
+     * registers under another AID than the one being installed is in the GlobalPlatform Registry under that AID.
+     */
+    private void register(Applet applet, AID aid, AtomicInteger registrations, byte[] privileges) {
         if (registrations.incrementAndGet() != 1) {
             throw new SystemException(SystemException.ILLEGAL_AID);
+        }
+        name.velikodniy.jcexpress.AID registered = GlobalPlatformCard.aidOf(aid);
+        if (!registered.equals(installing)) {
+            globalPlatform.installFailed(installing);
+            installing = null;
+            globalPlatform.installStarted(registered, privileges);
+            installing = registered;
         }
         applets.put(aid, new ApplicationInstance(aid, applet));
     }
@@ -173,6 +242,27 @@ final class SessionRuntime extends SimulatorRuntime {
         }
         super.deleteApplet(aid);
         forgetLoadFile(aid);
+        globalPlatform.unregister(GlobalPlatformCard.aidOf(aid));
+    }
+
+    /**
+     * Deselects like jCardSim, which calls this also before it selects an applet; the Application Session ends
+     * here, and with it a secure channel session (GPCS v2.3.1 10.2.3), after the applet's {@code deselect()} ran.
+     */
+    @Override
+    protected void deselect(ApplicationInstance applicationInstance) {
+        try {
+            super.deselect(applicationInstance);
+        } finally {
+            globalPlatform.applicationSessionEnded();
+        }
+    }
+
+    /** Resets like jCardSim and reports the card reset, which ends a secure channel session (GPCS v2.3.1 10.2.3). */
+    @Override
+    public void reset() {
+        super.reset();
+        globalPlatform.cardReset();
     }
 
     /**

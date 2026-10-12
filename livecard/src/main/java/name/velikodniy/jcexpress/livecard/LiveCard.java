@@ -279,7 +279,7 @@ public final class LiveCard implements AutoCloseable {
             run.warnUnverified(() -> LOG.warning(HarnessTexts.UNVERIFIED_WARNING));
         }
         note("load " + pkg.packageName() + " as " + pkg.aid() + " (CAP file of " + prepared.cap().length
-                + " bytes, verification: " + prepared.verification() + ")");
+                + " bytes, imports " + prepared.imports() + "; verification: " + prepared.verification() + ")");
         CAPFile cap = CAPFile.from(prepared.cap());
         manage(gp -> {
             AppletInstance first = plan.getFirst();

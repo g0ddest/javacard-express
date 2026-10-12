@@ -24,6 +24,8 @@ import name.velikodniy.jcexpress.converter.input.PackageScanner;
 import name.velikodniy.jcexpress.converter.resolve.ClassReferences;
 import name.velikodniy.jcexpress.converter.resolve.CpReference;
 import name.velikodniy.jcexpress.converter.resolve.ExportedTypes;
+import name.velikodniy.jcexpress.converter.resolve.GlobalPlatformApi;
+import name.velikodniy.jcexpress.converter.resolve.GlobalPlatformImport;
 import name.velikodniy.jcexpress.converter.resolve.ImportLoader;
 import name.velikodniy.jcexpress.converter.resolve.ImportedPackage;
 import name.velikodniy.jcexpress.converter.resolve.LinkChecker;
@@ -41,8 +43,6 @@ import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
 import java.lang.classfile.MethodModel;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -132,6 +132,7 @@ public final class Converter {
     private final boolean supportInt32;
     private final boolean generateExport;
     private final JavaCardVersion javaCardVersion;
+    private final String globalPlatformApi;
 
     private Converter(Builder builder) {
         this.classesDirectory = builder.classesDirectory;
@@ -148,6 +149,7 @@ public final class Converter {
         this.supportInt32 = builder.supportInt32;
         this.generateExport = builder.generateExport;
         this.javaCardVersion = builder.javaCardVersion;
+        this.globalPlatformApi = builder.globalPlatformApi;
     }
 
     /**
@@ -217,7 +219,8 @@ public final class Converter {
         // Stage 7: Generate binary export file
         byte[] exportFile = generateExportFile(scan, tokenMap);
 
-        return new ConverterResult(capFile, exportFile, scan.warnings(), capFile.length);
+        return new ConverterResult(capFile, exportFile, scan.warnings(), capFile.length,
+                ImportReport.of(translation.resolver().imports(), javaCardVersion));
     }
 
     /**
@@ -238,8 +241,9 @@ public final class Converter {
         // every external reference must be linkable against them (§4.3.5, §4.5.2)
         List<ClassReferences.Reference> references = ClassReferences.scan(List.copyOf(classFiles.values()));
         Set<String> referencedPackages = ClassReferences.packages(references, packageInfo.internalName());
-        List<ImportedPackage> imports = ImportLoader.load(javaCardVersion, importExportFiles, exportPath,
-                referencedPackages);
+        List<ImportedPackage> imports = GlobalPlatformImport.select(globalPlatformApi, ImportLoader.load(
+                javaCardVersion, globalPlatformApi, importExportFiles, exportPath, referencedPackages),
+                references, packageInfo.classes(), javaCardVersion);
         // §6.9.2.5: abstract classes declare the interface methods they leave to subclasses; scan again
         Map<String, byte[]> completed = declareAbstractMethods
                 ? AbstractMethodDeclarations.complete(packageInfo, classFiles, new ExportedTypes(imports)) : classFiles;
@@ -755,6 +759,7 @@ public final class Converter {
      *   <li>{@link #supportInt32(boolean)} -- defaults to {@code false}</li>
      *   <li>{@link #generateExport(boolean)} -- defaults to {@code true}</li>
      *   <li>{@link #javaCardVersion(JavaCardVersion)} -- defaults to {@link JavaCardVersion#V3_0_5}</li>
+     *   <li>{@link #globalPlatformApi(String)} -- defaults to the lowest sufficient version</li>
      * </ul>
      */
     public static final class Builder {
@@ -768,7 +773,8 @@ public final class Converter {
         private final List<Path> exportPath = new ArrayList<>();
         private boolean supportInt32 = false;
         private boolean generateExport = true;
-        private JavaCardVersion javaCardVersion = JavaCardVersion.V3_0_5;
+        private JavaCardVersion javaCardVersion = JavaCardVersion.defaultVersion();
+        private String globalPlatformApi;
 
         private Builder() {}
 
@@ -805,7 +811,7 @@ public final class Converter {
          * Sets the package AID from a hex string (e.g. "A00000006212").
          */
         public Builder packageAid(String hexAid) {
-            this.packageAid = hexToBytes(hexAid);
+            this.packageAid = AidRules.parse(hexAid);
             return this;
         }
 
@@ -836,7 +842,7 @@ public final class Converter {
          * Registers an applet with AID from hex string.
          */
         public Builder applet(String className, String hexAid) {
-            this.applets.put(Objects.requireNonNull(className, "className"), hexToBytes(hexAid));
+            this.applets.put(Objects.requireNonNull(className, "className"), AidRules.parse(hexAid));
             return this;
         }
 
@@ -861,9 +867,9 @@ public final class Converter {
          *
          * <p>Each entry is a directory or a JAR/ZIP file that holds export files at
          * {@code <package>/javacard/<last name component>.exp} (JCVM 3.1 §4.1.1, §5.1, §5.2), for
-         * example a kit's {@code api_export_files} directory, a directory of GlobalPlatform API
-         * export files, or the output of another package's conversion. Export files found here
-         * take precedence over the built-in API data.
+         * example a kit's {@code api_export_files} directory, a directory of a vendor's API export
+         * files, or the output of another package's conversion. Export files found here take
+         * precedence over the built-in data of the Java Card API and of {@code org.globalplatform}.
          *
          * @param entries directories or JAR files
          * @return this builder
@@ -908,6 +914,22 @@ public final class Converter {
         }
 
         /**
+         * Fixes the version of the GlobalPlatform Card API package {@code org.globalplatform} that the CAP
+         * file imports when the converter's built-in data describes the package ({@link GlobalPlatformApi}).
+         * By default the lowest version that has everything the package uses is imported, so that every card
+         * with that version or a later one can link the CAP file (JCVM 3.1 §4.5.2). An export file supplied
+         * for the package takes precedence and must not have another version.
+         *
+         * @param version a version of the package, e.g. {@code "1.5"}, or {@code null} for the default
+         * @return this builder
+         * @throws IllegalArgumentException if the built-in data has no such version
+         */
+        public Builder globalPlatformApi(String version) {
+            this.globalPlatformApi = version == null ? null : GlobalPlatformApi.requireVersion(version);
+            return this;
+        }
+
+        /**
          * Former switch between two Class component layouts; it has no effect.
          *
          * <p>The Class component is always written in the {@code class_info} layout of JCVM 3.1
@@ -940,37 +962,9 @@ public final class Converter {
             return new Converter(this);
         }
 
-        /**
-         * Generates a deterministic AID from package name using SHA-1:
-         * {@code 0xF0 || SHA-1(packageName)[0:7]}
-         */
-        @SuppressWarnings("java:S4790") // SHA-1 used for deterministic AID generation, not security
+        /** Generates a deterministic AID from the package name ({@link AidRules#generated(String)}). */
         static byte[] generateAid(String packageName) {
-            try {
-                MessageDigest md = MessageDigest.getInstance("SHA-1");
-                byte[] hash = md.digest(packageName.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                byte[] aid = new byte[8];
-                aid[0] = (byte) 0xF0;
-                System.arraycopy(hash, 0, aid, 1, 7);
-                return aid;
-            } catch (NoSuchAlgorithmException e) {
-                throw new IllegalStateException("SHA-1 not available", e);
-            }
-        }
-
-        /**
-         * Parses an AID given as hex digits, optionally separated by spaces or colons.
-         *
-         * @throws IllegalArgumentException if the text is not an even number of hex digits
-         */
-        static byte[] hexToBytes(String hex) {
-            String digits = hex.replace(" ", "").replace(":", "");
-            try {
-                return java.util.HexFormat.of().parseHex(digits);
-            } catch (IllegalArgumentException e) {
-                throw new IllegalArgumentException("Invalid AID '" + hex
-                        + "': expected an even number of hexadecimal digits", e);
-            }
+            return AidRules.generated(packageName);
         }
     }
 }

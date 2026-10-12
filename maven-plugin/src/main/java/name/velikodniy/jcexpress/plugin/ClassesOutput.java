@@ -47,14 +47,16 @@ final class ClassesOutput {
      * @param packageVersion  the package version {@code <major>.<minor>}
      * @param javaCardVersion the target platform, e.g. {@code 3.0.5}
      * @param supportInt32    whether the package was converted with int support
+     * @param globalPlatformApi the version of {@code org.globalplatform} fixed with {@code <globalPlatformApi>},
+     *                        or {@code null} when the converter chooses it
      * @param export          whether the package is exported (CAP Export component and export file)
      * @param applets         the applets with their AIDs
      * @param project         {@code groupId:artifactId} of the module
      * @param pluginVersion   the version of this plugin, or {@code null} if unknown
      */
     record Descriptor(String packageName, Aid packageAid, String packageVersion, String javaCardVersion,
-                      boolean supportInt32, boolean export, List<AppletAids.Assigned> applets, String project,
-                      String pluginVersion) {
+                      boolean supportInt32, String globalPlatformApi, boolean export,
+                      List<AppletAids.Assigned> applets, String project, String pluginVersion) {
 
         /** @return the descriptor as a properties file (ASCII, fixed order, no time stamp) */
         String text() {
@@ -65,6 +67,9 @@ final class ClassesOutput {
             line(text, "packageVersion", packageVersion);
             line(text, "javaCardVersion", javaCardVersion);
             line(text, "supportInt32", Boolean.toString(supportInt32));
+            if (globalPlatformApi != null) {
+                line(text, "globalPlatformApi", globalPlatformApi);
+            }
             line(text, "export", Boolean.toString(export));
             line(text, "cap", resource(packageName, "cap"));
             for (AppletAids.Assigned applet : applets) {

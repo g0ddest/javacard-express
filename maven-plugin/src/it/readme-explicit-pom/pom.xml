@@ -1,0 +1,99 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>hello-applet</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <jcexpress.version>@project.version@</jcexpress.version>
+        <!-- Java Card supports a subset of Java: compile applets to Java 8 class files -->
+        <maven.compiler.release>8</maven.compiler.release>
+        <!-- Tests run on JDK 25 (the toolkit's class files are Java 25): compile them for Java 25 -->
+        <maven.compiler.testRelease>25</maven.compiler.testRelease>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- 1. Test runtime first: javacard-express-core brings jCardSim, which executes the
+                javacard.* API in the tests -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-core</artifactId>
+            <version>${jcexpress.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 2. The card test backends: the same tests on a simulated GlobalPlatform card
+                (-Djcx.backend=simulated-gp) -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-livecard</artifactId>
+            <version>${jcexpress.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 3. Java Card 3.0.5 API for javac (compile-only stubs: signatures and constants) -->
+        <dependency>
+            <groupId>name.velikodniy</groupId>
+            <artifactId>javacard-express-api</artifactId>
+            <version>${jcexpress.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <compilerArgs>
+                                <!-- javac 21+ warns that release 8 is obsolete; the old target is intentional -->
+                                <arg>-Xlint:-options</arg>
+                            </compilerArgs>
+                            <!-- The javac check of the Java Card subset in the compilation of the applet code -->
+                            <annotationProcessorPaths>
+                                <path>
+                                    <groupId>name.velikodniy</groupId>
+                                    <artifactId>javacard-express-javac-plugin</artifactId>
+                                    <version>${jcexpress.version}</version>
+                                </path>
+                            </annotationProcessorPaths>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.4</version>
+                <configuration>
+                    <!-- The stubs and jCardSim define the same javacard.* classes: keep the
+                         compile-only stubs off the test runtime -->
+                    <classpathDependencyExcludes>
+                        <classpathDependencyExclude>name.velikodniy:javacard-express-api</classpathDependencyExclude>
+                    </classpathDependencyExcludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>${jcexpress.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <packageAid>A00000006212</packageAid>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

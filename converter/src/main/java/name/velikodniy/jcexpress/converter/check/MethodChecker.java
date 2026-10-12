@@ -127,7 +127,7 @@ final class MethodChecker {
         }
         for (ExceptionCatch c : code.exceptionHandlers()) {
             c.catchType().map(t -> ForbiddenTypes.checkInternalName(t.asInternalName()))
-                    .ifPresent(reason -> declaration("catch clause: " + reason));
+                    .ifPresent(reason -> declaration(SubsetChecker.CATCH_CLAUSE + reason));
         }
     }
 

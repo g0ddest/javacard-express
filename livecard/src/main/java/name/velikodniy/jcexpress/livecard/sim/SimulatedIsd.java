@@ -227,7 +227,7 @@ final class SimulatedIsd {
         if (p1 == 0x08) {
             SimulatedContent.Application application = content.application(instance);
             if (application != null) {
-                application.state = 0x07;
+                application.state(0x07);
             }
             return confirmed(application == null ? 0x6A88 : 0x9000);
         }
@@ -274,7 +274,7 @@ final class SimulatedIsd {
         if (scope != 0x40 || application == null) {
             return sw(scope != 0x40 ? 0x6A86 : 0x6A88);
         }
-        application.state = state == 0x80 ? application.state | 0x80 : application.state & 0x7F;
+        application.state(state == 0x80 ? application.state() | 0x80 : application.state() & 0x7F);
         return sw(0x9000);
     }
 

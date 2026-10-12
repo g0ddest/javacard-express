@@ -16,9 +16,12 @@ JVM), on a simulated GlobalPlatform card or on a real card, and talk to cards wi
 - **JDK 25 or newer** to run Maven with the plugin (the converter uses the JDK ClassFile API) and to run tests
   that use `core`, `gp`, `sm`, `pace` or `container` (their class files are Java 25).
 - **Applet code** compiles for Java 8 (`maven.compiler.release` 8) against `javacard-express-api`, whose class
-  files are Java 8, so any `javac` from 8 up can compile against it. **Test code** compiles for Java 25
-  (`maven.compiler.testRelease` 25): it runs with the toolkit on JDK 25 and may use the current Java API.
-- **Maven 3.9.0** or newer.
+  files are Java 8, so any `javac` from 8 up can compile against it; the
+  [javac check](#java-card-errors-at-compile-time) of the plugin runs only in javac of JDK 25 or newer (Maven's
+  own). **Test code** compiles for Java 25 (`maven.compiler.testRelease` 25): it runs with the toolkit on JDK 25 and
+  may use the current Java API.
+- **Maven 3.9.0** or newer (Maven 4 has not been tested). On a JDK older than 25 the plugin's build extension stops
+  the build with the JDK it needs.
 - **Docker** only for container mode.
 - No Oracle Java Card SDK to build, or to test on jCardSim and on the simulated GlobalPlatform card. Tests on a real
   card check the CAP files with Oracle's off-card verifier first, unless you opt out (see [Testing](#testing)).
@@ -27,43 +30,44 @@ JVM), on a simulated GlobalPlatform card or on a real card, and talk to cards wi
 
 ### Build and test an applet
 
-`pom.xml` of an applet project: it inherits the applet parent, which sets everything else (Java 8 applet code,
-Java 25 tests, the toolkit's dependencies, the version of the plugin and the binding of its `build` goal); the
-project names the plugin:
+`pom.xml` of an applet project: its coordinates and the plugin, declared as a build extension. The plugin sets
+everything else up that the POM does not configure itself (Java 8 applet code, Java 25 tests, the toolkit's
+dependencies, the binding of its `build` goal, and a check in javac that reports code outside the Java Card subset
+as compile errors at their lines):
 
 ```xml
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-
-    <parent>
-        <groupId>name.velikodniy</groupId>
-        <artifactId>javacard-express-applet-parent</artifactId>
-        <version>0.4.0</version>
-    </parent>
-
     <groupId>com.example</groupId>
     <artifactId>hello-applet</artifactId>
     <version>1.0-SNAPSHOT</version>
-
-    <properties>
-        <javacard.packageAid>A00000006212</javacard.packageAid>
-    </properties>
 
     <build>
         <plugins>
             <plugin>
                 <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>0.5.0</version>
+                <!-- the plugin sets the project up: compiler, dependencies, the javac check -->
+                <extensions>true</extensions>
+                <configuration>
+                    <packageAid>A00000006212</packageAid>
+                </configuration>
             </plugin>
         </plugins>
     </build>
 </project>
 ```
 
-A project that already has a parent uses the explicit POM of the
-[plugin README](maven-plugin/README.md#quick-start) and imports `javacard-express-bom` for the versions.
+This POM is the shortest way. A project that can inherit a parent may use the
+[applet parent](maven-plugin/README.md#the-shortest-pom-the-applet-parent) instead, which writes the same settings
+out and adds coverage of the applet code with JaCoCo; for tools that do not run Maven build extensions, the
+[plugin README](maven-plugin/README.md#without-the-build-extension) shows the same project with everything written
+out. An IDE sees what the extension adds only if its Maven import runs build extensions. IntelliJ IDEA 2026.2 does:
+after a project switches to the extension, reload Maven, and if the toolkit's classes stay unresolved, use
+*File → Invalidate Caches*. NetBeans has not been verified.
 
 The applet, `src/main/java/com/example/hello/HelloWorldApplet.java`:
 
@@ -131,8 +135,9 @@ class HelloWorldAppletTest {
 }
 ```
 
-`mvn package` converts the applet right after compilation (code outside the Java Card subset fails here, before
-any test), writes `target/<artifactId>-<version>.cap` with the applet AID `A0000000621201` (package AID + index),
+javac reports code outside the Java Card subset at its line (see
+[Java Card errors at compile time](#java-card-errors-at-compile-time)). `mvn package` then converts the applet right
+after compilation, writes `target/<artifactId>-<version>.cap` with the applet AID `A0000000621201` (package AID + index),
 and runs the test on jCardSim. `A000000062` is an example RID; use your own registered RID for real cards. That
 AID is the CAP file's: tests install their instances under an AID prefix of the run and address applets by class
 (`card.select(HelloWorldApplet.class)`, `card.aid(...)`), not by a literal AID ([why](#testing)).
@@ -142,8 +147,43 @@ test and deletes it afterwards, also when the test fails. The same test class ru
 GlobalPlatform card and on a real card; [Testing](#testing) says how to choose, and what changes on the
 GlobalPlatform backends.
 
+Numbers travel as bytes. `dataAsShort()`, `dataAsByte()`, `dataAsInt()` and `dataAsBoolean()` read the response
+data in the Java Card types, big-endian as the applet writes them with `Util.setShort`, `shortAt(offset)` reads one
+value of a longer answer, and `Bytes.ofShort(56)` writes command data the way the applet reads it with
+`Util.getShort`. For a wallet applet, `assertThat(card.send(0x80, 0x10, 0, 0, Bytes.ofShort(56))).isSuccess()`
+credits 56 and `assertThat(card.send(0x80, 0x01)).isSuccess().dataAsShort().isEqualTo(56)` checks the balance
+([response data](TESTING.md#response-data)).
+
 Next: the [testing cookbook](TESTING.md) shows the everyday tasks of applet tests, and
 [Java Card for Java developers](#java-card-for-java-developers) explains APDUs, status words and AIDs.
+
+### Java Card errors at compile time
+
+Java Card is a subset of Java: no `long`, `float`, `double`, `char` or `String`, no `synchronized`, no lambdas, no
+enums, no Java SE library, and `int` only on cards that support it. jCardSim runs such code in the test JVM all the
+same, so a test can pass for an applet that no card can load. The plugin's build extension therefore lets javac
+check the applet code with the converter's rules: the build fails at the first compilation, at the line, with the
+converter's message, also in an IDE build that runs javac with the check (with the POM above, an IDE whose Maven
+import runs build extensions, as IntelliJ IDEA 2026.2 does):
+
+```
+[ERROR] /…/src/main/java/com/example/bad/BadApplet.java:[7,18] Java Card: long type not supported in JavaCard (JCVM 3.1 §2.2.1.3)
+```
+
+It checks the package the plugin converts, for the Java Card version the plugin targets (API introduced later is an
+error too), and never the tests. As you type, the IntelliJ IDEA plugin below marks the same errors; Eclipse and VS
+Code do not run the check. It stays out of the way of a project's own annotation processors and of a compilation
+with another JDK's javac, and `-Djavacard.check=false` turns it off. Details and how to use it without the
+extension: [plugin README](maven-plugin/README.md#compile-time-check).
+
+### Errors in the editor (IntelliJ IDEA)
+
+The [IntelliJ IDEA plugin](intellij-plugin/README.md) marks the same errors in the editor while you type, with the
+build's messages. It has no rules of its own: for main code whose compilation runs the check (the Maven plugin as a
+build extension, or the applet parent), it compiles the file's package in memory with the project's own check, in
+the version the build uses. IntelliJ IDEA 2026.2 or newer; build it with `./gradlew buildPlugin` in
+`intellij-plugin/` and install the zip from disk (*Settings → Plugins → ⚙ → Install Plugin from Disk…*). Its tests
+run the editor's highlighting headless with IntelliJ's test framework; the build stays the reference.
 
 ### Use the toolkit without JUnit
 
@@ -240,7 +280,8 @@ in Docker (for `@SmartCard` fields). The two GlobalPlatform backends add a few r
 
 ## Testing
 
-Recipes for the everyday tasks (commands as constants, status words, response data, the SELECT response,
+Recipes for the everyday tasks (commands as constants, status words, response data and the values of the Java Card
+types, the SELECT response,
 data-driven tests, install parameters, several applets, a scenario across tests, reset and deselect, PIN, TLV,
 watching the exchanges, timing a command, debugging a `6F00`, coverage, CI, your own test annotation) are in the
 **[testing cookbook](TESTING.md)**; this section is the reference.
@@ -271,8 +312,8 @@ The backend is chosen when the tests run, not in the code:
 |---|---|---|
 | `embedded` (default) | jCardSim in the test JVM | `javacard-express-core` |
 | `container` | planned (the container protocol cannot delete applets yet); for now use `@SmartCard(mode = Mode.CONTAINER)` fields | `javacard-express-container`, Docker |
-| `simulated-gp` | the real-card code path without a reader: conversion, APDU guard, SCP03, LOAD/INSTALL/DELETE, cleanup checked with GET STATUS, on a simulated GlobalPlatform card; the applets then run from their class files on jCardSim, so it checks conversion and card management, not the converted bytecode; fine on CI ([recipe](TESTING.md#on-ci)) | `javacard-express-livecard` (the applet parent has it) |
-| `livecard` | the card in a PC/SC reader, through the guard and the safety rules of the [live-card guide](LIVE_CARD_TESTING.md) | `javacard-express-livecard` (the applet parent has it); a development card with SCP03 and known ISD keys ([requirements](LIVE_CARD_TESTING.md#requirements)); Oracle's off-card verifier for the CAP files (`jcx.livecard.verifierSdk=<Java Card kit>` matching the card, or `none` to load unverified CAP files at your own risk); a build for the card's Java Card version (`javacard.version`; a 3.0.4 card refuses a 3.0.5 CAP file with `6438`) |
+| `simulated-gp` | the real-card code path without a reader: conversion, APDU guard, SCP03, LOAD/INSTALL/DELETE, cleanup checked with GET STATUS, on a simulated GlobalPlatform card; the applets then run from their class files on jCardSim, so it checks conversion and card management, not the converted bytecode; fine on CI ([recipe](TESTING.md#on-ci)) | `javacard-express-livecard` (the build extension and the applet parent add it) |
+| `livecard` | the card in a PC/SC reader, through the guard and the safety rules of the [live-card guide](LIVE_CARD_TESTING.md) | `javacard-express-livecard` (the build extension and the applet parent add it); a development card with SCP03 and known ISD keys ([requirements](LIVE_CARD_TESTING.md#requirements)); Oracle's off-card verifier for the CAP files (`jcx.livecard.verifierSdk=<Java Card kit>` matching the card, or `none` to load unverified CAP files at your own risk); a build for the card's Java Card version (`javacard.version`; a 3.0.4 card refuses a 3.0.5 CAP file with `6438`) |
 
 ```bash
 mvn verify                                          # jCardSim
@@ -314,7 +355,8 @@ as it was built, and the transcript lists the build's AIDs next to the test AIDs
   under a registered RID needs the setting `jcx.livecard.registeredRid`.
 - **One package**: a package that imports another package of the project (a library module, a shareable interface
   in another package) is refused before conversion; such tests run only on the default backend for now
-  (`@EnabledOnBackend(Mode.EMBEDDED)`).
+  (`@EnabledOnBackend(Mode.EMBEDDED)`). The GlobalPlatform API package `org.globalplatform` is no such package: the
+  card has it ([below](#applets-that-use-the-globalplatform-api)).
 - **Basic channel**: the simulated card runs test applets on the basic channel only; a SELECT of a test applet on
   a logical channel 1 to 3 (opened with `LogicalChannel.open(card)`) is answered `6881`.
 - **Registration**: an applet that is installed under an AID other than its own, or more than once, registers
@@ -326,6 +368,48 @@ subclass with an `install` method) and only the classes those applets need, from
 alike, so test classes next to a test applet are not converted, and `card.install(...)` works for any applet of a
 loaded package. A failed test's transcript labels the card management: `# install`, `# load` with the number of LOAD
 blocks, `# delete`, `# secure channel`.
+
+### Applets that use the GlobalPlatform API
+
+An applet can leave its secure channel to the card: `GPSystem.getSecureChannel()` of the GlobalPlatform Card API
+(package `org.globalplatform`) returns the secure channel of the applet's Security Domain. Such an applet needs
+nothing extra here. The stubs are part of `javacard-express-api`; the converter links the package from built-in
+data, no export file needed, and imports the lowest version that has everything the applet uses (1.0 for
+`GPSystem` and `SecureChannel`, so the CAP file loads onto GlobalPlatform 2.1.1 cards as well); the simulated cards
+implement the package, with SCP03 on the card side; and the same test runs on every backend:
+
+```java
+@JavaCardTest
+@InstallApplet(VaultApplet.class)
+class VaultAppletTest {
+
+    static final byte[] VALUE = {0x0A, 0x0B, 0x0C, 0x0D};
+
+    @Test
+    void refusesTheValueOutsideASecureChannelSession(SmartCardSession card) {
+        assertThat(card.send(0x80, 0x10, 0, 0, VALUE)).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    @Test
+    void storesTheValueInASecureChannelSession(SmartCardSession card, SecurityDomainKeys keys) {
+        try (GPSession channel = GPSession.on(card).keys(SCPKeys.of(keys)).open()) {    // through the selected applet
+            assertThat(channel.send(0x80, 0x10, 0, 0, VALUE)).isSuccess();
+            assertThat(channel.send(0x80, 0x12, 0, 0, null, 256)).isSuccess().hasDataHex("0A 0B 0C 0D");
+            assertThat(channel.send(0x80, 0x14, 0, 0, null, 256)).isSuccess().hasDataHex("0F");
+        }
+    }
+}
+```
+
+`SecurityDomainKeys` is the key set of the run's Security Domain (the GlobalPlatform test key on the simulated
+cards, the configured keys on a card in a reader), and `GPSession` of `javacard-express-gp` is the host side. The
+applet and the details (security levels, response protection, the simulated card's `GlobalPlatformCard`, typical
+mistakes) are in the cookbook: [An applet that uses the GlobalPlatform
+API](TESTING.md#an-applet-that-uses-the-globalplatform-api). The simulated cards implement the secure channel, the
+life cycle states, the registry entry and Global Services; they have no Global PIN and do not forward STORE DATA to
+the applet ([limits](TESTING.md#what-the-simulators-do-not-model)). The other GlobalPlatform packages
+(`org.globalplatform.upgrade`, `contactless` and so on) still need their export files
+([imported packages](maven-plugin/README.md#imported-packages)).
 
 The older style, one simulator per `@SmartCard` field, still works: `@SmartCard` marks a field of type
 `SmartCardSession`, `LoggingSession` or `EmbeddedSession` (the annotation registers the extension):
@@ -355,15 +439,17 @@ Settings (system properties or JUnit configuration parameters):
 | Part | What it does | How it is verified |
 |------|--------------|--------------------|
 | **Converter** | `.class` → `.cap` and `.exp`, written from the JCVM specification. Targets Java Card 2.1.2 to 3.2.0 (CAP 2.1, compact CAP 2.3). Fails with a clear error (class, method, source line) on code outside the Java Card language subset. | Spec-derived structural checks in every build. In the October 2026 audit, 108 of 108 valid corpus packages (including 7 open-source applets) passed Oracle's off-card verifier, 41 of 41 invalid ones were rejected, and 47 of 47 ran on Oracle's `cref` emulator. Details: [converter/BINARY_COMPATIBILITY.md](converter/BINARY_COMPATIBILITY.md). Converted test applets and two open-source applets run on a real NXP JCOP 4 card ([live-card report](LIVE_CARD_TESTING.md#verified-results)). |
-| **Maven plugin** | `build` goal: discovers applets, derives AIDs, converts right after compilation (before the tests), attaches `.cap`/`.exp` and puts them with a build descriptor into the jar. Applet parent POM and BOM. | Unit tests and integration tests that build real sample projects, including the Quick Start above. |
+| **Maven plugin** | `build` goal: discovers applets, derives AIDs, converts right after compilation (before the tests), attaches `.cap`/`.exp` and puts them with a build descriptor into the jar. As a build extension it sets an applet project up from a POM with nothing but the plugin, and lets javac report code outside the Java Card subset at its line. Applet parent POM and BOM. | Unit tests and integration tests that build real sample projects, including the Quick Start above, a project with errors the javac check reports, and one whose own settings win. |
 | **API stubs** | Compile-only Java Card 3.0.5 Classic API: 15 packages, 103 types, class files for Java 8. | Compared with jCardSim's API in every build, and with an SDK API jar on request. |
-| **Testing toolkit** (`core`) | JUnit 5 model: `@JavaCardTest` with `@InstallApplet` installs applets before a test or class and deletes them after it; the same test class runs on jCardSim, on a simulated GlobalPlatform card or on a real card. Fluent APDU API, AssertJ assertions, TLV, PIN, APDU history attached to failures, logical channels. | Unit tests. jCardSim does not model the applet firewall, memory limits or logical channels; see the [core README](core/README.md#backends). |
+| **GlobalPlatform API** (`org.globalplatform`) | For applets that use `GPSystem` and their Security Domain's `SecureChannel`: compile-only stubs (15 types, the API of version 1.8, in `javacard-express-api`); linking data in the converter for the versions 1.0 to 1.8, with the lowest sufficient version imported; an implementation on the simulated cards (SCP03 on the card side, life cycle states, registry, Global Services). | The linking data against GlobalPlatform's export files when they are installed, the stubs against the linking data and the simulator's classes in every build; CAP files that import the package pass Oracle's off-card verifier with the export file written from the data; the card side of SCP03 replays public transcripts and interoperates with the `gp` module at every security level; one test class on jCardSim and on the simulated GlobalPlatform card behind the APDU guard. On a real card (JCOP 4, Java Card 3.0.4): the CAP file that imports version 1.0 loads, and the host opens SCP03 through the applet at levels `01` and `03` (LC-GP). |
+| **Testing toolkit** (`core`) | JUnit 5 model: `@JavaCardTest` with `@InstallApplet` installs applets before a test or class and deletes them after it; the same test class runs on jCardSim, on a simulated GlobalPlatform card or on a real card. Fluent APDU API, AssertJ assertions, the values of the Java Card types in responses and commands (`dataAsShort()`, `Bytes`), TLV, PIN, APDU history with the time of every exchange attached to failures, logical channels. | Unit tests. jCardSim does not model the applet firewall, memory limits or logical channels; see the [core README](core/README.md#backends). |
 | **PC/SC backend** (`core`) | `PcscSession` for physical readers through `javax.smartcardio`. | Tests against `javax.smartcardio` fakes; the live-card suite on a real NXP JCOP 4 card ([report](LIVE_CARD_TESTING.md#verified-results)). |
 | **GlobalPlatform** (`gp`) | SCP02 and SCP03 (S8/S16, AES-128/192/256), card content management, PUT KEY, key diversification, CAP parsing. | Known-answer transcripts from independent sources (spec-derived reference, public real-card logs, Samsung OpenSCP-Java); SCP03 (S8, levels 01 and 03) and card content management verified on a real NXP JCOP 4 card by the live-card suite ([report](LIVE_CARD_TESTING.md#verified-results)). |
 | **Secure Messaging** (`sm`) | ICAO 9303-11 profile of ISO 7816-4 secure messaging, 3DES and AES, short and extended APDUs. | ICAO 9303-11 Appendix D worked examples, byte for byte. |
 | **PACE, BAC** (`pace`) | PACE with ECDH Generic Mapping and AES (all standardized curves), BAC. Not implemented: DH, Integrated Mapping, Chip Authentication Mapping, EAC. | ICAO 9303-11 Appendices D and G.1, plus an independent chip simulator. |
 | **Container** (`container`) | The same jCardSim in a Docker container (Testcontainers) for process isolation. | Tests on Docker; same session behaviour as the embedded backend. |
 | **Live card** (`livecard`) | Tests on a real card in a PC/SC reader behind an independent APDU allow-list (wrong keys never cost an authentication try), deployment of converted applets, cleanup, JUnit 5 `@LiveCardTest`, and the project's live suite. | The live suite on a real NXP JCOP 4 card ([report](LIVE_CARD_TESTING.md#verified-results)); in every build, the guard's rules and the whole suite offline against a simulated card. |
+| **IntelliJ IDEA plugin** (`intellij-plugin/`) | The javac check's errors in the editor as you type, with the build's messages: the project's own check, run on the text in the editor. | Tests that run the editor's highlighting headless with IntelliJ's test framework, and JetBrains' plugin verifier. |
 
 The converter and the protocol modules are independent implementations written from public specifications;
 Oracle's tools are used only as black-box checks and are not needed to build or use the project. See
@@ -374,8 +460,8 @@ Oracle's tools are used only as black-box checks and are not needed to build or 
 The converter, the GlobalPlatform module and the PC/SC backend are new implementations written from the
 specifications; they contain no Oracle code and need no Oracle SDK. They have nevertheless been verified on a
 real card for the main scenarios, and they work there: on an NXP JCOP 4 development card (Java Card 3.0.4,
-GlobalPlatform 2.1.1 card management, SCP03) the live-card suite passes 52 of its 53 tests; the remaining one
-needs HMAC, which that card does not offer. The suite covers:
+GlobalPlatform 2.1.1 card management, SCP03) the live-card suite passed 52 of its 53 tests in its last full run;
+the remaining one needs HMAC, which that card does not offer. The suite covers:
 
 - SCP03 authentication at security levels 01 and 03, and GET DATA / GET STATUS under C-MAC and C-DECRYPTION;
 - CAP files written by this converter, each also accepted by Oracle's off-card verifier, loaded, installed with
@@ -388,15 +474,19 @@ needs HMAC, which that card does not offer. The suite covers:
 - `PcscSession`: exclusive access, Le encoding, `reset()`, logical channels;
 - two open-source applets built from their upstream sources by this toolchain, PivApplet (PIV) and SmartPGP
   (OpenPGP card): keys generated on the card, signatures verified on the host;
+- an applet that uses the GlobalPlatform API: its CAP file, which imports `org.globalplatform` 1.0, loaded, and
+  the host opened SCP03 through the applet at levels 01 and 03 (LC-GP, added after the full run and run on its
+  own, 6 of 6);
 - the declarative test model on the card: `@JavaCardTest` classes that run on jCardSim ran unchanged with
   `-Djcx.backend=livecard` (installs and deletes per test and per class, several instances, nested classes,
   parameterized tests) and observed exactly what they observe on the simulator; a package built by the Maven
   plugin was converted with its build settings under the project's own AID prefix.
 
-A new applet project built on the applet parent of the Quick Start above, with
+A new applet project built on the applet parent (the parent-based Quick Start POM of that day, now in the
+[plugin README](maven-plugin/README.md#the-shortest-pom-the-applet-parent)), with
 `<javacard.version>3.0.4</javacard.version>` for the card, ran its own JUnit test on that card with
 `mvn verify -Djcx.backend=livecard -Djcx.livecard.verifierSdk=<kits>/jc304_kit`: built, verified, loaded, answered,
-deleted.
+deleted. The Quick Start POM above, with the plugin as a build extension, has not run on a card.
 What was run, how, and every result: **[live-card testing report](LIVE_CARD_TESTING.md#verified-results)**.
 
 That is one card. Other cards, SCP02, the SCP03 S16 mode, secure messaging and PACE have been tested only
@@ -406,34 +496,40 @@ Tests against a real card run only on request, with a card in the reader: the pr
 `./mvnw -Plivecard verify -pl livecard -am`, your `@JavaCardTest` classes with `-Djcx.backend=livecard`
 ([guide](LIVE_CARD_TESTING.md)). An independent APDU allow-list checks every command before it reaches the card.
 Normal builds and CI never run them and never open a PC/SC reader; build checks enforce both
-(`NoLiveCardTestsInCiTest`, `PcscAccessGuardTest`).
+(`NoLiveCardTestsInCiTest`; `PcscAccessGuardTest` in livecard and, for the Maven plugin and the javac check,
+`NoCardAccessInBuildToolsTest`).
 
 ## Modules
 
 | Module | Artifact | Purpose | Docs |
 |--------|----------|---------|------|
-| API stubs | `javacard-express-api` | Compile-only Java Card 3.0.5 Classic API | — |
+| API stubs | `javacard-express-api` | Compile-only Java Card 3.0.5 Classic API and GlobalPlatform Card API (`org.globalplatform`) | — |
 | Converter | `javacard-express-converter` | `.class` → `.cap`/`.exp` library | [README](converter/README.md) |
-| Maven plugin | `javacard-express-maven-plugin` | `build` goal for applet and library projects | [README](maven-plugin/README.md) |
-| Core | `javacard-express-core` | JUnit 5 model (`@JavaCardTest`, `@InstallApplet`), sessions (jCardSim, PC/SC), APDU builder/codec, TLV, assertions, PIN, logging, channels | [README](core/README.md) |
+| javac plugin | `javacard-express-javac-plugin` | The converter's checks in javac: code outside the Java Card subset and API the target platform lacks become compile errors at their lines | [README](javac-plugin/README.md) |
+| Maven plugin | `javacard-express-maven-plugin` | `build` goal for applet and library projects; as a build extension, the setup of applet projects | [README](maven-plugin/README.md) |
+| Core | `javacard-express-core` | JUnit 5 model (`@JavaCardTest`, `@InstallApplet`), sessions (jCardSim, PC/SC), APDU builder/codec, TLV, assertions, PIN, logging, channels; `org.globalplatform` on the simulated cards | [README](core/README.md) |
 | GlobalPlatform | `javacard-express-gp` | SCP02/SCP03, card content and key management, CAP parsing | [README](gp/README.md) |
 | Secure Messaging | `javacard-express-sm` | ICAO 9303-11 secure messaging (3DES, AES) | [README](sm/README.md) |
 | PACE | `javacard-express-pace` | PACE (ECDH Generic Mapping, AES) and BAC | [README](pace/README.md) |
 | Container | `javacard-express-container` | jCardSim in Docker via Testcontainers | [README](container/README.md) |
 | Live card | `javacard-express-livecard` | The `livecard` and `simulated-gp` backends of `@JavaCardTest`: PC/SC session behind an APDU allow-list, conversion, deployment and verified cleanup; the live suite | [Guide](LIVE_CARD_TESTING.md) |
 | BOM | `javacard-express-bom` | Versions of all toolkit artifacts and of the plugin | [plugin README](maven-plugin/README.md#the-shortest-pom-the-applet-parent) |
-| Applet parent | `javacard-express-applet-parent` | Parent POM of applet projects: compiler settings, dependencies, plugin binding | [plugin README](maven-plugin/README.md#the-shortest-pom-the-applet-parent) |
+| Applet parent | `javacard-express-applet-parent` | Parent POM of applet projects: compiler settings, dependencies and plugin binding written out, the plugin as a build extension | [plugin README](maven-plugin/README.md#the-shortest-pom-the-applet-parent) |
+| IntelliJ IDEA plugin | — (`intellij-plugin/`, a zip built with Gradle) | The javac check's errors in the editor as you type, run with the project's own check | [README](intellij-plugin/README.md) |
 
 Dependencies between the modules:
 
 ```
-converter ← maven-plugin            (javacard-api is compile input for applets, not a dependency)
+converter ← javac-plugin ← maven-plugin   (javacard-api is compile input for applets, not a dependency)
 
 core ← gp
 core ← sm ← pace
 core ← container
 core + gp + converter ← livecard
 ```
+
+`intellij-plugin/` is a separate Gradle build with no compile-time dependency on the modules: in the IDE it runs
+the `javacard-express-javac-plugin` jars of the project's own build.
 
 ## Building from source
 
@@ -442,6 +538,7 @@ core + gp + converter ← livecard
 (cd docker && ../mvnw package) && ./mvnw test -pl container -am  # container tests (Docker)
 ./mvnw verify -Prelease -Dgpg.skip -DskipTests -pl '!container'  # javadoc and source jars, as in a release
 ./mvnw install -DskipTests                                      # this checkout into ~/.m2, for your projects
+(cd intellij-plugin && ./gradlew test buildPlugin)              # the IntelliJ IDEA plugin (its tests need the install)
 ```
 
 The version of a checkout is set in one place, `.mvn/maven.config` (`-Drevision=...`, a `-SNAPSHOT` between

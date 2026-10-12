@@ -1,10 +1,12 @@
 package name.velikodniy.jcexpress.plugin;
 
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
+import name.velikodniy.jcexpress.javac.CheckOptions;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
 
 import java.util.Arrays;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.stream.Collectors;
 
@@ -16,7 +18,7 @@ import java.util.stream.Collectors;
 final class JavaCardVersions {
 
     /** The user property of the {@code javaCardVersion} parameter. */
-    static final String PROPERTY = "javacard.version";
+    static final String PROPERTY = CheckOptions.VERSION;
 
     private JavaCardVersions() {
     }
@@ -30,19 +32,12 @@ final class JavaCardVersions {
      * @throws MojoExecutionException for any other value
      */
     static JavaCardVersion parse(String text) throws MojoExecutionException {
-        String version = text == null ? "" : text.trim();
-        return switch (version) {
-            case "2.1.2", "2.1" -> JavaCardVersion.V2_1_2;
-            case "2.2.1" -> JavaCardVersion.V2_2_1;
-            case "2.2.2", "2.2" -> JavaCardVersion.V2_2_2;
-            case "3.0.3" -> JavaCardVersion.V3_0_3;
-            case "3.0.4" -> JavaCardVersion.V3_0_4;
-            case "3.0.5", "3.0" -> JavaCardVersion.V3_0_5;
-            case "3.1.0", "3.1" -> JavaCardVersion.V3_1_0;
-            case "3.2.0", "3.2" -> JavaCardVersion.V3_2_0;
-            default -> throw new MojoExecutionException("Unknown <javaCardVersion> '" + text + "'. Supported: "
+        Optional<JavaCardVersion> version = JavaCardVersion.parse(text);
+        if (version.isEmpty()) {
+            throw new MojoExecutionException("Unknown <javaCardVersion> '" + text + "'. Supported: "
                     + supported() + ".");
-        };
+        }
+        return version.get();
     }
 
     /**

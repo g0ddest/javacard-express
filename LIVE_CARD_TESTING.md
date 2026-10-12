@@ -177,22 +177,25 @@ With the default `maxAuthFailures=1` a rejection also aborts the rest of the run
 ### Further protections
 
 - **Opt-in twice.** Live tests run only with `enabled=true`; `PcscConnector`, the only class that touches PC/SC,
-  checks it in the given settings *and* in the JVM's own system property, so settings built in code cannot open
-  the reader on their own. Live-card mode is switched on for one run only, and only by the JVM system property
-  `-Djcx.livecard.enabled=true` (on the command line, which Maven passes to the test JVM, or as a VM option of an
-  IDE run; `-Plivecard` sets it, and `-Djcx.backend=livecard` counts as the same switch): the environment variable `JCX_LIVECARD_ENABLED` and
-  `enabled` in a settings file are refused unless `false`, since every test run in that environment or project,
-  also from an IDE, would then reach the card, and a JUnit configuration parameter `jcx.livecard.enabled` (from
-  `junit-platform.properties`, for instance) does not switch the reader on. The normal build sets
-  `jcx.livecard.enabled=false` and excludes the `livecard` tag; with live tests disabled not even the reader list
-  is read. Code that sets the system property `jcx.livecard.enabled` itself would get past the check at run time;
-  the build check below finds it in the project's main and test classes. `PcscAccessGuardTest` reads the compiled classes of every
-  module of the build and checks that only `PcscSession` (core) and `PcscConnector` reach `TerminalFactory` or a
+  checks it in the given settings *and* in the JVM's own system property, so settings built in code cannot open the
+  reader on their own. Live-card mode is switched on for one run only, and only by the JVM system property
+  `-Djcx.livecard.enabled=true` (on the command line, which Maven passes to the test JVM, or as a VM option of an IDE
+  run; `-Plivecard` sets it, and `-Djcx.backend=livecard` counts as the same switch): the environment variable
+  `JCX_LIVECARD_ENABLED` and `enabled` in a settings file are refused unless `false`, since every test run in that
+  environment or project, also from an IDE, would then reach the card, and a JUnit configuration parameter
+  `jcx.livecard.enabled` (from `junit-platform.properties`, for instance) does not switch the reader on. The normal
+  build sets `jcx.livecard.enabled=false` and excludes the `livecard` tag; with live tests disabled not even the
+  reader list is read. Code that sets the system property `jcx.livecard.enabled` itself would get past the check at
+  run time; the build check below finds it in the project's main and test classes. `PcscAccessGuardTest` reads the
+  compiled classes of every module the build compiles before livecard (the modules livecard depends on must be there,
+  or it fails) and checks that only `PcscSession` (core) and `PcscConnector` reach `TerminalFactory` or a
   `PcscSession.open` overload that looks up readers itself (the root README's snippet for real cards is compiled,
   never called), that only `LiveCard` and the extension create a `PcscConnector`, that no test class calls
-  `LiveCard.connect(LiveCardConfig)`, that no class (main or test) sets `jcx.livecard.enabled` or
+  `LiveCard.connect(LiveCardConfig)`, that no class (main or test) sets `jcx.livecard.enabled`, `jcx.backend` or
   `jcx.livecard.allowCi` as a system property, and that every test-kit launch of live-card classes names its
-  (simulated) connector.
+  (simulated) connector. The Maven plugin is compiled after livecard (its integration tests need it), so
+  `NoCardAccessInBuildToolsTest` in maven-plugin checks it and the javac check: their classes name neither
+  `javax.smartcardio`, the PC/SC session nor the live-card harness, and their main code contains no `jcx.` setting.
 - **One card at a time.** With `reader` empty the connector takes the only reader that holds a card; with cards
   in several readers (or several readers matching `reader`) it refuses to guess and asks for a `reader` setting
   that names one reader.
@@ -343,7 +346,7 @@ when run through Maven); prefer absolute paths in settings files.
 Live tests (`livecard/src/test/java/name/velikodniy/jcexpress/livecard/live`, and LC-MODEL in `.../model`, tag `livecard`), in the order they
 run (`@Order` on the classes, `junit-platform.properties`): read-only identification and `PcscSession` first,
 then card content management, the converter features, the open-source applets and crypto, the secure channel
-levels last. AIDs below use the default prefix `F04A4358`.
+levels and the applet that uses the GlobalPlatform API last. AIDs below use the default prefix `F04A4358`.
 
 | ID | Test | What | How | Expected |
 |---|---|---|---|---|
@@ -385,6 +388,11 @@ levels last. AIDs below use the default prefix `F04A4358`.
 | LC-SC-1 | `SecureChannelLiveTest.authenticatesAndReadsUnderSecureMessaging` (one per level) | SCP03 at each level of `securityLevels`: `01`, `03` by default, `00` only when listed | `LiveCard.gp(level)`; GET DATA CPLC; GET STATUS `80`, `20` | level as requested, handshake verified by the guard, CPLC equal to the plain read, one ISD entry |
 | LC-SC-2 | `...everySessionHasFreshChallengesAndCryptograms` | random card challenge | two sessions | different card challenges and cryptograms |
 | LC-SC-3 | `...keyInformationListsTheAuthenticatedKeyVersion` | GET DATA under C-MAC | `00E0` | contains the session's KVN |
+| LC-GP-1 | `GlobalPlatformApiLiveTest.loadedCapFileImportsVersion10OfThePackage` | an applet that uses the GlobalPlatform API (SecureChannelApplet, `F04A4358010E` / `F04A4358010E01`): `GPSystem.getSecureChannel()`, `processSecurity`, `getSecurityLevel`, `unwrap`, `wrap` (only in sessions with R-MAC), `resetSecurity`, `getCardContentState`, `setCardContentState` | converter with its built-in linking data of `org.globalplatform`; the off-card verifier gets the export file written from that data; LOAD, INSTALL | the Import component names `A00000015100` version 1.0; the card loads and installs it |
+| LC-GP-2 | `...withoutASessionTheAppletRefusesTheValue` | the applet outside a secure channel session | SELECT; INS `14` (state), INS `10` (value) | state `07`; `6982` |
+| LC-GP-3 | `...hostOpensTheSecureChannelThroughTheApplet` (one per level) | the applet's Security Domain, the ISD, opens SCP03 for it at each level of `securityLevels` | INITIALIZE UPDATE and EXTERNAL AUTHENTICATE sent to the applet with the ISD keys (the guard verifies the card cryptogram first, as for the ISD); INS `10`, `12`, `14` through the channel | level as requested; `9000`; the value; state `0F` |
+| LC-GP-4 | `...registryReportsTheStateTheAppletGaveItself` | `GPSystem.setCardContentState` | GET STATUS | application state `0F` |
+| LC-GP-5 | `...deleteRemovesLoadFileAndInstance` | DELETE related | `LiveCard.delete` | gone from GET STATUS |
 | LC-MODEL-1 | `DeclarativeModelLiveTest.freshInstancePerTest` | `@JavaCardTest`, `@InstallApplet` (default `PER_TEST`) | the scenario class `BackendScenarios.PerTest` (ModelApplet: counter, count of instances created since the package was loaded) runs with `jcx.backend=livecard` | each test sees a fresh instance (`0001 0002`, then `0001`); the static count shows one package load for the class (`0001`, `0002`) |
 | LC-MODEL-2 | `...oneInstancePerClass` | `isolation = PER_CLASS` | two ordered tests and `@AfterAll` | the instance carries over (`0001`, `0002`, `0002`) |
 | LC-MODEL-3 | `...instancesParametersMethodLevelAppletNestedClassAndDeselect` | several instances, install parameters, a method-level applet of the same package, a `@Nested` class, `deselect()` | instances `aid = "0101"` (`AABBCC`) and `"0102"` (`112233`, `PER_CLASS`), `@InstallApplet(OtherApplet.class)` on a method, a nested class with its own instance | each instance answers its parameters and its own AID; the method-level applet is selected first; CLEAR_ON_DESELECT is `00` after `deselect()`; the nested class sees the outer `PER_CLASS` instance |
@@ -419,13 +427,16 @@ Offline checks in the normal build (no reader involved):
 | `LiveCardExtensionTest` | cleanup after failing tests and failing `@BeforeAll`, nested classes, the card injected into the constructor of a `@TestInstance(PER_CLASS)` class, cleanup when such a constructor fails, abort skips the rest |
 | `LiveCardTranscriptsTest` | transcripts in a directory per fully qualified class name, with a directory per `@Nested` class below it; every file starts anew in each run and continues within it; each test's transcript and the class's set-up and cleanup transcripts are published with their results |
 | `LiveCardThreadingTest` | `@LiveCardTest` holds the resource lock `jcx.card`: in a parallel run two live classes run one at a time, each with all its methods in its own thread; `@Timeout(threadMode = SEPARATE_THREAD)` (also as the default) and `assertTimeoutPreemptively` are rejected with an explanation, and nothing reaches the card from the other thread |
+| `GlobalPlatformApiOnEveryBackendTest` | an applet that uses the GlobalPlatform API behaves the same on jCardSim and on the simulated GlobalPlatform card: the secure channel opened through the applet passes the unchanged guard (card cryptogram verified before EXTERNAL AUTHENTICATE), C-MAC and C-DECRYPTION, a command without protection aborts the session until the next selection, the applet's own life cycle state shows in the registry |
+| `GlobalPlatformStubsAndSimulatorTest` | the stubs of `org.globalplatform` applets are compiled against and the classes of that package the simulated cards run declare the same types, constants and methods |
 | `LiveSuiteOnSimulatedCardTest` | the whole live suite passes against a simulated GlobalPlatform card (the validated card's ISD behaviour with SCP03 secure messaging checked, applets in jCardSim: one jCardSim card per load file, shared with the load files it imports, fresh static fields per load) reached through the project's `PcscSession` on a simulated reader, and leaves the card clean; only LC-CONV-7 is aborted there (jCardSim does not roll back), and LC-OSS-1/2 when their submodules are not initialized (checked separately: they abort with the init command, nothing fails); level `00` runs only when listed in `securityLevels`; an unverified int package that the card rejects fails LC-CONV-10 |
 | `LiveTestsSkippedWithoutProfileTest` | without the profile every live test is skipped and no reader is looked for |
-| `PcscAccessGuardTest` | in the compiled main and test classes of every module of the root POM, only `PcscSession` (core) and `PcscConnector` reach `TerminalFactory` or a `PcscSession.open` overload without a given reader; gp's README snippet that opens the first reader is compiled but nothing calls or references it; only `LiveCard` and the extension create a `PcscConnector`; no test class calls `LiveCard.connect(LiveCardConfig)`; no class (main or test) sets `jcx.livecard.enabled` / `jcx.livecard.allowCi` as a system property; every test-kit launch of live classes names its connector. Modules not built in the run are named in the output; core, gp and livecard must be there |
+| `PcscAccessGuardTest` | in the compiled main and test classes of the modules the reactor builds before livecard, only `PcscSession` (core) and `PcscConnector` reach `TerminalFactory` or a `PcscSession.open` overload without a given reader; gp's README snippet that opens the first reader is compiled but nothing calls or references it; only `LiveCard` and the extension create a `PcscConnector`; no test class calls `LiveCard.connect(LiveCardConfig)`; no class (main or test) sets `jcx.livecard.enabled` / `jcx.livecard.allowCi` as a system property; every test-kit launch of live classes names its connector; `jcx.backend` counts as a live-mode property too. The modules livecard depends on (read from its POM) and livecard itself must be built in the run, other modules not built are named in the output; maven-plugin, built after livecard, is checked by its own `NoCardAccessInBuildToolsTest` (it and the javac check name no PC/SC or live-card class and their main code no `jcx.` setting) |
+| `NoCardAccessInBuildToolsTest` (maven-plugin) | the compiled main and test classes of maven-plugin and javac-plugin, which the reactor builds after livecard, name neither `javax.smartcardio`, the PC/SC session nor the live-card harness, and their main code contains no `jcx.` setting; the classes must have been compiled, and a class that breaks the rule fails it |
 | `ContinuousIntegrationTest` | live mode is refused on CI (any `CI` value but empty/`false`/`0`, 15 platforms' variables); `-Djcx.livecard.allowCi=true` overrides only the generic `CI`; the override is not taken from the environment or files; the environment and settings files cannot switch live mode on |
 | `LiveModeTest` | the reader is switched on only by the JVM system property `jcx.livecard.enabled=true`, not by a JUnit configuration parameter or the environment; the skip reason gives the command for any project (no repository paths) and names what did not switch it on |
 | `NoLiveCardTestsInCiTest` | no CI workflow, composite action, CI file, `.mvn/*.config`, Maven settings file or POM element can start the live-card suite (profile, tag, script, settings file, CI override, `enabled` with any value but `false`) or hide CI variables from the test JVM; the module's default Surefire run excludes it and disables live mode |
-| `TestAppletsVerifierTest` | every test applet's CAP file, prepared as `LiveCard.deploy` prepares it (int support, Export component, imported packages' export files), and those of PivApplet and SmartPGP (with their submodules) pass Oracle's 3.0.4 off-card verifier (skipped without `build/oracle-sdks/jc304_kit`); export files land in the export path layout |
+| `TestAppletsVerifierTest` | every test applet's CAP file, prepared as `LiveCard.deploy` prepares it (int support, Export component, imported packages' export files, for `org.globalplatform` the export file written from the converter's built-in data), and those of PivApplet and SmartPGP (with their submodules) pass Oracle's 3.0.4 off-card verifier (skipped without `build/oracle-sdks/jc304_kit`); export files land in the export path layout |
 | `AppletPackageTest` | int support and the Export component reach the converter (Header flags `ACC_INT`, `ACC_EXPORT`) |
 | `JppTest` | the preprocessor for PivApplet's sources: `//#if`, `/*#if`, `!NAME`, `#else`/`#endif` forms, nesting, unbalanced directives, line numbers kept |
 | `ThirdPartyAppletTest` | submodules registered with the upstream URLs; a missing submodule aborts with its `git submodule update --init ...` command, another commit or local changes abort too; with the submodules, Java 8 class files, PivApplet's line numbers kept, the pinned commits checked out |
@@ -501,21 +512,22 @@ logical-channel, `PcscSession` and secure-messaging tests can use `card.session(
 ## Your tests on a card
 
 A `@JavaCardTest` class that runs on jCardSim runs on a card unchanged (see the
-[core README](core/README.md#declarative-card-tests)). A project that inherits `javacard-express-applet-parent`
-(the README Quick Start) has everything it needs; any other project adds this module for the tests (it brings core
-and gp):
+[core README](core/README.md#declarative-card-tests)). A project of the README Quick Start (the plugin as a build
+extension) or one that inherits `javacard-express-applet-parent` has everything it needs; any other project adds
+this module for the tests (it brings core and gp):
 
 ```xml
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-livecard</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
 </dependency>
 ```
 
-Tests compile for Java 25 (`maven.compiler.testRelease` 25, as in the Quick Start). Nothing else goes into the
-POM: no profile, no tag exclusion, no `enabled=false`. The backend is chosen when the tests run:
+Tests compile for Java 25 (`maven.compiler.testRelease` 25, as the build extension and the applet parent set it).
+Nothing else goes into the POM: no profile, no tag exclusion, no `enabled=false`. The backend is chosen when the
+tests run:
 
 ```bash
 mvn verify -Djcx.backend=simulated-gp               # a rehearsal without a reader, fine on CI
@@ -531,7 +543,8 @@ On the card:
   the off-card verifier checks the CAP file; then INSTALL [for load], LOAD and INSTALL [for install and make
   selectable]. Further instances, of any applet of the package, are installed from the loaded package. A package
   that imports another package outside the Java Card API (a library module of the project) is refused before
-  conversion: these backends do not load the packages it imports yet. The transcript names the AIDs of the build
+  conversion: these backends do not load the packages it imports yet. The GlobalPlatform API package
+  `org.globalplatform` is accepted: the card has it, and the converter links it from built-in data. The transcript names the AIDs of the build
   next to the AIDs of the run, and labels the card management (`# install`, `# load` with the number of LOAD
   blocks, `# delete`, `# secure channel`; the class transcript file keeps every command).
 - **Isolation.** A `PER_TEST` instance is deleted after its test (DELETE of the instance; the package stays loaded
@@ -643,7 +656,7 @@ guard supports and the end of this section for what has not been run on hardware
 | | |
 |---|---|
 | Card | NXP JCOP 4 development card. ATR `3BDC18FF8191FE1FC38073C821136605036351000250`, protocol T=1. CPLC: IC fabricator `4790` (NXP), IC type `0503`, operating system `8211`, OS release date `6351`, OS release level `0302` (the CPLC fields that identify the individual card are not recorded) |
-| Platform | Java Card 3.0.4 (imports of `javacard.framework` 1.5 accepted; a CAP file converted for 3.0.5, which imports `javacard.framework` 1.6, is refused at the first LOAD block with `6438`), int type supported, HMAC not available; GlobalPlatform 2.1.1 card management (Card Recognition Data, OID `1.2.840.114283.2.2.1.1`); card life cycle INITIALIZED; ISD `A000000151000000` |
+| Platform | Java Card 3.0.4 (imports of `javacard.framework` 1.5 accepted; a CAP file converted for 3.0.5, which imports `javacard.framework` 1.6, is refused at the first LOAD block with `6438`), int type supported, HMAC not available; GlobalPlatform 2.1.1 card management (Card Recognition Data, OID `1.2.840.114283.2.2.1.1`); card life cycle INITIALIZED; ISD `A000000151000000`; the GlobalPlatform Card API `org.globalplatform` in version 1.0 or later (a CAP file that imports version 1.0 loads and links) |
 | Secure channel | SCP03 `i=00` (S8 mode), one AES-128 key set, KVN `FF`, the GlobalPlatform test keys `40..4F` |
 | Content before and after every run | the ISD and the load file `A0000001515350`, nothing else |
 | Reader | Generic EMV Smartcard Reader (USB) |
@@ -702,6 +715,28 @@ made by Oracle's converter (2.2.2 kit) loaded by GlobalPlatformPro v25.10.20. It
 this project. The card itself was not affected; the leftover load file was deleted. The same applet passes the
 RFC 4226 known answers on jCardSim and on Oracle's `cref` emulator.
 
+### The GlobalPlatform API on the card
+
+LC-GP ran on its own on 2026-10-10 at 11:24 EEST, with the code that adds the GlobalPlatform Card API, the
+default settings and the verifier kit found automatically:
+`./mvnw -Plivecard verify -pl livecard -am -Dtest=GlobalPlatformApiLiveTest`. 6 tests, 6 passed, 13 seconds;
+43 commands, 7 EXTERNAL AUTHENTICATE (2 of them through the test applet), all `9000`; the guard blocked nothing;
+GET STATUS showed only the ISD and `A0000001515350` before the deployment and after the deletion.
+
+- The CAP file of SecureChannelApplet (2868 bytes) imports `org.globalplatform` 1.0 from the converter's built-in
+  linking data and passed Oracle's 3.0.4 verifier with the export file written from that data. The card loaded and
+  installed it, so its `org.globalplatform` is version 1.0 or later and links the tokens of the built-in data.
+- Outside a session the applet reports its own state `07` (`GPSystem.getCardContentState`) and refuses the value
+  with `6982` (`getSecurityLevel` is `00`).
+- INITIALIZE UPDATE sent to the applet is answered by the ISD through `processSecurity`, with the same SCP03 answer
+  the ISD gives (KVN `FF`, `i=00`). The guard verified the card cryptogram, and the card accepted EXTERNAL
+  AUTHENTICATE through the applet at levels `01` and `03`. The applet's `unwrap` accepted the commands with C-MAC
+  and with C-MAC and C-DECRYPTION, and `setCardContentState(0x0F)` changed the applet's registry entry: GET STATUS
+  showed state `0F`, privileges `000000` and the ISD as its Security Domain.
+- DELETE of the load file with its instance in the application specific state `0F` was accepted (`9000`).
+- `wrap` was not called: the card's option `i=00` has no R-MAC, and the applet protects responses only in
+  sessions that have it.
+
 ### What the card runs found
 
 - **`PcscSession.reset()` did not reset the card on macOS.** LC-CONV-6 failed in the first run with the
@@ -720,20 +755,22 @@ RFC 4226 known answers on jCardSim and on Oracle's `cref` emulator.
 
 ### The Quick Start project on the card
 
-The plugin README's Quick Start project (pom, `HelloWorldApplet`, its jCardSim test) was built with
-`mvn package` against the locally installed main branch, with two settings for this card: `<packageAid>` under the
-test prefix (`F04A435801F0`) and `<javaCardVersion>3.0.4</javaCardVersion>` (the plugin's default, 3.0.5,
-imports API versions a Java Card 3.0.4 card does not have). The jCardSim test passed, the 2408-byte CAP file
-passed Oracle's 3.0.4 verifier (0 warnings, 0 errors), and a one-off test with this harness loaded it with
-`GPSession.loadAndInstall` inside `LiveCard.manage`: INSTALL `9000`, instance state `07`; `80 01` answered
-`48656C6C6F` (`Hello`) `9000`, `80 02` `6D00`, `00 01` `6E00`; the cleanup deleted the package and GET STATUS
-confirmed it.
+The plugin README's Quick Start project of that day (an explicit POM, with `HelloWorldApplet` and its jCardSim test;
+the POM under "Without the build extension" in the plugin README descends from it but has changed since: it also adds
+`javacard-express-livecard`, `-Xlint:-options` and the javac check, and leaves JUnit and AssertJ to
+`javacard-express-core`; the Quick Start POM with the plugin as a build extension has not run on a card) was built
+with `mvn package` against the locally installed main branch, with two settings for this card: `<packageAid>` under
+the test prefix (`F04A435801F0`) and `<javaCardVersion>3.0.4</javaCardVersion>` (the plugin's default, 3.0.5, imports
+API versions a Java Card 3.0.4 card does not have). The jCardSim test passed, the 2408-byte CAP file passed Oracle's
+3.0.4 verifier (0 warnings, 0 errors), and a one-off test with this harness loaded it with `GPSession.loadAndInstall`
+inside `LiveCard.manage`: INSTALL `9000`, instance state `07`; `80 01` answered `48656C6C6F` (`Hello`) `9000`, `80 02`
+`6D00`, `00 01` `6E00`; the cleanup deleted the package and GET STATUS confirmed it.
 
 ### A project with the applet parent, its own test on the card
 
-A new applet project outside this repository: the POM of the README Quick Start of that day (coordinates, the
-parent `javacard-express-applet-parent`, `javacard.packageAid`; the parent bound the plugin itself then, the Quick
-Start now names it) plus one property for this card,
+A new applet project outside this repository: the POM of the root README's Quick Start of that day (coordinates,
+the parent `javacard-express-applet-parent`, `javacard.packageAid`; the parent bound the plugin itself then; that POM,
+now naming the plugin, is in the plugin README's applet parent section) plus one property for this card,
 `<javacard.version>3.0.4</javacard.version>`; the README's `HelloWorldApplet` and its unchanged `@JavaCardTest` class
 (`@InstallApplet(HelloWorldApplet.class)`, one test sending `80 01`). Command, with Maven 3.9.12 on JDK 25:
 
@@ -752,7 +789,8 @@ The same project runs the same test on jCardSim with `mvn verify` and on the sim
 
 ### History of the runs
 
-Runs on 2026-10-01 and 2026-10-02 (times EEST), on the card above; every run left the card as it found it.
+Runs on 2026-10-01, 2026-10-02 and 2026-10-10 (times EEST), on the card above; every run left the card as it
+found it.
 
 | Time | State of the code | Live tests | Result |
 |---|---|---|---|
@@ -763,16 +801,18 @@ Runs on 2026-10-01 and 2026-10-02 (times EEST), on the card above; every run lef
 | 18:52 | `reset()` fixed, reset detection added | 45 | 44 passed, 1 aborted (HMAC) |
 | 19:37 | open-source applets as git submodules | 2 | 2 passed |
 | 22:47 | integrated tree (all fixes merged): the run above | 47 | 46 passed, 1 aborted (HMAC) |
-| 22:55 | the plugin README Quick Start project, built with `mvn package` (see below) | 1 | passed |
+| 22:55 | the plugin README Quick Start project of that day (the explicit POM), built with `mvn package` (see below) | 1 | passed |
 | 23:33 | HelloApplet converted for Java Card 3.0.5 (`-Djcx.livecard.javaCardVersion=3.0.5`) | 1 | refused by the card at the first LOAD block with `6438`: the card is a 3.0.4 platform; the harness reported the failed deployment and its cleanup confirmed nothing was left |
 | 2026-10-02 05:27 | all fixes, with the guard and harness hardening of 2026-10-02 | 47 | 46 passed, 1 aborted (HMAC) |
 | 08:36 | the declarative test model; one Maven command, no script | 52 | 51 passed, 1 aborted (HMAC) |
 | 08:45 | LC-MODEL again, now writing its transcripts | 5 | passed |
 | 09:40 | the build descriptor of the Maven plugin, the projects' own AID prefixes, LC-MODEL-6: the run above | 53 | 52 passed, 1 aborted (HMAC) |
 | 09:50 | an applet project of its own with the applet parent ran its JUnit test on the card (see below) | 1 | passed |
+| 2026-10-10 11:24 | the GlobalPlatform Card API; LC-GP alone (see [The GlobalPlatform API on the card](#the-globalplatform-api-on-the-card)) | 6 | 6 passed |
 
-Over all transcribed runs the suite sent 355 EXTERNAL AUTHENTICATE commands and the card accepted every one;
-the guard never had to block a command; no key, card life cycle or Security Domain was changed.
+Over all transcribed runs the suite sent 362 EXTERNAL AUTHENTICATE commands (2 of them through a test applet's
+Security Domain, LC-GP) and the card accepted every one; the guard never had to block a command; no key, card
+life cycle or Security Domain was changed.
 
 ### Not run on hardware
 
@@ -780,3 +820,8 @@ SCP02 and the SCP03 S16 mode (the card offers SCP03 S8 only; the `gp` module's S
 against recorded transcripts and spec-derived references), secure messaging and PACE/BAC of the `sm` and `pace`
 modules (tested against the ICAO 9303-11 worked examples and a simulated chip), other card models and readers,
 Linux and Windows PC/SC.
+
+Of the GlobalPlatform Card API only what LC-GP uses ran on the card (see
+[The GlobalPlatform API on the card](#the-globalplatform-api-on-the-card)); not `wrap` and the levels with R-MAC
+(the card offers `i=00` only), and not `lockCard`, `terminateCard`, `setATRHistBytes`, Global Services or the other
+GlobalPlatform packages. LC-GP has not yet been part of a full run of the suite.

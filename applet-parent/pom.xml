@@ -4,6 +4,12 @@
   AID (property javacard.packageAid) and the plugin javacard-express-maven-plugin named by groupId and artifactId to
   compile the applet for Java 8, test it on jCardSim with JUnit 5, and build the CAP file with `mvn package`. Every
   setting below can be overridden in the project's POM.
+
+  The plugin is managed as a build extension, which adds the javac check of the Java Card subset to the compilation
+  of the applet code. The extension sets up the dependencies, the Java releases and the stubs kept off the test class
+  path the same way; this POM writes them out for IDE imports that do not run Maven build extensions. It also adds
+  what the extension does not: junit-jupiter-params pinned, the Maven and JDK check of the enforcer, coverage with
+  JaCoCo, reproducible jars and pinned versions of the compiler and Surefire.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -38,8 +44,8 @@
 
     <dependencies>
         <!-- The test runtime first: javacard-express-core brings jCardSim, which executes the javacard.* API in tests,
-             plus the JUnit Jupiter API and AssertJ. Test runners that follow the POM order (IDEs) need it before the
-             stubs; the dependencies of the project itself come before these. -->
+             plus the JUnit Jupiter API with its parameterized tests, and AssertJ. Test runners that follow the POM
+             order (IDEs) need it before the stubs; the dependencies of the project itself come before these. -->
         <dependency>
             <groupId>name.velikodniy</groupId>
             <artifactId>javacard-express-core</artifactId>
@@ -59,7 +65,7 @@
             <artifactId>javacard-express-api</artifactId>
             <scope>provided</scope>
         </dependency>
-        <!-- @ParameterizedTest -->
+        <!-- @ParameterizedTest: javacard-express-core passes it on too; this pins its version -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-params</artifactId>
@@ -72,13 +78,15 @@
         <pluginManagement>
             <plugins>
                 <plugin>
-                    <!-- A project declares the plugin with its groupId and artifactId (the README Quick Start): the
-                         version comes from javacard-express-bom, the binding of the build goal to its default phase,
+                    <!-- A project declares the plugin with its groupId and artifactId (the POM of the applet parent
+                         section of the plugin README): the version comes from javacard-express-bom, the build
+                         extension flag and the binding of the build goal to its default phase,
                          process-classes (after compilation, before the tests), from here. Managed, not declared: the
                          modules of the toolkit's own build never use the plugin, so neither Maven nor an IDE has to
                          resolve it before it is installed -->
                     <groupId>name.velikodniy</groupId>
                     <artifactId>javacard-express-maven-plugin</artifactId>
+                    <extensions>true</extensions>
                     <executions>
                         <execution>
                             <goals>
@@ -187,9 +195,10 @@
             <build>
                 <plugins>
                     <plugin>
-                        <!-- src/it/parent-quickstart: a project whose POM has only coordinates, this parent and a
-                             package AID builds and tests an applet with mvn package, and runs the same test on the
-                             simulated GlobalPlatform card with -Djcx.backend=simulated-gp -->
+                        <!-- src/it: projects whose POM has only coordinates, this parent and a package AID build and
+                             test an applet with mvn package and run the same tests on the simulated GlobalPlatform
+                             card with -Djcx.backend=simulated-gp: parent-quickstart (the applet parent section of
+                             the plugin README) and parent-globalplatform (an applet that uses org.globalplatform) -->
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-invoker-plugin</artifactId>
                         <version>3.10.1</version>

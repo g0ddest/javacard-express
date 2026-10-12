@@ -209,6 +209,72 @@ class APDUResponseAssertTest {
         }
     }
 
+    /**
+     * The Java Card basic types. The numbers are integer assertions, so an int literal and a short variable both
+     * compare as numbers: AssertJ's short assertion has only {@code isEqualTo(short)}, and {@code isEqualTo(26)}
+     * would compare a {@code Short} with an {@code Integer}.
+     */
+    @Nested
+    class TypedValues {
+
+        private final APDUResponse balance = APDUResponse.fromHex("001A 9000");
+
+        @Test
+        void dataAsShortComparesWithAnIntLiteralAndWithAShortVariable() {
+            short expected = 26;
+
+            assertThat(balance).isSuccess().dataAsShort().isEqualTo(26);
+            assertThat(balance).dataAsShort().isEqualTo(expected);
+            assertThat(APDUResponse.fromHex("FFFE 9000")).dataAsShort().isEqualTo(-2).isNegative();
+        }
+
+        @Test
+        void dataAsByteDataAsIntAndDataAsBoolean() {
+            assertThat(APDUResponse.fromHex("FF 9000")).dataAsByte().isEqualTo(-1);
+            assertThat(APDUResponse.fromHex("0001E240 9000")).dataAsInt().isEqualTo(123456);
+            assertThat(APDUResponse.fromHex("01 9000")).dataAsBoolean().isTrue();
+            assertThat(APDUResponse.fromHex("00 9000")).dataAsBoolean().isFalse();
+        }
+
+        @Test
+        void valuesAtAnOffset() {
+            APDUResponse info = APDUResponse.fromHex("00 46 FF FE 0001E240 9000");
+
+            assertThat(info).byteAt(2).isEqualTo(-1);
+            assertThat(info).shortAt(0).isEqualTo(70);
+            assertThat(info).shortAt(2).isEqualTo(-2);
+            assertThat(info).intAt(4).isEqualTo(123456);
+        }
+
+        @Test
+        void dataOfAnotherSizeFailsTheAssertionAndShowsTheData() {
+            assertThatThrownBy(() -> assertThat(APDUResponse.fromHex("001A00 9000")).dataAsShort())
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessage("Expected response data of exactly 2 bytes for dataAsShort, but the data has 3 bytes:"
+                            + " 001A00 (SW=9000, success)");
+            assertThatThrownBy(() -> assertThat(APDUResponse.fromHex("6982")).dataAsShort())
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessage("Expected response data of exactly 2 bytes for dataAsShort, but the data has 0 bytes"
+                            + " (SW=6982, security status not satisfied)");
+            assertThatThrownBy(() -> assertThat(APDUResponse.fromHex("02 9000")).dataAsBoolean())
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessage("Expected response data 00 (false) or 01 (true) for dataAsBoolean, but the data is 02"
+                            + " (SW=9000, success)");
+            assertThatThrownBy(() -> assertThat(balance).intAt(0))
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessage("Expected response data with 4 bytes at offset 0 for intAt, but the data has 2 bytes"
+                            + " (SW=9000, success)");
+        }
+
+        @Test
+        void aMismatchNamesTheReaderAndBothValues() {
+            assertThatThrownBy(() -> assertThat(balance).dataAsShort().isEqualTo(27))
+                    .hasMessageContaining("dataAsShort() of")
+                    .hasMessageContaining("27")
+                    .hasMessageContaining("26");
+        }
+    }
+
     /** Mismatches of status word and data carry expected and actual values, so IDEs can show a diff. */
     @Nested
     class Diffs {

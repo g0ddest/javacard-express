@@ -3,9 +3,120 @@
 Notable changes of each release. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.0 a minor release can change the API.
 
-## [Unreleased]
+## [0.5.0] - 2026-10-12
+
+Applets can use the GlobalPlatform Card API, javac reports code outside the Java Card subset at its line (in the
+build, in IntelliJ IDEA's build and, with the new IDE plugin, in its editor), and one plugin in the POM sets an
+applet project up. The GlobalPlatform API was checked on the real card of the live-card tests (LC-GP, see
+[LIVE_CARD_TESTING.md](LIVE_CARD_TESTING.md)).
+
+### Upgrading from 0.4.0
+
+- **Optional: declare the plugin as a build extension.** `<extensions>true</extensions>` on
+  `javacard-express-maven-plugin` lets it set the project up; a POM that configures everything itself keeps working
+  as before, and the goal says in one line how to switch (`-Djavacard.setup=false` hides it).
+- **The javac check comes with the build extension and with the applet parent.** Code outside the Java Card subset,
+  which the conversion rejected in `process-classes`, now fails in `compile`, also in IntelliJ IDEA's build, with
+  the converter's messages. The check needs javac of JDK 25 or newer (Maven's own javac is) and stays out of a
+  compilation with a toolchain or a forked javac; `-Djavacard.check=false` turns it off.
+- **Record patterns** on `ConverterResult`, `BuildDescriptor`, `AppletPackage`, `ClassReferences.Reference` and
+  `APDULogEntry` need their new components, and two `ClassReferences.Reference` objects are equal only with the same
+  `site`.
+- **GlobalPlatform stand-ins:** the simulated cards implement `org.globalplatform` themselves; a GlobalPlatform API
+  jar ahead of `javacard-express-core` on the test class path, or stand-in classes of that package among the test
+  classes, are reported when an applet uses the package.
 
 ### Added
+
+- **One plugin is the whole setup.** Declared with `<extensions>true</extensions>`, `javacard-express-maven-plugin`
+  sets an applet project up from a POM with nothing but its coordinates and the plugin: it binds the `build` goal,
+  adds `javacard-express-core`, `javacard-express-livecard` (test) and `javacard-express-api` (provided), keeps the
+  stubs off the test class path of Surefire and Failsafe, compiles the applet code for Java 8 and the tests for Java
+  25, sets UTF-8 sources, and adds the javac check below. It adds only what the POM does not configure itself and says
+  in one line of the build log what it added and what it left out: a version the project's dependency management gives
+  a toolkit artifact wins over the plugin's; a project that tests with TestNG and not with JUnit Jupiter, or has its
+  own jCardSim (under any group id), keeps them and gets only the stubs, with a warning, while JUnit 4 tests, also
+  from a parent, keep running next to the toolkit's; and the check stays out where it would hide the project's own
+  annotation processors or where another JDK's javac compiles. It only appends to lists the POM configures and never
+  adds test runtime settings. `-Djavacard.setup=false` (`<setup>`) turns it off; a setup that fails stops the build
+  with the project's name and that switch. It runs on Maven 3.9.0 and newer (Maven 4 is not tested); on a JDK older
+  than 25, JDK 8 included, it stops the build with that reason (`-Djavacard.setup=false` lets other commands run), and
+  when it is declared but did not run, the goal warns. In a multi-module build it belongs in the applet modules, not
+  in a parent's `<build><plugins>`, where every module would inherit it. Without the flag the plugin works as before
+  and its goal points to the flag in one line. The README Quick Start now shows this POM; the explicit POM, which
+  writes out everything the extension adds, stays for IDEs and tools that do not run Maven build extensions (an IDE
+  sees what the extension adds only if its Maven import runs it: IntelliJ IDEA 2026.2 does, NetBeans is not verified).
+  See [Quick Start](maven-plugin/README.md#quick-start).
+- **Java Card errors at compile time.** The new `javacard-express-javac-plugin` (managed by the BOM) lets javac check
+  the applet code with the converter's rules: code outside the Java Card language subset (`long`, `String`,
+  `synchronized`, lambdas, enums, `int` without int support, ...) and API the target platform does not have (a
+  later Java Card version, the Java SE library, a later version of `org.globalplatform` than a fixed one) are
+  compile errors at their source lines, in `mvn compile` and in IDE builds that run javac with it, before a test on
+  jCardSim could pass with them.
+  It checks the package the plugin converts with the plugin's settings, including the export files given in
+  `<importExportFiles>` and `<exportPath>` when every execution of the goal has the same ones, and never the
+  tests; the build extension adds it to the compilation of the applet code, `-Djavacard.check=false` (`<check>`)
+  and `-Djavacard.skip=true` turn it off, and without the extension it goes on the annotation processor path (the
+  explicit POM of the plugin README has it). It runs in javac of JDK 25 or newer and never stops javac by failing
+  itself: where it cannot run (another compiler, class files kept in memory) it says so in a note, and a class
+  file it cannot read is a warning that names it (`-Werror` turns such warnings into failures). It is reliable in
+  parallel builds (`-T`): the converter reads its built-in API tables without the JVM's shared cache of open jar
+  files, so javac closing one compilation's class loader no longer breaks the check, or a conversion, of another
+  module. Code compiled without line numbers (`-g:none`, Maven's `debuglevel` without `lines`) is checked too,
+  with the errors at their members, and each catch clause is reported at its own line. An export file or export
+  path entry that is not there yet (another module writes it when it converts) or holds an unresolved expression
+  does not fail the compilation: the check then checks the language subset only and leaves the linking to the
+  conversion, with a note. A method inherited through a supertype of another package of the build (a library's
+  shareable interface) is left to the conversion, which has that package's export file. IntelliJ IDEA's own build
+  runs the check too (IDEA hands annotation processors a wrapper of javac's environment, which the check sees
+  through). See [Compile-Time Check](maven-plugin/README.md#compile-time-check).
+- **Java Card errors in the IntelliJ IDEA editor.** A plugin (`intellij-plugin/`, built with Gradle) marks the errors
+  of the javac check while you type, at their source lines and with the build's messages: it compiles the open
+  file's package in memory with the project's own check (the jars on the module's annotation processor path) and
+  the build's options, for main code whose compilation runs the check. IntelliJ IDEA 2026.2 or newer; installed
+  from disk for now. See [intellij-plugin/README.md](intellij-plugin/README.md).
+- **Values of the Java Card types in tests.** `APDUResponse.dataAsByte()`, `dataAsShort()`, `dataAsInt()` and
+  `dataAsBoolean()` read the whole response data (exactly one, two or four bytes, big-endian as `Util.setShort` and
+  `JCint.setInt` write them; `00` or `01` for a boolean), `byteAt`, `shortAt` and `intAt` read a value at an
+  offset, signed like the applet's. `assertThat(response)` has the same names as assertions, with an integer
+  assertion for every number, so `assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(26)` takes
+  an int literal (AssertJ's short assertion would compare a `Short` with an `Integer`). `Bytes.ofShort(56)`,
+  `ofByte`, `ofInt`, `ofBoolean` and `concat` write command data the same way:
+  `card.send(0x80, 0x10, 0x00, 0x00, Bytes.ofShort(56))`. The cookbook uses them; `u8`, `u16` and `s16` stay.
+- `PackageCheck` in the converter: the checks of the conversion's scan stage (the language subset, then the linking
+  against the API data of the target: the built-in data, or export files the build supplies) on the class files of
+  a package, every problem with its class, member and source line, without converting.
+  `JavaCardVersion.parse(String)` reads a version as build configurations write it,
+  `JavaCardVersion.defaultVersion()` is the default target. `ClassReferences.Reference`
+  has the structured place of a reference (`site()`, with the line and whether it is in code),
+  `LinkChecker.problems(...)` returns each problem of the link check, `LinkChecker.isJavaSePackage` is public, and
+  `PackageCheck.checkSubset` runs the language subset alone.
+
+- **The GlobalPlatform Card API (`org.globalplatform`)**, for applets that use `GPSystem` and the `SecureChannel`
+  of their Security Domain. A project needs nothing extra for it:
+  - `javacard-express-api` has the stubs of the package (15 types, the API of its version 1.8);
+  - the converter links the package from built-in data for its versions 1.0 to 1.8, without an export file, and the
+    CAP file imports the lowest version that has everything the package uses (1.0 for `GPSystem` and
+    `SecureChannel`, the version of GlobalPlatform 2.1.1 cards). `Converter.Builder.globalPlatformApi("1.5")` and
+    the plugin's `<globalPlatformApi>` (`javacard.globalPlatformApi`) fix a version; an export file supplied for
+    the package still takes precedence. `ConverterResult.imports()` lists the imported packages with their
+    versions, and the plugin logs the imported version of the GlobalPlatform API;
+  - the simulated cards (the default backend and `simulated-gp`) implement the package: the secure channel of the
+    Security Domain as SCP03 on the card side (C-MAC, C-DECRYPTION, and R-MAC and R-ENCRYPTION where the Security
+    Domain's option "i" has them), the life cycle states of the applet and the card, the registry entry with
+    privileges, `lockCard`, `terminateCard`, `setATRHistBytes`, `getCardInfo` and Global Services.
+    `EmbeddedSession.globalPlatform()` and the test parameter `GlobalPlatformCard` show and set the card's side;
+  - a test opens the secure channel through the applet with `GPSession`, with the keys of the run's Security
+    Domain: the new test parameter `SecurityDomainKeys` (every backend) and `SCPKeys.of(SecurityDomainKeys)`;
+  - `simulated-gp` and `livecard` accept a package that imports `org.globalplatform`, and the off-card verifier
+    gets the export file written from the built-in data (`AppletPackage.withGlobalPlatformApi` fixes the version;
+    a build's `<globalPlatformApi>` reaches them through the build descriptor).
+
+  See [An applet that uses the GlobalPlatform API](TESTING.md#an-applet-that-uses-the-globalplatform-api). Not
+  simulated: a Global PIN, STORE DATA forwarded to `Application` or `Personalization`, SCP02 on the card side, the
+  other GlobalPlatform packages. The new live test LC-GP passed on a JCOP 4 card (Java Card 3.0.4, GlobalPlatform
+  2.1.1, SCP03 `i=00`): the CAP file that imports version 1.0 loads, and the host opens the secure channel through
+  the applet at levels `01` and `03`.
 
 - The time of every exchange: `APDULogEntry.duration()`, measured from just before the command is sent until the
   response has arrived, by the embedded, PC/SC, `simulated-gp` and `livecard` sessions and by `LoggingSession`
@@ -25,6 +136,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.
 
 ### Changed
 
+- New record components: `ConverterResult.imports`, `BuildDescriptor.globalPlatformApi`,
+  `AppletPackage.globalPlatformApi`, `ClassReferences.Reference.site`. The constructors with the previous components
+  stay, but record patterns on these types need the new component. `ClassReferences.Reference` has six components
+  now, and its `equals` and `hashCode` include `site`: two references to the same target from different places
+  (another class, member or line) are no longer equal.
+- The applet parent manages the plugin as a build extension, so projects that inherit it get the javac check too:
+  `javacard-express-javac-plugin` on the annotation processor path of the compilation of the applet code (unless the
+  project runs annotation processors from its class path, compiles with another JDK's javac or turns annotation
+  processing off). It needs javac of JDK 25 or newer; `-Djavacard.check=false` turns it off. The parent keeps
+  writing out its other settings for IDE imports that do not run build extensions.
+- `javacard-express-core` passes `junit-jupiter-params` on to its users (compile scope, like `junit-jupiter-api`), so
+  `@ParameterizedTest` works with nothing but `javacard-express-core` for the tests.
+- The explicit POM of the plugin README adds `javacard-express-livecard`, `-Xlint:-options` and the javac check, and
+  no longer declares `junit-jupiter` and `assertj-core`, which come with `javacard-express-core`.
+- The `load` line of a live-card or `simulated-gp` transcript lists the packages the CAP file imports with their
+  versions, and the explanation of a load refused with `6438` names it.
+- The container backend refuses an applet that uses `org.globalplatform` before it is installed, with the backends
+  that run it (the simulator in the container has no such package).
+- The simulated cards take `org.globalplatform` from `javacard-express-core`. A GlobalPlatform stub jar ahead of
+  it on the test class path, or stand-in classes of that package among a project's test classes, are reported when
+  an applet uses the package: remove them (or keep them with `-Djcx.embedded.classpathCheck=false`).
 - `APDULogEntry` has a fourth component, `duration`. The constructor with three arguments stays (without a time), but
   record patterns on `APDULogEntry` need the new component.
 - The transcript files of the live-card harness show the time with one decimal, like the other transcripts.
@@ -32,6 +164,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and before 1.
   attribute.
 - NOTICE names the Java Card API classes inside the bundled jCardSim (the simulator server of
   `javacard-express-container` and its Docker image).
+- Building the toolkit from source: `maven-plugin` depends on `javacard-express-livecard` for its integration tests,
+  so the reactor builds it after `livecard`; its own test `NoCardAccessInBuildToolsTest` keeps `maven-plugin` and
+  `javac-plugin` away from PC/SC, as `PcscAccessGuardTest` does for the modules built before `livecard`. The IDE
+  plugin is a separate Gradle build in `intellij-plugin/`, outside the Maven reactor.
 
 ### Fixed
 
@@ -318,7 +454,7 @@ it.
 - `javacard-express-gp` (GlobalPlatform card content management, SCP02 and SCP03), `javacard-express-sm` (ISO/IEC
   7816-4 secure messaging), `javacard-express-pace` (PACE); container mode on Testcontainers.
 
-[Unreleased]: https://github.com/g0ddest/javacard-express/compare/0.4.0...HEAD
+[0.5.0]: https://github.com/g0ddest/javacard-express/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/g0ddest/javacard-express/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/g0ddest/javacard-express/compare/0.2.1...0.3.0
 [0.2.1]: https://github.com/g0ddest/javacard-express/compare/0.2.0...0.2.1

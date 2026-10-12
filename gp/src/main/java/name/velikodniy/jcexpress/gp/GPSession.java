@@ -243,8 +243,8 @@ public final class GPSession implements AutoCloseable {
     /**
      * Makes {@link #open()} SELECT the given Security Domain before INITIALIZE UPDATE.
      *
-     * <p>Without it, INITIALIZE UPDATE goes to the currently selected application, which must then be the
-     * Security Domain (e.g. the default-selected ISD).</p>
+     * <p>Without it, INITIALIZE UPDATE goes to the selected application: the Security Domain (e.g. the
+     * default-selected ISD), or an applet that hands it to its Security Domain (org.globalplatform.GPSystem).</p>
      *
      * @param aidHex the Security Domain AID, e.g. "A000000151000000"
      * @return this session for chaining

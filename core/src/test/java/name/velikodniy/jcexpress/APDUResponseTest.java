@@ -227,6 +227,73 @@ class APDUResponseTest {
         }
     }
 
+    /**
+     * The data as the Java Card basic types, signed and big-endian as an applet writes them with
+     * {@code Util.setShort} and {@code JCint.setInt}: the whole data ({@code dataAs...}) or a value at an offset
+     * ({@code ...At}).
+     */
+    @Nested
+    class TypedValues {
+
+        @Test
+        void dataAsShortReadsTheWholeDataLikeUtilGetShort() {
+            assertThat(APDUResponse.fromHex("001A 9000").dataAsShort()).isEqualTo((short) 26);
+            assertThat(APDUResponse.fromHex("FFFE 9000").dataAsShort()).isEqualTo((short) -2);
+        }
+
+        @Test
+        void dataAsByteAndDataAsIntReadOneAndFourBytesLikeJCintGetInt() {
+            assertThat(APDUResponse.fromHex("FF 9000").dataAsByte()).isEqualTo((byte) -1);
+            assertThat(APDUResponse.fromHex("0001E240 9000").dataAsInt()).isEqualTo(123456);
+            assertThat(APDUResponse.fromHex("FFFFFFFF 9000").dataAsInt()).isEqualTo(-1);
+        }
+
+        @Test
+        void dataAsBooleanReadsOneByteZeroOrOne() {
+            assertThat(APDUResponse.fromHex("01 9000").dataAsBoolean()).isTrue();
+            assertThat(APDUResponse.fromHex("00 9000").dataAsBoolean()).isFalse();
+            assertThatThrownBy(() -> APDUResponse.fromHex("02 9000").dataAsBoolean())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("dataAsBoolean needs 00 (false) or 01 (true), but the response data is 02");
+        }
+
+        @Test
+        void theWholeDataMustHaveTheSizeOfTheType() {
+            assertThatThrownBy(() -> APDUResponse.fromHex("001A00 9000").dataAsShort())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("dataAsShort needs exactly 2 bytes, but the response data has 3 bytes: 001A00");
+            assertThatThrownBy(() -> APDUResponse.fromHex("6982").dataAsByte())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("dataAsByte needs exactly 1 byte, but the response data has 0 bytes");
+            assertThatThrownBy(() -> APDUResponse.fromHex("001A 9000").dataAsInt())
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("dataAsInt needs exactly 4 bytes, but the response data has 2 bytes: 001A");
+        }
+
+        @Test
+        void valuesAtAnOffsetAreSigned() {
+            APDUResponse response = APDUResponse.fromHex("00 46 FF FE 0001E240 9000");
+
+            assertThat(response.byteAt(2)).isEqualTo((byte) -1);
+            assertThat(response.shortAt(0)).isEqualTo((short) 70);
+            assertThat(response.shortAt(2)).isEqualTo((short) -2);
+            assertThat(response.intAt(4)).isEqualTo(123456);
+            assertThatThrownBy(() -> response.intAt(6))
+                    .isInstanceOf(IndexOutOfBoundsException.class)
+                    .hasMessage("intAt at offset 6 needs 4 bytes, but the response data has 8 bytes:"
+                            + " 0046FFFE0001E240");
+        }
+
+        @Test
+        void whatBytesWritesTheReadersReadBack() {
+            assertThat(new APDUResponse(Bytes.ofShort(-2), 0x9000).dataAsShort()).isEqualTo((short) -2);
+            assertThat(new APDUResponse(Bytes.ofInt(Integer.MIN_VALUE), 0x9000).dataAsInt())
+                    .isEqualTo(Integer.MIN_VALUE);
+            assertThat(new APDUResponse(Bytes.ofByte(0x90), 0x9000).dataAsByte()).isEqualTo((byte) 0x90);
+            assertThat(new APDUResponse(Bytes.ofBoolean(true), 0x9000).dataAsBoolean()).isTrue();
+        }
+    }
+
     /** requireSw accepts the listed status words, also as short constants of the Java Card API. */
     @Nested
     class RequireSw {

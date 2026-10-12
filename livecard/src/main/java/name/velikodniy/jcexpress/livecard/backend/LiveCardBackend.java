@@ -1,6 +1,7 @@
 package name.velikodniy.jcexpress.livecard.backend;
 
 import name.velikodniy.jcexpress.Mode;
+import name.velikodniy.jcexpress.SecurityDomainKeys;
 import name.velikodniy.jcexpress.backend.CardBackend;
 import name.velikodniy.jcexpress.backend.CardRequest;
 import name.velikodniy.jcexpress.backend.TestCard;
@@ -36,7 +37,7 @@ public final class LiveCardBackend implements CardBackend {
 
     @Override
     public Set<Class<?>> parameterTypes() {
-        return Set.of(LiveCard.class);
+        return Set.of(LiveCard.class, SecurityDomainKeys.class);
     }
 
     @Override
@@ -53,6 +54,6 @@ public final class LiveCardBackend implements CardBackend {
         Optional<Boolean> intSupport = request.setting(SimulatedGpBackend.INT_SETTING).map(Boolean::parseBoolean);
         LiveCard live = LiveCard.connect(config);
         GpTestCard.transcribe(live, request);
-        return new GpTestCard(Mode.LIVECARD, live, intSupport, load -> { });
+        return new GpTestCard(Mode.LIVECARD, live, intSupport, load -> { }, Optional.empty());
     }
 }

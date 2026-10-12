@@ -51,6 +51,12 @@ final class AppletClasses {
     /** Packages the simulator provides: the JDK and jCardSim with its {@code javacard.*} API implementation. */
     private static final List<String> PROVIDED_PACKAGES = List.of(
             "java.", "javax.", "jdk.", "sun.", "com.sun.", "javacard.", "javacardx.", "com.licel.");
+    /**
+     * The GlobalPlatform Card API: jCardSim does not implement it, and the implementation of
+     * {@code javacard-express-core} belongs to the simulated cards of the test JVM, so the simulator in the container
+     * has none.
+     */
+    private static final String GLOBALPLATFORM_API = "org.globalplatform.";
 
     private AppletClasses() {
     }
@@ -60,7 +66,10 @@ final class AppletClasses {
      *
      * @param appletClass the applet class
      * @return class files by binary name, the applet class first
-     * @throws IOException if the class file of the applet class itself cannot be read
+     * @throws IOException                   if the class file of the applet class itself cannot be read
+     * @throws UnsupportedOperationException if the applet code uses the GlobalPlatform Card API
+     *                                       ({@code org.globalplatform}), which the simulator in the container
+     *                                       does not provide
      */
     static Map<String, byte[]> of(Class<?> appletClass) throws IOException {
         ClassLoader loader = appletClass.getClassLoader() != null
@@ -72,6 +81,13 @@ final class AppletClasses {
             String name = pending.poll();
             if (!seen.add(name) || isProvidedBySimulator(name)) {
                 continue;
+            }
+            if (name.startsWith(GLOBALPLATFORM_API)) {
+                throw new UnsupportedOperationException(appletClass.getName() + " uses the GlobalPlatform Card API ("
+                        + name + "), which the simulator in the container does not provide: jCardSim has no"
+                        + " org.globalplatform package. Run this applet on the simulated cards of the test JVM, which"
+                        + " implement it: EmbeddedSession, or a @JavaCardTest class on the default backend or on"
+                        + " simulated-gp");
             }
             byte[] classFile = read(loader, name);
             if (classFile == null) {

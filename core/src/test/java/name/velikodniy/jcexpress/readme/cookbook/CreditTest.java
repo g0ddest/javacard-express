@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.readme.cookbook;
 
+import name.velikodniy.jcexpress.Bytes;
 import name.velikodniy.jcexpress.InstallApplet;
 import name.velikodniy.jcexpress.JavaCardTest;
 import name.velikodniy.jcexpress.SmartCardSession;
@@ -29,7 +30,7 @@ class CreditTest {
 
     @Test
     void credits(SmartCardSession card) {
-        assertThat(card.send(CREDIT.data(0x00, 0x0A))).isSuccess();
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(10);
+        assertThat(card.send(CREDIT.data(Bytes.ofShort(10)))).isSuccess();
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(10);
     }
 }

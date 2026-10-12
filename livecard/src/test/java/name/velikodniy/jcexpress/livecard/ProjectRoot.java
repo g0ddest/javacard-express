@@ -9,7 +9,9 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The root of the project this module is built in, for the build checks that read the whole project
@@ -54,6 +56,38 @@ final class ProjectRoot {
             }
         }
         return modules;
+    }
+
+    /**
+     * Returns the modules of the build a module depends on directly (its dependencies on artifacts of this project):
+     * the reactor builds them before it, also when only that module is selected with {@code -am}.
+     *
+     * @param root   the project root
+     * @param module the module directory name, e.g. {@code livecard}
+     * @return the module directory names, in the order of the module's dependencies
+     * @throws Exception if a POM cannot be read
+     */
+    static List<String> upstreamModules(Path root, String module) throws Exception {
+        Map<String, String> byArtifact = new LinkedHashMap<>();
+        for (String other : modules(root)) {
+            Element project = parse(root.resolve(other).resolve("pom.xml")).getDocumentElement();
+            for (Element id : children(project, "artifactId")) {
+                byArtifact.put(id.getTextContent().strip(), other);
+            }
+        }
+        List<String> upstream = new ArrayList<>();
+        for (Element list : children(parse(root.resolve(module).resolve("pom.xml")).getDocumentElement(),
+                "dependencies")) {
+            for (Element dependency : children(list, "dependency")) {
+                for (Element id : children(dependency, "artifactId")) {
+                    String other = byArtifact.get(id.getTextContent().strip());
+                    if (other != null && !upstream.contains(other)) {
+                        upstream.add(other);
+                    }
+                }
+            }
+        }
+        return upstream;
     }
 
     /**

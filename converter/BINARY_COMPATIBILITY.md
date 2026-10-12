@@ -31,7 +31,7 @@ the other defects fixed at the same time.
 | Level | Runs | What it checks |
 |-------|------|----------------|
 | Spec-derived checks | every build, no SDK | `CapInvariantsTest` parses each CAP with an independent reader written from JCVM 3.1 Chapter 6 and checks structural invariants (`class_info` layout and tokens, public and package method tables, interface tables, constant pool entries and what they point to, static field image segments, exception handler indexes, the Export component and the header flags) for every test package in CAP 2.1 and 2.3. Component tests cite the spec sections they assert (`ClassComponentTest`, `DescriptorSpecTest`, `TokenAssignerSpecTest`, `StaticInitializationTest`, `ExportComponentSpecTest`, ...). `GeneratedExportFilesTest` checks generated export files against a checker of JCVM Chapter 5 that is calibrated on all API export files of eight SDKs. |
-| Oracle verifier | when `build/oracle-sdks/jc305u3_kit` exists | `OracleVerifycapTest`: all 23 converter test packages, converted in the default mode, verify with 0 errors and 0 warnings. The Maven plugin's integration tests run the verifier on every CAP they build (they report by default; `-Djcx.it.verifycap=strict` fails on an error). |
+| Oracle verifier | when `build/oracle-sdks/jc305u3_kit` exists | `OracleVerifycapTest`: all 23 converter test packages, converted in the default mode, verify with 0 errors and 0 warnings. The Maven plugin's integration tests run the verifier on every CAP they build (they report by default; `-Djcx.it.verifycap=strict` fails on an error). `GlobalPlatformApiVerifycapTest`: CAP files that import `org.globalplatform` from the built-in data verify with the export file written from that data and, where GlobalPlatform's export files are installed under `build/globalplatform-api`, with those. |
 | Oracle converter output | when reference CAPs were generated | `OracleByteIdentityTest`, `PerVersionOracleComparisonTest`, `OracleReferenceComparisonTest` compare the components of the test applets with Oracle's output (see below). |
 | Acceptance corpus | audit, external harness | 151 entries; see [Acceptance results](#acceptance-results-october-2026). |
 | Real card | lead engineer only | see [Real cards](#real-cards). |
@@ -140,7 +140,9 @@ access real cards.
   component are not generated.
 - Java Card RMI is not supported: a package that defines a remote interface or class (§2.2.6) is rejected,
   because its CAP file would need the remote information of CAP format 2.2 (§6.9.2.1 ACC_REMOTE, §6.9.2.6).
-- API: built-in linking data covers the standard packages of 2.1.2 to 3.2.0 with per-version checks. The
+- API: built-in linking data covers the standard packages of 2.1.2 to 3.2.0 with per-version checks, and the
+  GlobalPlatform Card API package `org.globalplatform` in its versions 1.0 to 1.8 (the lowest version that has
+  what the package uses is imported; the other GlobalPlatform packages need their export files). The
   compile-only stubs (`javacard-express-api`) cover the 3.0.5 Classic API; compile 3.1/3.2-only APIs against
   another API jar.
 - Compile-time constants introduced after the target version cannot be detected (javac inlines them).

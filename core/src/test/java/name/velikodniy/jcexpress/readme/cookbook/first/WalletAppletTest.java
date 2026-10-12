@@ -18,6 +18,6 @@ class WalletAppletTest {
     void startsEmpty(SmartCardSession card) {
         assertThat(card.send(0x80, 0x52, 0x00, 0x00, null, 2))     // GET BALANCE, Le = 2
                 .isSuccess()
-                .hasDataHex("0000");
+                .dataAsShort().isZero();                            // the balance, a short
     }
 }

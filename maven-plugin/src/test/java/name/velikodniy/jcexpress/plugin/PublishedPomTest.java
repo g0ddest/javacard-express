@@ -84,10 +84,30 @@ class PublishedPomTest {
                 parent.indexOf("</pluginManagement>"));
         String rest = parent.replace(management, "").substring(0, parent.replace(management, "").indexOf("<profiles>"));
 
-        assertThat(management).containsPattern("<artifactId>javacard-express-maven-plugin</artifactId>\\s*<executions>"
-                + "\\s*<execution>\\s*<goals>\\s*<goal>build</goal>");
+        assertThat(management).containsPattern("<artifactId>javacard-express-maven-plugin</artifactId>"
+                + "\\s*<extensions>true</extensions>\\s*<executions>\\s*<execution>\\s*<goals>\\s*<goal>build</goal>");
         assertThat(rest).doesNotContain("<artifactId>javacard-express-maven-plugin</artifactId>");
         assertThat(parent).doesNotContain("<phase>none</phase>").contains("<profiles>remove</profiles>");
+    }
+
+    @Test
+    void theAppletParentWritesOutWhatTheBuildExtensionWouldSetUp() throws IOException {
+        // The parent keeps the settings an IDE import needs even when it does not run Maven build extensions; they
+        // are the extension's defaults, so these parts of the build are the same with the parent or with the plugin
+        // alone (the parent adds more: JaCoCo, the enforcer rules, pinned plugin versions)
+        String parent = read("applet-parent/pom.xml");
+
+        assertThat(parent).contains(
+                "<maven.compiler.release>" + CompilerSetup.APPLET_RELEASE + "</maven.compiler.release>",
+                "<maven.compiler.testRelease>" + CompilerSetup.TEST_RELEASE + "</maven.compiler.testRelease>",
+                "<arg>" + CompilerSetup.NO_OPTIONS_WARNING + "</arg>",
+                "<project.build.sourceEncoding>" + CompilerSetup.ENCODING + "</project.build.sourceEncoding>",
+                "<classpathDependencyExclude>" + ProjectSetup.STUBS + "</classpathDependencyExclude>");
+        for (String artifactId : List.of(ProjectSetup.CORE, ProjectSetup.LIVECARD, ProjectSetup.API)) {
+            assertThat(parent).contains("<artifactId>" + artifactId + "</artifactId>");
+        }
+        assertThat(parent.indexOf("<artifactId>" + ProjectSetup.CORE + "</artifactId>"))
+                .isLessThan(parent.indexOf("<artifactId>" + ProjectSetup.API + "</artifactId>"));
     }
 
     @Test

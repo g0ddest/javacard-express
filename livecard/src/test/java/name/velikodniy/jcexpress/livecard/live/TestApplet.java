@@ -42,7 +42,12 @@ public enum TestApplet {
     /** Uses the Ledger of {@link #SIO_SERVER} through JCSystem.getAppletShareableInterfaceObject. */
     SIO_CLIENT("com.jcx.livecard.sioclient", "LedgerClientApplet", "010C", "010C01"),
     /** The optional int type; converted with int support. */
-    INT_OPS("com.jcx.livecard.intops", "IntApplet", "010D", "010D01", Conversion.INT_SUPPORT);
+    INT_OPS("com.jcx.livecard.intops", "IntApplet", "010D", "010D01", Conversion.INT_SUPPORT),
+    /**
+     * The GlobalPlatform Card API: the secure channel of the Security Domain and the application life cycle
+     * state; its CAP file imports {@code org.globalplatform} 1.0.
+     */
+    GP_API("com.jcx.livecard.gpapi", "SecureChannelApplet", "010E", "010E01");
 
     /** How a package is converted beyond the defaults. */
     private enum Conversion {

@@ -1,5 +1,6 @@
 package name.velikodniy.jcexpress.gp;
 
+import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.SmartCardSession;
@@ -54,6 +55,14 @@ final class ReadmeSnippets {
         data.secureChannelProtocols();   // e.g. [SCP02 i=15]
 
         GPSession.on(card).keys(keys).scp02Option(0x55).open();   // only needed for options other than 15/55
+    }
+
+    static void secureChannelWithAnApplet(SmartCardSession card, AID appletAid, SCPKeys keys, byte[] value) {
+        card.select(appletAid);                                  // the applet forwards the handshake to its Security Domain
+        try (GPSession channel = GPSession.on(card).keys(keys).securityLevel(GP.SECURITY_C_MAC_C_ENC).open()) {
+            channel.send(0x80, 0x10, 0x00, 0x00, value).requireSuccess();              // C-MAC, data encrypted
+            byte[] stored = channel.send(0x80, 0x12, 0x00, 0x00, null, 256).data();    // unwrapped by the channel
+        }
     }
 
     static void secureChannelWithApduSequence(SecureChannel scp, SmartCardSession card, byte[] plainApdu) {

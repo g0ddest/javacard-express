@@ -18,7 +18,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Keeps TESTING.md (the testing cookbook) honest: every {@code ```java} block must be a contiguous run of lines of ONE
  * source file below the package {@code name.velikodniy.jcexpress.readme.cookbook}, whose classes run as tests of this
- * module (the recipes on the sample {@code WalletApplet}). Blank lines and lines that are only a comment do not count;
+ * module (the recipes on the sample {@code WalletApplet}), or below {@code name.velikodniy.jcexpress.gp.cookbook} of
+ * the gp module, whose classes run as tests there (the recipe that needs the host side of a secure channel, on the
+ * sample {@code VaultApplet}). Blank lines and lines that are only a comment do not count;
  * the imports a block shows must be imports of that file (which may import more). A block of statements must start a
  * method body there, so that a recipe cannot depend on a line the page does not show. A snippet that no longer
  * compiles, or whose assertion no longer holds, fails the build in the recipe classes; a snippet edited only in the
@@ -28,7 +30,9 @@ class TestingCookbookTest {
 
     /** Surefire runs with the module directory as working directory. */
     private static final Path COOKBOOK = Path.of("../TESTING.md");
-    private static final Path MIRRORS = Path.of("src/test/java/name/velikodniy/jcexpress/readme/cookbook");
+    private static final List<Path> MIRRORS = List.of(
+            Path.of("src/test/java/name/velikodniy/jcexpress/readme/cookbook"),
+            Path.of("../gp/src/test/java/name/velikodniy/jcexpress/gp/cookbook"));
     /** First lines of declarations: a block starting with one of them is part of a type, not of a method body. */
     private static final Pattern DECLARATION = Pattern.compile(
             "^(@|import |package |public |protected |private |static |final |abstract |class |interface |enum |record "
@@ -63,12 +67,14 @@ class TestingCookbookTest {
 
     private static List<Source> sources() throws IOException {
         List<Source> sources = new ArrayList<>();
-        try (Stream<Path> files = Files.walk(MIRRORS)) {
-            for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
-                List<String> lines = normalized(Files.readAllLines(file));
-                List<String> body = lines.stream().filter(line -> !isImport(line)).toList();
-                Set<String> imports = new HashSet<>(lines.stream().filter(TestingCookbookTest::isImport).toList());
-                sources.add(new Source(body, imports));
+        for (Path mirror : MIRRORS) {
+            try (Stream<Path> files = Files.walk(mirror)) {
+                for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
+                    List<String> lines = normalized(Files.readAllLines(file));
+                    List<String> body = lines.stream().filter(line -> !isImport(line)).toList();
+                    Set<String> imports = new HashSet<>(lines.stream().filter(TestingCookbookTest::isImport).toList());
+                    sources.add(new Source(body, imports));
+                }
             }
         }
         return sources;

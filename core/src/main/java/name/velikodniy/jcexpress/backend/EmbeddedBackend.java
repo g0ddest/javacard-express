@@ -2,10 +2,15 @@ package name.velikodniy.jcexpress.backend;
 
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.Mode;
+import name.velikodniy.jcexpress.SecurityDomainKeys;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.embedded.EmbeddedSession;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
+import name.velikodniy.jcexpress.embedded.gp.SecurityDomain;
 
 import java.util.Collection;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * The default backend: jCardSim in the test JVM ({@link EmbeddedSession}). Each test class run gets a new
@@ -17,6 +22,10 @@ import java.util.Collection;
  * Domain handles them on the basic channel (GPCS v2.3.1 11.5 INSTALL, 11.2 DELETE): the selected applet is deselected
  * first, and the installed applet is not selected. So an applet's {@code select()} and {@code deselect()} run as
  * often as on the simulated GlobalPlatform card and on a real one.</p>
+ *
+ * <p>Tests can declare a {@link GlobalPlatformCard} parameter: the GlobalPlatform environment of the simulated
+ * card, which applets reach through {@code org.globalplatform.GPSystem}; and a {@link SecurityDomainKeys}
+ * parameter: the keys of its Security Domain, for a secure channel opened through an applet.</p>
  */
 public final class EmbeddedBackend implements CardBackend {
 
@@ -31,6 +40,11 @@ public final class EmbeddedBackend implements CardBackend {
     @Override
     public Mode mode() {
         return Mode.EMBEDDED;
+    }
+
+    @Override
+    public Set<Class<?>> parameterTypes() {
+        return Set.of(GlobalPlatformCard.class, SecurityDomainKeys.class);
     }
 
     @Override
@@ -82,6 +96,19 @@ public final class EmbeddedBackend implements CardBackend {
                 idleInstalled = true;
             }
             session.select(IDLE);
+        }
+
+        @Override
+        public <T> Optional<T> resolve(Class<T> type) {
+            if (type == GlobalPlatformCard.class) {
+                return Optional.of(type.cast(session.globalPlatform()));
+            }
+            if (type == SecurityDomainKeys.class) {
+                SecurityDomain domain = session.globalPlatform().securityDomain();
+                return Optional.of(type.cast(new SecurityDomainKeys(domain.keyEnc(), domain.keyMac(),
+                        domain.keyDek())));
+            }
+            return Optional.empty();
         }
 
         @Override

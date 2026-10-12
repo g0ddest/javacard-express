@@ -15,6 +15,6 @@ class FundedWalletTest {
 
     @Test
     void startsWithItsInstallParameter(SmartCardSession card) {
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);
     }
 }

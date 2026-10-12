@@ -26,6 +26,7 @@
         <module>container</module>
         <module>javacard-api</module>
         <module>converter</module>
+        <module>javac-plugin</module>
         <module>maven-plugin</module>
         <module>livecard</module>
         <module>bom</module>
@@ -127,6 +128,11 @@
             <dependency>
                 <groupId>name.velikodniy</groupId>
                 <artifactId>javacard-express-converter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-javac-plugin</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

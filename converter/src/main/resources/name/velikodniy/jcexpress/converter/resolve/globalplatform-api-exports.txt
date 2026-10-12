@@ -1,0 +1,103 @@
+# GlobalPlatform Card API (package org.globalplatform) linking data for the converter's built-in
+# import of that package (GlobalPlatformApi). Tokens, flags, AID and versions are interoperability
+# facts of the API (JCVM 3.1 §4.3.6, §5.3): a CAP file links on a card only if they match. They
+# were read from the export files of the package versions listed below with the project's
+# ExportFileReader by GlobalPlatformApiDataGenerator, and are checked against those files by
+# GlobalPlatformApiExportFilesTest when they are installed locally.
+#
+# One table serves every version: between the versions nothing was removed and no token, flag or
+# descriptor changed (JCVM 3.1 §4.4), so each class and method carries the first version that has it.
+# Fields are not listed: all fields of the package are compile-time constants (token 0xFF), which
+# javac inlines. No other content of the export files is included.
+#
+# package <name> <AID> <version> ...                  (every version of the package, ascending)
+# class <token> <simple-name> <flags> <since> [supers=a,b] [interfaces=a,b]
+# method <token> <flags> <since> <name> <descriptor>
+
+package org/globalplatform A00000015100 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8
+class 0 Application 0x0E01 1.0 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.0 processData ([BSS)V
+class 1 CVM 0x0E01 1.0 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.0 isActive ()Z
+method 1 0x0401 1.0 isSubmitted ()Z
+method 2 0x0401 1.0 isVerified ()Z
+method 3 0x0401 1.0 isBlocked ()Z
+method 4 0x0401 1.0 getTriesRemaining ()B
+method 5 0x0401 1.0 update ([BSBB)Z
+method 6 0x0401 1.0 resetState ()Z
+method 7 0x0401 1.0 blockState ()Z
+method 8 0x0401 1.0 resetAndUnblockState ()Z
+method 9 0x0401 1.0 setTryLimit (B)Z
+method 10 0x0401 1.0 verify ([BSBB)S
+class 2 SecureChannel 0x0E01 1.0 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.0 processSecurity (Ljavacard/framework/APDU;)S
+method 1 0x0401 1.0 wrap ([BSS)S
+method 2 0x0401 1.0 unwrap ([BSS)S
+method 3 0x0401 1.0 decryptData ([BSS)S
+method 4 0x0401 1.0 encryptData ([BSS)S
+method 5 0x0401 1.0 resetSecurity ()V
+method 6 0x0401 1.0 getSecurityLevel ()B
+class 3 GPSystem 0x0001 1.0 supers=java/lang/Object
+method 0 0x0001 1.0 <init> ()V
+method 1 0x0009 1.0 getCardContentState ()B
+method 2 0x0009 1.0 getCardState ()B
+method 3 0x0009 1.0 getCVM (B)Lorg/globalplatform/CVM;
+method 4 0x0009 1.0 getSecureChannel ()Lorg/globalplatform/SecureChannel;
+method 5 0x0009 1.0 lockCard ()Z
+method 6 0x0009 1.0 terminateCard ()Z
+method 7 0x0009 1.0 setATRHistBytes ([BSB)Z
+method 8 0x0009 1.0 setCardContentState (B)Z
+method 9 0x0009 1.1 getRegistryEntry (Ljavacard/framework/AID;)Lorg/globalplatform/GPRegistryEntry;
+method 10 0x0009 1.1 getService (Ljavacard/framework/AID;S)Lorg/globalplatform/GlobalService;
+method 11 0x0009 1.7 getCardInfo ([BSS)S
+method 12 0x0009 1.7 getCardInfoLength (S)S
+method 0 0x0001 1.0 equals (Ljava/lang/Object;)Z
+class 4 GPRegistryEntry 0x0E01 1.1 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.1 deregisterService (S)V
+method 1 0x0401 1.1 getAID ()Ljavacard/framework/AID;
+method 2 0x0401 1.1 getPrivileges ([BS)S
+method 3 0x0401 1.1 getState ()B
+method 4 0x0401 1.1 isAssociated (Ljavacard/framework/AID;)Z
+method 5 0x0401 1.1 isPrivileged (B)Z
+method 6 0x0401 1.1 registerService (S)V
+method 7 0x0401 1.1 setState (B)Z
+class 5 GlobalService 0x0E01 1.1 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.1 getServiceInterface (Lorg/globalplatform/GPRegistryEntry;S[BSS)Ljavacard/framework/Shareable;
+class 6 SecureChannelx 0x0E01 1.1 supers=java/lang/Object interfaces=javacard/framework/Shareable,org/globalplatform/SecureChannel
+method 0 0x0401 1.1 processSecurity (Ljavacard/framework/APDU;)S
+method 1 0x0401 1.1 wrap ([BSS)S
+method 2 0x0401 1.1 unwrap ([BSS)S
+method 3 0x0401 1.1 decryptData ([BSS)S
+method 4 0x0401 1.1 encryptData ([BSS)S
+method 5 0x0401 1.1 resetSecurity ()V
+method 6 0x0401 1.1 getSecurityLevel ()B
+method 7 0x0401 1.1 setSecurityLevel (B)V
+class 7 Authority 0x0E01 1.2 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.2 init (B)V
+method 1 0x0401 1.2 sign ([BSS[BS)S
+method 2 0x0401 1.2 update ([BSS)V
+method 3 0x0401 1.2 recoverKey ([BSS[BS)S
+class 8 Personalization 0x0E01 1.2 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.2 processData ([BSS[BS)S
+class 9 HTTPAdministration 0x0E01 1.3 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.3 requestHTTPAdministrationSession ([BSS)V
+class 10 HTTPReportListener 0x0E01 1.3 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.3 httpAdministationSessionReport (S)V
+class 11 SecureChannelx2 0x0E01 1.4 supers=java/lang/Object interfaces=javacard/framework/Shareable,org/globalplatform/SecureChannel
+method 0 0x0401 1.4 processSecurity (Ljavacard/framework/APDU;)S
+method 1 0x0401 1.4 wrap ([BSS)S
+method 2 0x0401 1.4 unwrap ([BSS)S
+method 3 0x0401 1.4 decryptData ([BSS)S
+method 4 0x0401 1.4 encryptData ([BSS)S
+method 5 0x0401 1.4 resetSecurity ()V
+method 6 0x0401 1.4 getSecurityLevel ()B
+method 7 0x0401 1.4 processSecurity ([BSSS)S
+class 12 AuthoritySignature 0x0E01 1.7 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.7 init (B[BSS)V
+method 1 0x0401 1.7 sign ([BSS[BS)S
+method 2 0x0401 1.7 update ([BSS)V
+method 3 0x0401 1.7 getLength ()S
+class 13 AdminSessionListener 0x0E01 1.8 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.8 administrationSessionReport (S)V
+class 14 AdministrationSession 0x0E01 1.8 supers=java/lang/Object interfaces=javacard/framework/Shareable
+method 0 0x0401 1.8 requestAdministrationSession ([BSS)V

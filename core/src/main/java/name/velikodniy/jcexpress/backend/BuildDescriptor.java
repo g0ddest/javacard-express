@@ -23,16 +23,21 @@ import java.util.zip.ZipEntry;
  * those of the run ({@link AidScheme}). Its {@link #project()} gives the run's AID prefix
  * ({@link AidScheme#forProject(String)}).
  *
- * @param packageName     the package, e.g. {@code com.example.wallet}
- * @param packageAid      the package AID of the build
- * @param packageVersion  the package version {@code <major>.<minor>}
- * @param javaCardVersion the target platform of the build, e.g. {@code 3.0.5}
- * @param supportInt32    whether the build converted with int support
- * @param applets         the applet AIDs of the build, by class name
- * @param project         {@code groupId:artifactId} of the module that built the package
+ * @param packageName       the package, e.g. {@code com.example.wallet}
+ * @param packageAid        the package AID of the build
+ * @param packageVersion    the package version {@code <major>.<minor>}
+ * @param javaCardVersion   the target platform of the build, e.g. {@code 3.0.5}
+ * @param supportInt32      whether the build converted with int support
+ * @param applets           the applet AIDs of the build, by class name
+ * @param project           {@code groupId:artifactId} of the module that built the package
+ * @param globalPlatformApi the version of the GlobalPlatform Card API package {@code org.globalplatform} the build
+ *                          fixed for the CAP file's import (the plugin's {@code <globalPlatformApi>}), e.g.
+ *                          {@code 1.5}; empty when the build left the choice to the converter, which then imports
+ *                          the lowest version that has everything the package uses
  */
 public record BuildDescriptor(String packageName, AID packageAid, String packageVersion, String javaCardVersion,
-                              boolean supportInt32, Map<String, AID> applets, String project) {
+                              boolean supportInt32, Map<String, AID> applets, String project,
+                              Optional<String> globalPlatformApi) {
 
     /** Where the descriptors are in a classes directory or jar. */
     public static final String DIRECTORY = "META-INF/javacard/";
@@ -54,9 +59,28 @@ public record BuildDescriptor(String packageName, AID packageAid, String package
      * @param supportInt32    whether the build converted with int support
      * @param applets         the applet AIDs of the build
      * @param project         {@code groupId:artifactId}
+     * @param globalPlatformApi the fixed version of {@code org.globalplatform}, or empty
      */
     public BuildDescriptor {
         applets = Map.copyOf(applets);
+        globalPlatformApi = globalPlatformApi == null ? Optional.empty() : globalPlatformApi;
+    }
+
+    /**
+     * Creates the descriptor of a build that left the version of {@code org.globalplatform} to the converter.
+     *
+     * @param packageName     the package
+     * @param packageAid      the package AID of the build
+     * @param packageVersion  the package version
+     * @param javaCardVersion the target platform of the build
+     * @param supportInt32    whether the build converted with int support
+     * @param applets         the applet AIDs of the build
+     * @param project         {@code groupId:artifactId}
+     */
+    public BuildDescriptor(String packageName, AID packageAid, String packageVersion, String javaCardVersion,
+                           boolean supportInt32, Map<String, AID> applets, String project) {
+        this(packageName, packageAid, packageVersion, javaCardVersion, supportInt32, applets, project,
+                Optional.empty());
     }
 
     /**
@@ -152,11 +176,17 @@ public record BuildDescriptor(String packageName, AID packageAid, String package
             }
             return new BuildDescriptor(packageName, AID.fromHex(required(p, "packageAid")), version,
                     required(p, "javaCardVersion"), Boolean.parseBoolean(required(p, "supportInt32")), applets,
-                    required(p, "project"));
+                    required(p, "project"), optional(p, "globalPlatformApi"));
         } catch (IllegalArgumentException e) {
             throw new IllegalStateException("Invalid build descriptor " + source + ": " + e.getMessage()
                     + ". Rebuild the module (mvn process-classes or later).", e);
         }
+    }
+
+    /** A value the plugin writes only when the build configures it. */
+    private static Optional<String> optional(Properties p, String key) {
+        String value = p.getProperty(key);
+        return value == null || value.isBlank() ? Optional.empty() : Optional.of(value.strip());
     }
 
     private static String required(Properties p, String key) {

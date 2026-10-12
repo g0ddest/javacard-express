@@ -21,7 +21,9 @@ final class MissingClasses {
      */
     static String describe(String appletClass, Set<String> missing) {
         List<String> api = missing.stream().filter(MissingClasses::isJavaCardApi).toList();
-        List<String> library = missing.stream().filter(name -> !isJavaCardApi(name)).toList();
+        List<String> globalPlatform = missing.stream().filter(MissingClasses::isGlobalPlatformApi).toList();
+        List<String> library = missing.stream()
+                .filter(name -> !isJavaCardApi(name) && !isGlobalPlatformApi(name)).toList();
         StringBuilder text = new StringBuilder("Cannot install ").append(appletClass).append(':');
         if (!library.isEmpty()) {
             text.append(" the applet code needs ").append(String.join(", ", library))
@@ -36,10 +38,20 @@ final class MissingClasses {
                     .append(" of the Java Card API, which the simulator (jCardSim) does not implement; test this"
                             + " code on a card.");
         }
+        if (!globalPlatform.isEmpty()) {
+            text.append(" The applet code uses ").append(String.join(", ", globalPlatform))
+                    .append(" of the GlobalPlatform API, of which the simulator implements the package"
+                            + " org.globalplatform only; test this code on a card.");
+        }
         return text.append(" (jCardSim reported only a SystemException.)").toString();
     }
 
     private static boolean isJavaCardApi(String name) {
         return name.startsWith("javacard.") || name.startsWith("javacardx.");
+    }
+
+    /** The GlobalPlatform API packages (org.globalplatform.upgrade, .contactless and so on) are card platform too. */
+    private static boolean isGlobalPlatformApi(String name) {
+        return name.startsWith("org.globalplatform.");
     }
 }

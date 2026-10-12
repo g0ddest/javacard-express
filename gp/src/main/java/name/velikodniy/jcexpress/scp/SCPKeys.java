@@ -1,6 +1,7 @@
 package name.velikodniy.jcexpress.scp;
 
 import name.velikodniy.jcexpress.Hex;
+import name.velikodniy.jcexpress.SecurityDomainKeys;
 
 import java.util.Arrays;
 import java.util.Optional;
@@ -66,6 +67,19 @@ public final class SCPKeys {
      */
     public static SCPKeys of(byte[] enc, byte[] mac, byte[] dek) {
         return create(enc, mac, dek, null);
+    }
+
+    /**
+     * Creates the key set of the Security Domain of a test run, which a test of a
+     * {@link name.velikodniy.jcexpress.JavaCardTest} class declares as a parameter: the keys for a secure channel
+     * opened through an applet that uses {@code org.globalplatform.GPSystem.getSecureChannel()}, on any backend.
+     *
+     * @param keys the keys of the run's Security Domain
+     * @return a new key set
+     * @throws IllegalArgumentException if a key has an invalid length or the lengths differ
+     */
+    public static SCPKeys of(SecurityDomainKeys keys) {
+        return of(keys.enc(), keys.mac(), keys.dek());
     }
 
     /**

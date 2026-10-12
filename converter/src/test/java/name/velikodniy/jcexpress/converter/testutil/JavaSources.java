@@ -28,11 +28,25 @@ public final class JavaSources {
      * @throws AssertionError if the sources do not compile
      */
     public static Path compile(Path outDir, Map<String, String> sources) {
+        return compile(outDir, sources, "-g");
+    }
+
+    /**
+     * Compiles the given sources into {@code outDir} with a debug option of javac, e.g. {@code -g:none} for class
+     * files without a LineNumberTable.
+     *
+     * @param outDir  output directory for the class files
+     * @param sources source text keyed by binary class name (e.g. {@code "com.acme.App"})
+     * @param debug   the {@code -g} option
+     * @return {@code outDir}
+     * @throws AssertionError if the sources do not compile
+     */
+    public static Path compile(Path outDir, Map<String, String> sources, String debug) {
         JavaCompiler javac = ToolProvider.getSystemJavaCompiler();
         List<JavaFileObject> units = new ArrayList<>();
         sources.forEach((name, text) -> units.add(new Source(name, text)));
         var diagnostics = new DiagnosticCollector<JavaFileObject>();
-        List<String> options = List.of("-d", outDir.toString(), "-proc:none", "-g",
+        List<String> options = List.of("-d", outDir.toString(), "-proc:none", debug,
                 "-classpath", System.getProperty("java.class.path"));
         boolean ok = javac.getTask(null, null, diagnostics, options, null, units).call();
         if (!ok) {

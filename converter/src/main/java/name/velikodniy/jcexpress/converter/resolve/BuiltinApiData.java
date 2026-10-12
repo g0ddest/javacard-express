@@ -2,12 +2,6 @@ package name.velikodniy.jcexpress.converter.resolve;
 
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -69,15 +63,7 @@ final class BuiltinApiData {
      * @throws IllegalStateException if the resource is missing or malformed
      */
     static List<ApiPackage> load() {
-        try (InputStream in = BuiltinApiData.class.getResourceAsStream(RESOURCE)) {
-            if (in == null) {
-                throw new IllegalStateException("Missing converter resource " + RESOURCE);
-            }
-            var reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-            return new Parser().parse(reader.lines().toList());
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return new Parser().parse(ResourceLines.read(BuiltinApiData.class, RESOURCE));
     }
 
     /** Line parser; collects packages, classes and members as it goes. */

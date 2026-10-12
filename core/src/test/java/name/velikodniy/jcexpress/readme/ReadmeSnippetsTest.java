@@ -5,6 +5,7 @@ import javacard.framework.ISO7816;
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDULogEntry;
 import name.velikodniy.jcexpress.APDUResponse;
+import name.velikodniy.jcexpress.Bytes;
 import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.JavaCardExtension;
 import name.velikodniy.jcexpress.LogicalChannel;
@@ -19,8 +20,13 @@ import name.velikodniy.jcexpress.apdu.APDUBuilder;
 import name.velikodniy.jcexpress.apdu.APDUCodec;
 import name.velikodniy.jcexpress.apdu.APDUCommand;
 import name.velikodniy.jcexpress.apdu.APDUSequence;
+import name.velikodniy.jcexpress.embedded.EmbeddedSession;
+import name.velikodniy.jcexpress.embedded.gp.CardApplication;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
+import name.velikodniy.jcexpress.embedded.gp.SecurityDomain;
 import name.velikodniy.jcexpress.fakes.ContractCardTerminal;
 import name.velikodniy.jcexpress.fakes.Transcripts;
+import name.velikodniy.jcexpress.fakes.gp.CardStateApplet;
 import name.velikodniy.jcexpress.memory.MemoryInfo;
 import name.velikodniy.jcexpress.memory.MemoryProbeApplet;
 import name.velikodniy.jcexpress.pcsc.PcscSession;
@@ -30,6 +36,8 @@ import name.velikodniy.jcexpress.tlv.TLV;
 import name.velikodniy.jcexpress.tlv.TLVBuilder;
 import name.velikodniy.jcexpress.tlv.TLVList;
 import name.velikodniy.jcexpress.tlv.TLVParser;
+import org.globalplatform.GPRegistryEntry;
+import org.globalplatform.GPSystem;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -194,7 +202,7 @@ class ReadmeSnippetsTest {
         assertThat(response).dataAsString().isEqualTo("Hello");
         assertThat(response).dataAsHex().isEqualTo("48656C6C6F");
         assertThat(response).data().hasSize(5);
-        assertThat(response).u16(0).isEqualTo(0x4865);
+        assertThat(response).shortAt(0).isEqualTo(0x4865);
         assertThat(unknownIns).hasNoData();
 
         APDUResponse fci = new APDUResponse(Hex.decode("6F098407A0000000031010"), 0x9000);
@@ -217,6 +225,11 @@ class ReadmeSnippetsTest {
         assertThat(response.u8(0)).isEqualTo(0x48);
         assertThat(response.u16(0)).isEqualTo(0x4865);
         assertThat(response.s16(0)).isEqualTo(0x4865);
+        assertThat(response.shortAt(0)).isEqualTo((short) 0x4865);
+        assertThat(response.byteAt(0)).isEqualTo((byte) 0x48);
+        assertThat(new APDUResponse(Bytes.ofShort(100), 0x9000).dataAsShort()).isEqualTo((short) 100);
+        assertThat(new APDUResponse(Bytes.ofBoolean(true), 0x9000)).dataAsBoolean().isTrue();
+        assertThat(new APDUResponse(Bytes.ofShort(100), 0x9000)).dataAsShort().isEqualTo(100);
         assertThat(response.data(1, 3)).containsExactly(0x65, 0x6C);
         assertThat(response.requireSw(SW.NO_ERROR, 0x6310)).isSameAs(response);
         assertThatThrownBy(() -> card.send(0x80, 0x7E).requireSw(SW.NO_ERROR, 0x6310))
@@ -476,6 +489,33 @@ class ReadmeSnippetsTest {
     }
 
     /** The memory snippet against a card that reports memory (jCardSim does not, see embeddedBackendColumn). */
+    @Test
+    void globalPlatformApiOnTheSimulatedCard() {
+        AID aid = AID.fromHex("F000000002");
+        try (EmbeddedSession session = new EmbeddedSession()) {
+            session.install(CardStateApplet.class, aid);
+
+            GlobalPlatformCard gp = session.globalPlatform();
+
+            gp.cardState(GPSystem.CARD_SECURED);                             // what GPSystem.getCardState() answers
+            CardApplication application = gp.application(aid).orElseThrow();
+            application.grant(GPRegistryEntry.PRIVILEGE_CARD_LOCK);          // a privilege INSTALL would have carried
+            int state = application.state();                                 // 0x07 SELECTABLE, or what the applet set
+
+            SecurityDomain domain = gp.securityDomain();
+            byte[] key = domain.keyEnc();                                    // what a host authenticates with
+            domain.scp03Option(SecurityDomain.OPTION_R_MAC_R_ENCRYPTION);    // let hosts ask for R-MAC and R-ENCRYPTION
+            int level = domain.securityLevel();                              // Current Security Level of the open session
+            int failed = domain.failedAuthentications();
+
+            assertThat(session.send(0x80, 0x34)).isSuccess().dataEquals(0x0F);
+            assertThat(session.send(0x80, 0x36)).as("lockCard() with the privilege on a SECURED card").dataEquals(0x01);
+            assertThat(state).isEqualTo(0x07);
+            assertThat(Hex.encode(key)).isEqualTo("404142434445464748494A4B4C4D4E4F");
+            assertThat(level + failed).isZero();
+        }
+    }
+
     @Test
     void memoryProbing() {
         SmartCardSession card = new MemoryReportingCard();

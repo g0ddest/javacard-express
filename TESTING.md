@@ -8,7 +8,7 @@ and `TestingCookbookTest` checks that each Java block here is a contiguous part 
 when you paste it.
 
 To follow along, create a project like the [Quick start](README.md#quick-start)'s (its POM with your own
-`artifactId` and `javacard.packageAid`) and put `WalletApplet.java` into its own package, for example
+`artifactId` and `packageAid`) and put `WalletApplet.java` into its own package, for example
 `src/main/java/com/example/wallet` (change its `package` line): the plugin builds one CAP file, so one Java Card
 package, per module, and `WalletApplet` cannot go next to the Quick start's `HelloWorldApplet`. Put the test
 classes into the same package (`src/test/java/com/example/wallet`): they use the applet's package-private
@@ -30,6 +30,7 @@ a few lines.
 - [State across reset and deselect](#state-across-reset-and-deselect)
 - [PIN](#pin)
 - [TLV](#tlv)
+- [An applet that uses the GlobalPlatform API](#an-applet-that-uses-the-globalplatform-api)
 - [Watching the exchanges](#watching-the-exchanges)
 - [Timing a command](#timing-a-command)
 - [Debugging a 6F00](#debugging-a-6f00)
@@ -70,7 +71,7 @@ class WalletAppletTest {
     void startsEmpty(SmartCardSession card) {
         assertThat(card.send(0x80, 0x52, 0x00, 0x00, null, 2))     // GET BALANCE, Le = 2
                 .isSuccess()
-                .hasDataHex("0000");
+                .dataAsShort().isZero();                            // the balance, a short
     }
 }
 ```
@@ -79,6 +80,8 @@ The card arrives as a `SmartCardSession` parameter (of tests, lifecycle methods 
 applet is selected before the test. `JCXAssertions` extends AssertJ's `Assertions`, so its one static import
 serves the card assertions and `assertThat(int)`, `assertThat(byte[])` or `assertThat(String)` alike. The
 `send` arguments are CLA, INS, P1, P2, the data and Le; `SmartCardSession.NO_LE` sends no Le field.
+`dataAsShort()` reads the two data bytes as the `short` the applet wrote with `Util.setShort`; the readers of
+the other Java Card types are under [Response data](#response-data).
 
 ## Commands as constants
 
@@ -90,14 +93,17 @@ static final APDUCommand GET_INFO = APDUCommand.of(0x80, 0x54).le(256);
 
 @Test
 void credits(SmartCardSession card) {
-    assertThat(card.send(CREDIT.data(0x00, 0x64))).isSuccess();   // a new command; CREDIT stays as it is
-    assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+    assertThat(card.send(CREDIT.data(Bytes.ofShort(100)))).isSuccess();   // a new command; CREDIT stays as it is
+    assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(100);
 }
 ```
 
 `APDUCommand` is an immutable value: `p1`, `p2`, `p1p2`, `data`, `dataHex`, `le` and `noLe` return a new
-command. `le(256)` asks for up to 256 bytes (Le `00`). A command written as hex, from a trace or a specification,
-is sent as it is written, and the applet's own `byte` constants are accepted as header bytes:
+command. `Bytes.ofShort(100)` writes a `short` as the applet's `Util.getShort` reads it, two bytes, big-endian
+(`00 64`); `Bytes.ofByte`, `ofInt` (four bytes, as `JCint.getInt` reads them), `ofBoolean` (`01` or `00`) and
+`concat` write the other Java Card types and join fields, also for `card.send(0x80, 0x30, 0, 0, data)`.
+`le(256)` asks for up to 256 bytes (Le `00`). A command written as hex, from a trace or a specification, is sent
+as it is written, and the applet's own `byte` constants are accepted as header bytes:
 
 ```java
 assertThat(card.sendHex("80 30 00 00 02 0064")).isSuccess();   // CREDIT 100, as written in a trace
@@ -111,11 +117,11 @@ assertThat(card.send(WalletApplet.CLA_WALLET, WalletApplet.INS_GET_BALANCE, 0, 0
 
 ```java
 assertThat(card.send(GET_BALANCE)).isSuccess();                                   // 9000
-assertThat(card.send(DEBIT.data(0x00, 0x0A))).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
+assertThat(card.send(DEBIT.data(Bytes.ofShort(10)))).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
 assertThat(card.send(0x80, 0x7F)).hasStatusWord(ISO7816.SW_INS_NOT_SUPPORTED);   // the applet's constants
 assertThat(card.send(0x80, 0x7F)).isNotSuccess().hasSw1(0x6D);
-card.send(CREDIT.data(0x00, 0x64)).requireSuccess();         // an AssertionError unless the SW is 9000
-card.send(DEBIT.data(0x00, 0x0A)).requireSw(SW.NO_ERROR, SW.SECURITY_STATUS_NOT_SATISFIED);
+card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();         // an AssertionError unless the SW is 9000
+card.send(DEBIT.data(Bytes.ofShort(10))).requireSw(SW.NO_ERROR, SW.SECURITY_STATUS_NOT_SATISFIED);
 ```
 
 `SW` names the status words of ISO/IEC 7816-4 as the Java Card API does (`SW.SECURITY_STATUS_NOT_SATISFIED` is
@@ -140,20 +146,25 @@ R: 6982
 ## Response data
 
 ```java
-card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
 APDUResponse info = card.send(GET_INFO);                   // E1 07 81 02 <balance> 82 01 <tries>
-int balance = info.u16(4);                                 // two bytes, big-endian, unsigned: 100
+short balance = info.shortAt(4);                           // two bytes, big-endian, as Util.getShort: 100
 int tries = info.u8(8);                                    // one byte, unsigned: 3
 byte[] balanceTlv = info.data(2, 6);                       // bytes 2 to 5: 81 02 00 64
-assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(100);
 assertThat(card.send(GET_BALANCE)).hasDataHex("0064");
 assertThat(card.send(GET_BALANCE)).data().hasSize(2);
 ```
 
-`s16(offset)` reads a signed short, the value `Util.getShort` gives the applet. The readers return `int` on
-purpose: AssertJ's `assertThat((short) 100).isEqualTo(100)` fails, because it compares a `Short` with an
-`Integer`. `hasData(byte[])`, `hasNoData()`, `dataAsString()` and `dataAsHex()` cover the rest; a read beyond the
-data fails with the offset and the data.
+The readers have the names of the Java Card types. `dataAsByte()`, `dataAsShort()`, `dataAsInt()` and
+`dataAsBoolean()` read the whole data, which must be exactly one, two or four bytes (`00` or `01` for a
+boolean), big-endian as the applet writes them with `Util.setShort`; `byteAt`, `shortAt` and `intAt` read at an
+offset. They are signed, like the applet's values; `u8(offset)` and `u16(offset)` read the same bytes unsigned,
+and `s16(offset)` is `shortAt` as an `int`. In `assertThat(response)` every number is an integer assertion, so
+`dataAsShort().isEqualTo(100)` works with an int literal and with a `short` variable: AssertJ's own
+`assertThat((short) 100).isEqualTo(100)` fails, because it compares a `Short` with an `Integer`.
+`hasData(byte[])`, `hasNoData()`, `dataAsString()` and `dataAsHex()` cover the rest; a read the data cannot give
+fails with the data.
 
 An answer longer than one response arrives whole: when the applet answers `61XX` (more data), the card of a
 `@JavaCardTest` class fetches the rest with GET RESPONSE, and it sends a command answered `6CXX` again with the
@@ -191,7 +202,8 @@ void answers(APDUCommand command, APDUResponse expected, SmartCardSession card) 
 ```
 
 JUnit converts the columns with `APDUCommand.fromHex` and `APDUResponse.fromHex` (data, then SW1 SW2; spaces are
-ignored), no converter needed. Every invocation gets a fresh applet instance, like every test.
+ignored), no converter needed. Every invocation gets a fresh applet instance, like every test. `@ParameterizedTest`
+comes with `javacard-express-core`, like the rest of JUnit Jupiter's API.
 
 ## Install parameters
 
@@ -202,7 +214,7 @@ class FundedWalletTest {
 
     @Test
     void startsWithItsInstallParameter(SmartCardSession card) {
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);
     }
 }
 ```
@@ -236,9 +248,9 @@ class TwoWalletsTest {
 
     @Test
     void everyInstanceHasItsOwnBalance(SmartCardSession card) {
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);   // the first declared instance is selected
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);   // the first declared instance is selected
         card.select(card.aid("0102"));
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(200);
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(200);
     }
 }
 ```
@@ -259,7 +271,7 @@ class PaymentScenarioTest {
 
     @BeforeAll
     static void fund(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();      // the class's applet is selected already
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();      // the class's applet is selected already
     }
 
     @Test
@@ -271,8 +283,8 @@ class PaymentScenarioTest {
     @Test
     @Order(2)
     void debitsWithThePinOfTheFirstTest(SmartCardSession card) {
-        assertThat(card.send(DEBIT.data(0x00, 0x0A))).isSuccess();   // no SELECT in between: still verified
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(90);
+        assertThat(card.send(DEBIT.data(Bytes.ofShort(10)))).isSuccess();   // no SELECT in between: still verified
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(90);
     }
 }
 ```
@@ -292,12 +304,12 @@ another SELECT, `reset()`, `deselect()`, an install or a delete.
 @Test
 void theBalanceSurvivesAResetThePinValidationDoesNot(SmartCardSession card) {
     PinSession pin = card.pin().cla(0x80).padTo(8, 0xFF);
-    card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+    card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
     pin.verify(1, "1234").requireSuccess();
 
     card.reset();                                  // like pulling the card out: fields stay, nothing is selected
     card.select(WalletApplet.class);
-    assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);
+    assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);
     assertThat(pin.isVerified(1)).isFalse();       // the PIN's validation flag is cleared by a reset
 }
 
@@ -325,7 +337,7 @@ assertThat(pin.verify(1, "0000")).hasStatusWord(0x63C2);  // wrong PIN: 2 tries 
 assertThat(pin.retries(1)).hasValue(2);
 assertThat(pin.verify(1, "1234")).isSuccess();
 assertThat(pin.isVerified(1)).isTrue();
-assertThat(card.send(DEBIT.data(0x00, 0x00))).isSuccess();
+assertThat(card.send(DEBIT.data(Bytes.ofShort(0)))).isSuccess();
 ```
 
 `card.pin()` sends ISO/IEC 7816-4 VERIFY, CHANGE REFERENCE DATA and RESET RETRY COUNTER. By default it uses class
@@ -336,7 +348,7 @@ the card reports none; `isVerified(ref)` asks with an empty VERIFY.
 ## TLV
 
 ```java
-card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
 APDUResponse info = card.send(GET_INFO);
 assertThat(info).tlv().tag(0xE1).isConstructed().tag(0x81).hasValue("0064");
 TLV tries = info.tlv().at(0xE1, 0x82).orElseThrow();      // E1 > 82, or Optional.empty()
@@ -344,6 +356,191 @@ TLV tries = info.tlv().at(0xE1, 0x82).orElseThrow();      // E1 > 82, or Optiona
 
 `tlv()` parses the data as BER-TLV (ISO/IEC 7816-4 5.2.2); more in the
 [core README](core/README.md#tlv-parser).
+
+## An applet that uses the GlobalPlatform API
+
+An applet on a GlobalPlatform card can leave its secure channel to the card: `GPSystem.getSecureChannel()` returns
+the secure channel of the applet's Security Domain, which answers INITIALIZE UPDATE and EXTERNAL AUTHENTICATE, checks
+and decrypts the commands and protects the responses, with the keys of the Security Domain. The API is the package
+`org.globalplatform`, and a project needs nothing more for it than for `javacard.framework`: the stubs are in
+`javacard-express-api`, the converter has the package's linking data (no export file to find), and the simulated
+cards implement it.
+
+[`VaultApplet`](gp/src/test/java/name/velikodniy/jcexpress/gp/cookbook/VaultApplet.java) keeps a value that only an
+authenticated host may write (PUT `80 10`), returns it (GET `80 12`) and reports its life cycle state (STATE
+`80 14`):
+
+```java
+public void process(APDU apdu) {
+    if (selectingApplet()) {
+        return;
+    }
+    byte[] buffer = apdu.getBuffer();
+    SecureChannel channel = GPSystem.getSecureChannel();
+    byte ins = buffer[ISO7816.OFFSET_INS];
+    if (ins == INS_INITIALIZE_UPDATE || ins == INS_EXTERNAL_AUTHENTICATE) {
+        apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, channel.processSecurity(apdu));
+        return;
+    }
+    short data = receive(apdu, channel);
+    send(apdu, channel, execute(ins, buffer, data, channel));
+}
+
+/**
+ * Receives the data of a command that has some (PUT, and every command with secure messaging, which carries at
+ * least the MAC). A command with secure messaging, and every command of a session that requires C-MAC, goes
+ * through {@code unwrap}, which checks it and removes its protection; in such a session it refuses a command
+ * without protection.
+ *
+ * @return the length of the plain command data
+ */
+private short receive(APDU apdu, SecureChannel channel) {
+    byte[] buffer = apdu.getBuffer();
+    boolean secureMessaging = (buffer[ISO7816.OFFSET_CLA] & CLA_SECURE_MESSAGING) != 0;
+    short received = 0;
+    if (secureMessaging || buffer[ISO7816.OFFSET_INS] == INS_PUT) {
+        received = apdu.setIncomingAndReceive();
+    }
+    if (!secureMessaging && (channel.getSecurityLevel() & SecureChannel.C_MAC) == 0) {
+        return received;
+    }
+    short command = channel.unwrap(buffer, (short) 0, (short) (ISO7816.OFFSET_CDATA + received));
+    return (short) (command - ISO7816.OFFSET_CDATA);
+}
+
+/**
+ * Executes the applet's own command and writes its response data to the start of the buffer.
+ *
+ * @return the length of the response data
+ */
+private short execute(byte ins, byte[] buffer, short data, SecureChannel channel) {
+    switch (ins) {
+        case INS_PUT:
+            put(buffer, data, channel);
+            return 0;
+        case INS_GET:
+            return Util.arrayCopyNonAtomic(value, (short) 0, buffer, (short) 0, length);
+        case INS_STATE:
+            buffer[0] = GPSystem.getCardContentState();
+            return 1;
+        default:
+            ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+            return 0;
+    }
+}
+
+/** Stores the value; only an authenticated off-card entity may do that. */
+private void put(byte[] buffer, short data, SecureChannel channel) {
+    if ((channel.getSecurityLevel() & SecureChannel.AUTHENTICATED) == 0) {
+        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+    }
+    if (data > (short) value.length) {
+        ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+    }
+    Util.arrayCopy(buffer, ISO7816.OFFSET_CDATA, value, (short) 0, data);
+    length = data;
+    GPSystem.setCardContentState(STATE_FILLED);
+}
+
+/**
+ * Sends the response that starts at offset 0 of the APDU buffer. In a session with response protection the
+ * secure channel protects it first: {@code wrap} takes the response data followed by the status bytes and
+ * returns the length of what to send. Such a session protects every successful response, also one without data.
+ */
+private void send(APDU apdu, SecureChannel channel, short response) {
+    byte[] buffer = apdu.getBuffer();
+    short length = response;
+    if ((channel.getSecurityLevel() & SecureChannel.R_MAC) != 0) {
+        Util.setShort(buffer, response, ISO7816.SW_NO_ERROR);
+        length = channel.wrap(buffer, (short) 0, (short) (response + 2));
+    }
+    if (length > 0) {
+        apdu.setOutgoingAndSend((short) 0, length);
+    }
+}
+```
+
+The test opens the session with `GPSession`, the host side of the secure channel (module `javacard-express-gp`,
+which comes with `javacard-express-livecard`: the plugin's build extension and the applet parent put it on the test
+class path). Without `securityDomain(...)` it sends INITIALIZE UPDATE to the
+selected application, here the applet:
+
+```java
+@JavaCardTest
+@InstallApplet(VaultApplet.class)
+class VaultAppletTest {
+
+    static final byte[] VALUE = {0x0A, 0x0B, 0x0C, 0x0D};
+
+    @Test
+    void refusesTheValueOutsideASecureChannelSession(SmartCardSession card) {
+        assertThat(card.send(0x80, 0x10, 0, 0, VALUE)).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
+    }
+
+    @Test
+    void storesTheValueInASecureChannelSession(SmartCardSession card, SecurityDomainKeys keys) {
+        try (GPSession channel = GPSession.on(card).keys(SCPKeys.of(keys)).open()) {    // through the selected applet
+            assertThat(channel.send(0x80, 0x10, 0, 0, VALUE)).isSuccess();
+            assertThat(channel.send(0x80, 0x12, 0, 0, null, 256)).isSuccess().hasDataHex("0A 0B 0C 0D");
+            assertThat(channel.send(0x80, 0x14, 0, 0, null, 256)).isSuccess().hasDataHex("0F");
+        }
+    }
+```
+
+`SecurityDomainKeys` is the key set of the Security Domain of the run: the GlobalPlatform test key `404142...4F` on
+the simulated cards, the keys of the live-card settings on a card in a reader. So the class runs unchanged with
+`-Djcx.backend=simulated-gp` and `-Djcx.backend=livecard`. There the package is converted, loaded and installed
+through the Issuer Security Domain, and the APDU guard treats the INITIALIZE UPDATE and EXTERNAL AUTHENTICATE the
+test sends to the applet as what they are, an authentication of the card's key set: it verifies the card cryptogram
+itself before EXTERNAL AUTHENTICATE passes, so wrong keys cost no authentication try
+([why](LIVE_CARD_TESTING.md#why-wrong-keys-never-cost-an-authentication-try)).
+
+The CAP file imports the lowest version of `org.globalplatform` that has everything the applet uses: 1.0 for
+`VaultApplet`, the version of GlobalPlatform 2.1.1 cards, so every card with the package can load it. A type or
+method of a later version raises it (`Personalization` to 1.2, `GPSystem.getCardInfo` to 1.7; the stubs' Javadoc
+names the version of every member, and the build log the imported one), and a card with an older package refuses
+the CAP file when it is loaded. `<globalPlatformApi>` of the [plugin](maven-plugin/README.md#the-globalplatform-api)
+fixes a version: the build then fails when the applet uses something newer.
+
+The host chooses the security level of the session (`securityLevel(GP.SECURITY_C_MAC_C_ENC)` encrypts the command
+data as well), within what the Security Domain supports. Response protection needs a Security Domain with option
+`i` = `20` or `60`; the simulated cards model a Security Domain with `i` = `00`, like the card the toolkit was
+verified on. On the default backend a test can change that through the `GlobalPlatformCard` parameter, the
+GlobalPlatform side of the simulated card:
+
+```java
+@Test
+@EnabledOnBackend(Mode.EMBEDDED)
+void protectsItsResponsesWhenTheHostAsksForIt(SmartCardSession card, SecurityDomainKeys keys,
+                                              GlobalPlatformCard globalPlatform) {
+    globalPlatform.securityDomain().scp03Option(SecurityDomain.OPTION_R_MAC_R_ENCRYPTION);
+
+    try (GPSession channel = GPSession.on(card).keys(SCPKeys.of(keys))
+            .securityLevel(GP.SECURITY_C_MAC_C_ENC_R_MAC_R_ENC).open()) {
+        assertThat(channel.send(0x80, 0x10, 0, 0, VALUE)).isSuccess();
+        assertThat(channel.send(0x80, 0x12, 0, 0, null, 256)).isSuccess().hasDataHex("0A 0B 0C 0D");
+    }
+}
+```
+
+`GlobalPlatformCard` also shows what the applet did (`globalPlatform.application(card.aid(VaultApplet.class))` has
+its life cycle state and privileges), grants privileges and sets the life cycle state of the card, for the code
+paths behind `GPSystem.getCardState()`, `lockCard()` or a registry entry; `simulated-gp` provides it too. What
+applets tend to get wrong, and what these tests catch:
+
+- the commands of a session with C-MAC are all protected: a command without protection is refused with `6982`
+  and aborts the session, which then answers `6985` until the applet is selected again or calls `resetSecurity()`
+  (GlobalPlatform Amendment D 5.6); so `unwrap` belongs before every command of such a session, not only before
+  those with data to protect (`receive` above asks `getSecurityLevel()` for that);
+- `unwrap` takes the length of the whole command, header and data, and returns it; the APDU object keeps reporting
+  the protected length, so use the returned value;
+- in a session with response protection the host expects every successful response protected, also one without
+  data, so `wrap` belongs after every command of such a session (`send` above);
+- INS `50` and `82` in a proprietary class are the two commands of the handshake; an applet that uses them for its
+  own commands cannot be tested on the GlobalPlatform backends ([rules](README.md#on-the-globalplatform-backends)).
+
+What the simulated cards leave out of the API is listed under
+[What the simulators do not model](#what-the-simulators-do-not-model).
 
 ## Watching the exchanges
 
@@ -388,7 +585,7 @@ Inside a test, `card.history()` holds that test's exchanges, from its SELECT on:
 ```java
 @Test
 void historyHoldsTheExchangesOfThisTest(SmartCardSession card) {
-    card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+    card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
     assertThat(card.history().entries())                       // this test's exchanges: its SELECT, CREDIT
             .extracting(APDULogEntry::ins).containsExactly(0xA4, 0x30);
 }
@@ -399,7 +596,7 @@ void historyHoldsTheExchangesOfThisTest(SmartCardSession card) {
 ```java
 @Test
 void creditStaysWithinItsTimeBudget(SmartCardSession card) {
-    card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+    card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
     assertThat(card.history().last()).tookAtMost(Duration.ofMillis(200));   // the exchange just made
 }
 ```
@@ -507,8 +704,8 @@ class CreditTest {
 
     @Test
     void credits(SmartCardSession card) {
-        assertThat(card.send(CREDIT.data(0x00, 0x0A))).isSuccess();
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(10);
+        assertThat(card.send(CREDIT.data(Bytes.ofShort(10)))).isSuccess();
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(10);
     }
 }
 ```
@@ -530,8 +727,22 @@ converted and loaded the package. jCardSim differs from a card in a few places, 
   under the applet's own AID from the CAP file, so several instances, or an instance AID other than the applet's,
   need `register(bArray, (short) (bOffset + 1), bArray[bOffset])` (the GlobalPlatform backends note an applet that
   does not);
+- the command data is in the APDU buffer before the applet calls `apdu.setIncomingAndReceive()`; on a card it is
+  there only after that call (Java Card API, `APDU`), so an applet that reads it without the call passes here and
+  reads stale bytes on a card;
 - the time of an exchange ([Timing a command](#timing-a-command)) is jCardSim's in the test JVM, not a card's;
 - they run the class files, not the CAP file: what the converter wrote runs only on a real card.
+
+Of the GlobalPlatform API (`org.globalplatform`) the simulated cards implement the secure channel of the Security
+Domain as SCP03 with 8-byte challenges (`SecureChannel`, `SecureChannelx`, `SecureChannelx2`), the life cycle states
+of the applet and the card, the registry entry with privileges, `lockCard`, `terminateCard`, `setATRHistBytes`,
+`getCardInfo` and the registration and lookup of Global Services. They have no Global PIN (`getCVM` returns null
+unless an applet registered a CVM service), do not forward STORE DATA to `Application` or `Personalization`, have
+no SCP02 and no logical channels, keep selecting applets on a locked or terminated card (only the state value
+changes), and do not provide the other GlobalPlatform packages (`org.globalplatform.upgrade`, `contactless` and so
+on). Where the API defines an answer for "not available" the applet gets it (null from `getCVM`); a call the
+simulated card cannot serve fails with a message that names the method. The container backend has no
+`org.globalplatform` at all and refuses such an applet before it is installed.
 
 The simulated GlobalPlatform card adds a few of its own: it loads a CAP file for any Java Card version (a card
 refuses a newer one with `6438`), always has the `int` type, and runs test applets on the basic channel only. The
