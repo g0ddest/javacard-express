@@ -27,6 +27,8 @@
              report = run and log the result, strict = fail the IT on verifier errors, skip = do not run. -->
         <jcx.it.verifycap>report</jcx.it.verifycap>
         <jcx.oracle.sdk>${project.basedir}/../build/oracle-sdks/jc305u3_kit</jcx.oracle.sdk>
+        <!-- The build extension's entry point, compiled for Java 8 (see maven-compiler-plugin below) -->
+        <extension.entry>name/velikodniy/jcexpress/plugin/JavaCardSetup.java</extension.entry>
     </properties>
 
     <dependencies>
@@ -59,6 +61,13 @@
             <artifactId>javacard-express-converter</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- The javac check: the build extension puts it on the annotation processor path of applet projects
+             and passes it this goal's settings under the option names it declares -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-javac-plugin</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- JavaCard API stubs (needed for test applet compilation and installed for the ITs) -->
         <dependency>
@@ -68,12 +77,26 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Testing toolkit: installed for the README Quick Start IT, which runs a jCardSim test.
-             Declared here (without its dependencies, so that jCardSim cannot shadow the API stubs
-             the unit tests compile against) only to build it before this module in the reactor. -->
+        <!-- Testing toolkit: installed for the ITs that run a jCardSim test (the README Quick Start). The build
+             extension adds javacard-express-core and javacard-express-livecard to such projects, so the ITs need
+             this build's toolkit, never a published one. Declared here (without their dependencies, so that
+             jCardSim cannot shadow the API stubs the unit tests compile against) only to build them before this
+             module in the reactor. -->
         <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>javacard-express-core</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>javacard-express-livecard</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
             <exclusions>
@@ -100,11 +123,48 @@
     <build>
         <plugins>
             <plugin>
+                <!-- The build extension's entry point (JavaCardSetup) is compiled for Java 8: Maven reads the classes
+                     listed in META-INF/sisu/javax.inject.Named with a class scanner, the scanner of Maven 3.9.0 to
+                     3.9.9 skips class files newer than Java 11, and Maven 3.9 runs on JDK 8, which cannot load newer
+                     ones; either way without a word. The entry point stops a build on a JDK older than 25 with that
+                     reason. Everything else is Java 25. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <excludes>
+                                <exclude>${extension.entry}</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>compile-extension-entry</id>
+                        <phase>compile</phase>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                        <configuration>
+                            <release>8</release>
+                            <compilerArgs combine.self="override">
+                                <!-- javac 21+ warns that release 8 is obsolete; the old target is intentional -->
+                                <arg>-Xlint:-options</arg>
+                            </compilerArgs>
+                            <includes>
+                                <include>${extension.entry}</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-plugin-plugin</artifactId>
                 <configuration>
-                    <!-- Only stable Maven 3 APIs are used (AbstractMojo, MavenProject, MavenProjectHelper,
-                         JSR-330): do not demand the maven-plugin-api version the plugin is compiled with. -->
+                    <!-- Stable Maven 3 APIs: AbstractMojo, MavenProject, MavenProjectHelper and JSR-330 for the goal,
+                         and for the build extension maven-core's AbstractMavenLifecycleParticipant and the project
+                         model it adds to. Do not demand the maven-plugin-api version the plugin is compiled with. -->
                     <requiredMavenVersion>3.9.0</requiredMavenVersion>
                 </configuration>
             </plugin>
@@ -123,6 +183,11 @@
                     <extraArtifacts>
                         <extraArtifact>${project.groupId}:javacard-express-api:${project.version}:jar</extraArtifact>
                         <extraArtifact>${project.groupId}:javacard-express-core:${project.version}:jar</extraArtifact>
+                        <!-- with its dependencies (javacard-express-gp ...), from this reactor -->
+                        <extraArtifact>${project.groupId}:javacard-express-livecard:${project.version}:jar</extraArtifact>
+                        <!-- Surefire runs the JUnit 4 tests of extension-junit4-parent through the vintage engine: resolved
+                             here, so that a build without network finds it once the local repository has it -->
+                        <extraArtifact>org.junit.vintage:junit-vintage-engine:${junit.version}:jar</extraArtifact>
                     </extraArtifacts>
                     <postBuildHookScript>verify</postBuildHookScript>
                     <addTestClassPath>true</addTestClassPath>

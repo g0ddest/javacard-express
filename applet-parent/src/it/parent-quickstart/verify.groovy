@@ -21,6 +21,9 @@ new ZipFile(cap).withCloseable { zip ->
 }
 def log = new File(basedir, 'build.log').text
 assert log.contains('javacard-express-maven-plugin') || log.contains('javacard-express:') : 'the plugin did not run'
+// the parent manages the plugin as a build extension: everything else is written out in the parent, so the extension
+// only added the javac check
+assert log.contains('set up com.example:hello-applet: the javac check of the Java Card subset in the main compilation')
 assert !log.contains('Internal reflection error')
 
 // The second build ran the same test class on the simulated GlobalPlatform card: the package was converted with

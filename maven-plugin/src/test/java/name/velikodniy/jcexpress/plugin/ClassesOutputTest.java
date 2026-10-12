@@ -29,6 +29,16 @@ class ClassesOutputTest {
     }
 
     @Test
+    void fixedGlobalPlatformApiVersionIsRecordedAndNothingWhenTheConverterChooses() throws Exception {
+        String chosen = descriptor("com.example.wallet", "com.example.wallet.Applet").text();
+        String fixed = descriptor("com.example.wallet", "com.example.wallet.Applet", "1.5").text();
+
+        assertThat(chosen).doesNotContain("globalPlatformApi");
+        assertThat(load(fixed).getProperty("globalPlatformApi")).isEqualTo("1.5");
+        assertThat(fixed.replace("globalPlatformApi=1.5\n", "")).isEqualTo(chosen);
+    }
+
+    @Test
     void theCapFileIsWhereTheExportFileLookupLooksForTheExportFile() {
         assertThat(ClassesOutput.resource("com.example.wallet", "exp"))
                 .isEqualTo(ExportFileLookup.location("com.example.wallet"));
@@ -38,7 +48,13 @@ class ClassesOutputTest {
     }
 
     private static ClassesOutput.Descriptor descriptor(String pkg, String applet) throws Exception {
-        return new ClassesOutput.Descriptor(pkg, Aid.parse("packageAid", "A00000006212"), "1.0", "3.0.4", false, false,
+        return descriptor(pkg, applet, null);
+    }
+
+    private static ClassesOutput.Descriptor descriptor(String pkg, String applet, String globalPlatformApi)
+            throws Exception {
+        return new ClassesOutput.Descriptor(pkg, Aid.parse("packageAid", "A00000006212"), "1.0", "3.0.4", false,
+                globalPlatformApi, false,
                 List.of(new AppletAids.Assigned(applet, Aid.parse("aid", "A0000000621201"), true)),
                 "com.example:wallet", null);
     }

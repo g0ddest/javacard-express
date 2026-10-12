@@ -75,13 +75,16 @@ class ReadmeVersionTest {
         }
     }
 
-    /** Tests run on JDK 25 with the toolkit (Java 25 class files); applets stay at Java 8. */
+    /**
+     * Tests run on JDK 25 with the toolkit (Java 25 class files); applets stay at Java 8: what the build extension
+     * sets, the explicit POM writes out.
+     */
     @Test
-    void quickStartCompilesTestsForJava25AndAppletsForJava8() throws IOException {
-        String pom = ReadmeQuickStartTest.quickStartPom(Files.readString(ROOT.resolve("maven-plugin/README.md")));
+    void theExplicitPomCompilesTestsForJava25AndAppletsForJava8AsTheExtensionDoes() throws IOException {
+        String pom = ReadmeQuickStartTest.explicitPom(Files.readString(ROOT.resolve("maven-plugin/README.md")));
 
-        assertThat(pom).contains("<maven.compiler.release>8</maven.compiler.release>")
-                .contains("<maven.compiler.testRelease>25</maven.compiler.testRelease>");
+        assertThat(pom).contains("<maven.compiler.release>" + CompilerSetup.APPLET_RELEASE + "</maven.compiler.release>")
+                .contains("<maven.compiler.testRelease>" + CompilerSetup.TEST_RELEASE + "</maven.compiler.testRelease>");
     }
 
     /**

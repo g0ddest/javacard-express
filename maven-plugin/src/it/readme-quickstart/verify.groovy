@@ -1,9 +1,20 @@
 import name.velikodniy.jcexpress.plugin.testing.CapFile
 import name.velikodniy.jcexpress.plugin.testing.ItChecks
 
-// README Quick Start: `mvn package` must run the plugin and produce the CAP file, and run the applet
-// test on jCardSim (recommended class path: javacard-express-core before the API stubs, stubs
-// excluded from the surefire runtime).
+// README Quick Start: a POM with coordinates and the plugin as a build extension. `mvn package` must run the
+// plugin and produce the CAP file, and run the applet test on jCardSim: the extension added the dependencies
+// (javacard-express-core before the API stubs, stubs excluded from the Surefire runtime), the Java releases and the
+// javac check, and said so in one line.
+ItChecks.assertLogContains(basedir, 'JavaCard Express ' + projectVersion + ' set up com.example:hello-applet:',
+        'the build goal in process-classes', 'dependencies javacard-express-core (test), javacard-express-livecard'
+        + ' (test), javacard-express-api (provided)', 'javacard-express-api off the test class path of'
+        + ' maven-surefire-plugin', 'applet code for Java 8, tests for Java 25',
+        'the javac check of the Java Card subset in the main compilation')
+ItChecks.assertLogLacks(basedir, 'File encoding has not been set', '<extensions>true</extensions>, this plugin')
+// the applet's class file is a Java 8 one, the test's a Java 25 one (major versions 52 and 69)
+def major = { String path -> new File(basedir, path).withDataInputStream { it.skipBytes(6); it.readUnsignedShort() } }
+assert major('target/classes/com/example/hello/HelloWorldApplet.class') == 52
+assert major('target/test-classes/com/example/hello/HelloWorldAppletTest.class') == 69
 def report = new File(basedir, 'target/surefire-reports/TEST-com.example.hello.HelloWorldAppletTest.xml')
 assert report.isFile() : 'the README test did not run'
 def suite = (report.text =~ /<testsuite\b[^>]*>/)[0]

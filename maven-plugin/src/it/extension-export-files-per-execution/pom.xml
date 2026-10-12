@@ -1,0 +1,48 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>two-targets</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>name.velikodniy</groupId>
+                <artifactId>javacard-express-maven-plugin</artifactId>
+                <version>@project.version@</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <packageAid>A00000006273</packageAid>
+                </configuration>
+                <executions>
+                    <!-- One CAP file per target, each with the export file of org.globalplatform that target's cards
+                         have (written by prebuild.groovy) -->
+                    <execution>
+                        <id>jc304</id>
+                        <goals><goal>build</goal></goals>
+                        <configuration>
+                            <javaCardVersion>3.0.4</javaCardVersion>
+                            <classifier>jc304</classifier>
+                            <importExportFiles>
+                                <importExportFile>${project.basedir}/gp-1.5/globalplatform.exp</importExportFile>
+                            </importExportFiles>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>jc305</id>
+                        <goals><goal>build</goal></goals>
+                        <configuration>
+                            <javaCardVersion>3.0.5</javaCardVersion>
+                            <classifier>jc305</classifier>
+                            <importExportFiles>
+                                <importExportFile>${project.basedir}/gp-1.6/globalplatform.exp</importExportFile>
+                            </importExportFiles>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

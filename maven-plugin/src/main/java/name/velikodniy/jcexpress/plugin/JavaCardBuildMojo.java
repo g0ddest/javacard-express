@@ -4,6 +4,7 @@ import name.velikodniy.jcexpress.converter.Converter;
 import name.velikodniy.jcexpress.converter.ConverterException;
 import name.velikodniy.jcexpress.converter.ConverterResult;
 import name.velikodniy.jcexpress.converter.JavaCardVersion;
+import name.velikodniy.jcexpress.javac.CheckOptions;
 import org.apache.maven.artifact.DependencyResolutionRequiredException;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecution;
@@ -125,7 +126,7 @@ public class JavaCardBuildMojo extends AbstractMojo {
      * &sect;4.1.2). May be omitted when all classes are in one package; with classes in several
      * packages the build fails unless this names one of them.
      */
-    @Parameter(property = "javacard.packageName")
+    @Parameter(property = CheckOptions.PACKAGE_NAME)
     private String packageName;
 
     /**
@@ -145,7 +146,7 @@ public class JavaCardBuildMojo extends AbstractMojo {
     private List<AppletConfig> applets;
 
     /** Enable 32-bit integer support (ACC_INT flag of the Header component, JCVM 3.1 &sect;6.4). */
-    @Parameter(property = "javacard.supportInt32", defaultValue = "false")
+    @Parameter(property = CheckOptions.SUPPORT_INT32, defaultValue = CheckOptions.DEFAULT_SUPPORT_INT32)
     private boolean supportInt32;
 
     /**
@@ -175,13 +176,27 @@ public class JavaCardBuildMojo extends AbstractMojo {
      * any other value fails the build. The old element name {@code <javaCardVersionStr>} is
      * accepted as an alias.
      */
-    @Parameter(property = "javacard.version", alias = "javaCardVersionStr", defaultValue = "3.0.5")
+    @Parameter(property = CheckOptions.VERSION, alias = BuildSettings.VERSION_ALIAS,
+            defaultValue = CheckOptions.DEFAULT_VERSION)
     private String javaCardVersion;
+
+    /**
+     * Version of the GlobalPlatform Card API package {@code org.globalplatform} that the CAP file
+     * imports, e.g. {@code 1.5}; the converter has the linking data of the versions 1.0 to 1.8
+     * built in. A card loads the CAP file only if it holds the package in this version or a later
+     * one (JCVM 3.1 &sect;4.5.2). When omitted, the lowest version that has everything the
+     * converted package uses is imported. An export file of the package given with
+     * {@code <importExportFiles>} or {@code <exportPath>} takes precedence and must have the same
+     * version; one inside a dependency jar is only used when this parameter is omitted.
+     */
+    @Parameter(property = CheckOptions.GLOBAL_PLATFORM_API)
+    private String globalPlatformApi;
 
     /**
      * Export files ({@code .exp}) of imported packages, one by one. Export files are also taken
      * from dependencies of type {@code exp}, from {@code <exportPath>}, and from dependency jars
      * that contain them at {@code <package directory>/javacard/<name>.exp} (JCVM 3.1 &sect;5.2).
+     * The Java Card API and {@code org.globalplatform} need none: the converter has their data.
      */
     @Parameter
     private List<File> importExportFiles;
@@ -190,7 +205,7 @@ public class JavaCardBuildMojo extends AbstractMojo {
      * Directories and jars searched for the export files of imported packages, each at
      * {@code <package directory>/javacard/<last package name component>.exp} (JCVM 3.1 &sect;5.1,
      * &sect;5.2), e.g. the {@code api_export_files} directory of a Java Card development kit or a
-     * directory of GlobalPlatform export files.
+     * directory with the export files of a card vendor's packages.
      */
     @Parameter
     private List<File> exportPath;
@@ -206,9 +221,27 @@ public class JavaCardBuildMojo extends AbstractMojo {
     @Parameter(property = "javacard.classesOutput", defaultValue = "true")
     private boolean classesOutput;
 
-    /** Skip the goal. */
+    /** Skip the goal, and with it the javac check the build extension adds for it. */
     @Parameter(property = "javacard.skip", defaultValue = "false")
     private boolean skip;
+
+    /**
+     * Whether the plugin, declared with {@code <extensions>true</extensions>}, sets the project up: it adds what the
+     * project does not configure itself (the binding of this goal, the toolkit's dependencies, the API stubs kept off
+     * the test class path, Java 8 for the applet code and Java 25 for the tests, the javac check). {@code false}
+     * turns that off, and the hint this goal logs when the plugin is not a build extension.
+     */
+    @Parameter(property = BuildSettings.SETUP_PROPERTY, defaultValue = BuildSettings.DEFAULT_SETUP)
+    private boolean setup;
+
+    /**
+     * Whether the build extension adds the javac check: code outside the Java Card subset and API the target platform
+     * does not have become compile errors at their source lines, with this goal's settings. {@code false} turns only
+     * the check off; {@code skip} turns it off too, and the extension leaves it out where it would displace the
+     * project's own annotation processors or where another javac compiles.
+     */
+    @Parameter(property = CheckOptions.CHECK, defaultValue = BuildSettings.DEFAULT_CHECK)
+    private boolean check;
 
     /**
      * Fail the build when the project's {@code javacard-express-api} or {@code javacard-express-core}
@@ -250,6 +283,7 @@ public class JavaCardBuildMojo extends AbstractMojo {
             return;
         }
         Invocation invocation = Invocation.of(mojoExecution);
+        SetupHint.log(project, setup, check, getLog());
         if (checkVersions) {
             ToolkitVersions.check(project.getDependencies(), invocation.pluginVersion());
         }
@@ -282,7 +316,8 @@ public class JavaCardBuildMojo extends AbstractMojo {
             throws MojoExecutionException, MojoFailureException {
         String pkgName = new PackageSelection(index, classesDir).select(packageName, getLog());
         getLog().info("Package: " + pkgName);
-        Converter.Builder builder = converter(classesDir, pkgName);
+        GlobalPlatformApiSetting gpApi = GlobalPlatformApiSetting.parse(globalPlatformApi);
+        Converter.Builder builder = converter(classesDir, pkgName, gpApi);
         Aid pkgAid = resolvePackageAid(pkgName);
         builder.packageAid(pkgAid.bytes());
         List<AppletAids.Assigned> assigned = registerApplets(builder, index, pkgName, pkgAid);
@@ -292,27 +327,29 @@ public class JavaCardBuildMojo extends AbstractMojo {
         builder.generateExport(export);
         BuildOutputs outputs = BuildOutputs.of(outputDirectory.toPath(), finalName, classifier);
         OutputClaims.claim(project, invocation, outputs.capFile(), attach, outputs.classifier());
-        new ExportFileLookup(outputs.workDirectory(), getLog())
+        new ExportFileLookup(outputs.workDirectory(), getLog(), gpApi.packagesNotSearchedOnTheClassPath())
                 .collect(importExportFiles, project.getArtifacts(), exportPath, classPath,
                         importedPackages(index, pkgName))
                 .forEach(builder::importExportFile);
         ConverterResult result = convert(builder, index, pkgName);
+        gpApi.describe(result).ifPresent(getLog()::info);
         outputs.write(result, export, getLog());
         if (attach) {
             outputs.attach(project, projectHelper, export);
         }
         if (classesOutput) {
             writeIntoClasses(classesDir, invocation, result, descriptor(pkgName, pkgAid, export, assigned,
-                    invocation));
+                    invocation, gpApi));
         }
     }
 
     /** What the build descriptor in the classes directory says about this build. */
     private ClassesOutput.Descriptor descriptor(String pkgName, Aid pkgAid, boolean export,
-                                                List<AppletAids.Assigned> assigned, Invocation invocation)
-            throws MojoExecutionException {
+                                                List<AppletAids.Assigned> assigned, Invocation invocation,
+                                                GlobalPlatformApiSetting gpApi) throws MojoExecutionException {
         return new ClassesOutput.Descriptor(pkgName, pkgAid, PackageVersion.parse(packageVersion).toString(),
-                JavaCardVersions.display(JavaCardVersions.parse(javaCardVersion)), supportInt32, export, assigned,
+                JavaCardVersions.display(JavaCardVersions.parse(javaCardVersion)), supportInt32,
+                gpApi.version().orElse(null), export, assigned,
                 project.getGroupId() + ":" + project.getArtifactId(), invocation.pluginVersion());
     }
 
@@ -329,7 +366,8 @@ public class JavaCardBuildMojo extends AbstractMojo {
 
     /** The converter with the package and target platform settings. */
     @SuppressWarnings("deprecation") // oracleCompatibility is passed on while the parameter exists
-    private Converter.Builder converter(Path classesDir, String pkgName) throws MojoExecutionException {
+    private Converter.Builder converter(Path classesDir, String pkgName, GlobalPlatformApiSetting gpApi)
+            throws MojoExecutionException {
         PackageVersion version = PackageVersion.parse(packageVersion);
         JavaCardVersion jcVersion = JavaCardVersions.parse(javaCardVersion);
         getLog().info("Target: Java Card " + JavaCardVersions.display(jcVersion) + " (CAP format "
@@ -341,6 +379,7 @@ public class JavaCardBuildMojo extends AbstractMojo {
                 .packageVersion(version.major(), version.minor())
                 .supportInt32(supportInt32)
                 .javaCardVersion(jcVersion);
+        gpApi.applyTo(builder);
         if (oracleCompatibility) {
             getLog().warn("<oracleCompatibility> is deprecated and will be removed: the Class component is"
                     + " written as JCVM 3.1 §6.9 specifies. Remove the parameter from the configuration.");

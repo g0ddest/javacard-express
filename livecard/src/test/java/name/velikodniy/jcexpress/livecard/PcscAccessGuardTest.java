@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Keeps physical readers behind two doors in the whole build. The compiled classes of every module listed in the
- * root POM ({@code <module>/target/classes} and {@code <module>/target/test-classes}) are read, and every call and
- * method reference to these entry points is checked (a lambda body counts for its enclosing method, a nested
- * class for its top-level class):
+ * root POM that is built in this run ({@code <module>/target/classes} and {@code <module>/target/test-classes}) are
+ * read, and every call and method reference to these entry points is checked (a lambda body counts for its enclosing
+ * method, a nested class for its top-level class):
  * <ul>
  *   <li><b>a physical reader</b>: {@code javax.smartcardio.TerminalFactory}, and the {@code PcscSession.open}
  *       overloads that look up readers through it ({@code open()}, {@code open(Options)}, {@code open(String)},
@@ -49,9 +49,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       class.</li>
  * </ul>
  * <p>The overloads {@code PcscSession.open(CardTerminal, ...)} and {@code open(CardTerminals, ...)} take the
- * reader from the caller (fakes, simulated readers) and are not restricted. A module that is not built in this
- * run has no class directories: it is named in the output, and core, gp and livecard must be there. Tests against
- * a real card belong in this module ({@code @LiveCardTest}, run only by {@code ./mvnw -Plivecard verify -pl livecard -am}).</p>
+ * reader from the caller (fakes, simulated readers) and are not restricted. The modules this one depends on are
+ * always built before it, also with {@code -am}: their classes and this module's must be there, or the test fails.
+ * Another module that is not built in this run has no class directories and is named in the output. The Maven plugin
+ * is built after this module (its integration tests need it), so it scans itself and the javac check
+ * ({@code NoCardAccessInBuildToolsTest} in maven-plugin). Tests against a real card belong in this module
+ * ({@code @LiveCardTest}, run only by {@code ./mvnw -Plivecard verify -pl livecard -am}).</p>
  */
 class PcscAccessGuardTest {
 
@@ -159,7 +162,12 @@ class PcscAccessGuardTest {
 
     private static final String ENABLED = LiveCardExtension.ENABLED_PARAMETER;
     private static final String CONNECTOR = LiveCardExtension.CONNECTOR_PARAMETER;
-    private static final Set<String> LIVE_MODE_PROPERTIES = Set.of(ENABLED, LiveCardConfig.ALLOW_CI_PROPERTY);
+    /** The properties that switch live-card mode on: the opt-in, the CI override, and the backend setting. */
+    private static final Set<String> LIVE_MODE_PROPERTIES = Set.of(ENABLED, LiveCardConfig.ALLOW_CI_PROPERTY,
+            ConfigSources.BACKEND_PROPERTY);
+    /** Modules built after this one, which scan themselves. */
+    private static final String SCANNED_ELSEWHERE = "maven-plugin (built after livecard) scans itself and the javac"
+            + " check: NoCardAccessInBuildToolsTest";
     private static final Set<String> PROPERTY_SETTERS = Set.of("java/lang/System.setProperty",
             "java/lang/System.setProperties", "java/lang/System.getProperties", "java/util/Properties.setProperty",
             "java/util/Properties.put", "java/util/Hashtable.put");
@@ -191,18 +199,31 @@ class PcscAccessGuardTest {
             }
         }
         System.out.println("PcscAccessGuardTest: scanned " + scanned.stream().map(ClassDirectory::name).toList()
-                + "; not built in this run, so not scanned: " + (notBuilt.isEmpty() ? "none" : notBuilt));
+                + "; not built in this run, so not scanned: " + (notBuilt.isEmpty() ? "none" : notBuilt) + "; "
+                + SCANNED_ELSEWHERE);
     }
 
+    /**
+     * The modules this one depends on, and this one, are built in every run that runs this test: a missing one would
+     * be a module the scan silently missed. Other modules are named when they are not built in this run.
+     */
     @Test
-    void coreGpAndLivecardAreScannedAndModulesNotBuiltAreNamed(TestReporter reporter) {
+    void theModulesLivecardBuildsOnAndLivecardAreScannedAndModulesNotBuiltAreNamed(TestReporter reporter)
+            throws Exception {
         reporter.publishEntry("not built in this run, so not scanned", notBuilt.isEmpty() ? "none"
                 : String.join(", ", notBuilt));
+        reporter.publishEntry("scanned elsewhere", SCANNED_ELSEWHERE);
+        List<String> required = new ArrayList<>();
+        for (String module : ProjectRoot.upstreamModules(ProjectRoot.find(), "livecard")) {
+            required.addAll(List.of(module + "/main", module + "/test"));
+        }
 
+        assertThat(required).as("livecard's modules (read from its POM)").contains("core/main", "gp/main",
+                "converter/main", "javacard-api/main");
         assertThat(scanned).extracting(ClassDirectory::name)
                 .as("compiled classes of the build (build them in the same run: ./mvnw verify -pl livecard -am);"
                         + " not built: %s", notBuilt)
-                .contains("core/main", "core/test", "gp/main", "gp/test", "livecard/main", "livecard/test");
+                .containsAll(required).contains("livecard/main", "livecard/test");
     }
 
     @Test
@@ -246,10 +267,10 @@ class PcscAccessGuardTest {
     }
 
     /**
-     * Live mode is switched on only for a run, by the JVM system property {@code jcx.livecard.enabled} (given on the
-     * command line; -Plivecard sets it): no class of the build, main or test, sets it or
-     * {@code jcx.livecard.allowCi} as a system property, where PcscConnector's check of the JVM's own settings would
-     * see it.
+     * Live mode is switched on only for a run, by the JVM system properties {@code jcx.livecard.enabled} and
+     * {@code jcx.backend} (given on the command line; -Plivecard sets them): no class of the build, main or test, sets
+     * them or {@code jcx.livecard.allowCi} as a system property, where PcscConnector's check of the JVM's own settings
+     * and the backend choice of {@code @JavaCardTest} would see it.
      */
     @Test
     void noCodeSetsTheLiveModeSystemProperties() {

@@ -47,12 +47,18 @@
         <!--
             JUnit Jupiter API and AssertJ are part of the public API (JavaCardExtension, JCXAssertions) and are
             compile-scoped so that they reach consumers transitively: a test project that declares only
-            javacard-express-core (scope test) compiles the README example. Maven Surefire adds the matching
-            junit-jupiter-engine automatically when only the API is on the test classpath.
+            javacard-express-core (scope test) compiles the README example. So are Jupiter's parameterized tests,
+            which the testing cookbook uses: the Maven plugin's build extension gives a project only this
+            dependency for its tests. Maven Surefire adds the matching junit-jupiter-engine automatically when only
+            the API is on the test classpath.
         -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
         </dependency>
         <dependency>
             <groupId>org.assertj</groupId>
