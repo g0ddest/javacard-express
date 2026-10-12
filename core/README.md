@@ -3,7 +3,7 @@
 [![Maven Central](https://img.shields.io/maven-central/v/name.velikodniy/javacard-express-core)](https://search.maven.org/artifact/name.velikodniy/javacard-express-core)
 [![javadoc](https://javadoc.io/badge2/name.velikodniy/javacard-express-core/javadoc.svg)](https://javadoc.io/doc/name.velikodniy/javacard-express-core)
 
-Core module — provides the `SmartCardSession` interface, the embedded jCardSim backend, a PC/SC backend for real cards, the JUnit 5 extension, APDU builder/codec/sequence and command values (`APDUCommand`), status word names (`SW`), BER-TLV parser with path navigation, fluent AssertJ assertions, PIN helpers, logical channels, APDU logging, memory probing and well-known AIDs.
+Core module — provides the `SmartCardSession` interface, the embedded jCardSim backend, a PC/SC backend for real cards, the JUnit 5 extension, APDU builder/codec/sequence and command values (`APDUCommand`), the values of the Java Card types in responses and commands (`dataAsShort()`, `Bytes`), status word names (`SW`), BER-TLV parser with path navigation, fluent AssertJ assertions, PIN helpers, logical channels, APDU logging with the time of every exchange, memory probing, well-known AIDs, and the GlobalPlatform Card API (`org.globalplatform`) on the simulated cards.
 
 Recipes for everyday applet tests: the [testing cookbook](../TESTING.md).
 
@@ -13,12 +13,12 @@ Recipes for everyday applet tests: the [testing cookbook](../TESTING.md).
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-core</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
 </dependency>
 ```
 
-This one dependency is enough to write tests: it brings jCardSim, the JUnit Jupiter API and AssertJ. Maven Surefire 3.x adds the matching JUnit Jupiter engine automatically; with other runners add `org.junit.jupiter:junit-jupiter-engine` (test scope).
+This one dependency is enough to write tests: it brings jCardSim, the JUnit Jupiter API (with `@ParameterizedTest`) and AssertJ. Maven Surefire 3.x adds the matching JUnit Jupiter engine automatically; with other runners add `org.junit.jupiter:junit-jupiter-engine` (test scope). The Maven plugin declared as a build extension, and the applet parent, add it for you.
 
 ## Table of Contents
 
@@ -46,6 +46,7 @@ This one dependency is enough to write tests: it brings jCardSim, the JUnit Jupi
 - [Memory Probing](#memory-probing)
 - [AID Utilities](#aid-utilities)
   - [Well-Known AIDs](#well-known-aids)
+- [GlobalPlatform API on the Simulated Card](#globalplatform-api-on-the-simulated-card)
 - [Low-level: Sessions without @JavaCardTest](#low-level-sessions-without-javacardtest)
   - [Complete Test Lifecycle](#complete-test-lifecycle)
 - [See Also](#see-also)
@@ -150,8 +151,8 @@ A `@SmartCard SmartCardSession` field of a `@JavaCardTest` class receives the sa
 |---|---|---|
 | `embedded` (default) | jCardSim in the test JVM; every test class run gets its own simulator, which loads the applet classes itself | this module |
 | `container` | planned: the container protocol cannot delete applets yet, which per-test isolation needs; use `@SmartCard(mode = Mode.CONTAINER)` fields meanwhile | `javacard-express-container`, Docker |
-| `simulated-gp` | a simulated GlobalPlatform card behind the live-card harness: conversion, APDU guard, SCP03, LOAD/INSTALL/DELETE, cleanup checked with GET STATUS; the applets then run from their class files on jCardSim (the converted bytecode runs only on a card); no reader, fine on CI | `javacard-express-livecard` (the applet parent has it) |
-| `livecard` | the card in a PC/SC reader ([live-card guide](../LIVE_CARD_TESTING.md#your-tests-on-a-card)) | `javacard-express-livecard` (the applet parent has it), a development card, Oracle's off-card verifier (`jcx.livecard.verifierSdk`, or `none`), a build for the card's Java Card version |
+| `simulated-gp` | a simulated GlobalPlatform card behind the live-card harness: conversion, APDU guard, SCP03, LOAD/INSTALL/DELETE, cleanup checked with GET STATUS; the applets then run from their class files on jCardSim (the converted bytecode runs only on a card); no reader, fine on CI | `javacard-express-livecard` (the plugin's build extension and the applet parent add it) |
+| `livecard` | the card in a PC/SC reader ([live-card guide](../LIVE_CARD_TESTING.md#your-tests-on-a-card)) | `javacard-express-livecard` (the plugin's build extension and the applet parent add it), a development card, Oracle's off-card verifier (`jcx.livecard.verifierSdk`, or `none`), a build for the card's Java Card version |
 
 `jcx.backend` comes from the system property, the JUnit configuration parameter or the environment variable
 `JCX_BACKEND`; `livecard` only from a JVM system property (`mvn verify -Djcx.backend=livecard`, or a VM option
@@ -275,6 +276,7 @@ Data longer than 255 bytes or `le` above 256 switch to extended length fields au
 | `reset()` | card reset: applets and persistent objects kept, `CLEAR_ON_RESET` cleared, no applet selected | warm reset and reconnect; the session stays usable |
 | Logical channels | basic channel only; commands for other channels and MANAGE CHANNEL throw `UnsupportedOperationException` | channels opened with `LogicalChannel.open(card)` |
 | Memory probing | not modelled by jCardSim (`MemoryInfo.from` throws) | cards implementing Java Card 3.0.4+ |
+| Command data | in the APDU buffer before the applet calls `setIncomingAndReceive()` | in the buffer only after that call (Java Card API) |
 | After `close()` | `IllegalStateException` | `IllegalStateException` |
 
 `ContainerSession` (Docker) is described in the [container module](../container/README.md).
@@ -350,7 +352,7 @@ assertThat(response).dataEndsWith(0x6C, 0x6F);                       // suffix m
 assertThat(response).dataAsString().isEqualTo("Hello");
 assertThat(response).dataAsHex().isEqualTo("48656C6C6F");
 assertThat(response).data().hasSize(5);                              // AssertJ's byte[] assertions
-assertThat(response).u16(0).isEqualTo(0x4865);                       // a big-endian number; u8 and s16 too
+assertThat(response).shortAt(0).isEqualTo(0x4865);                   // a big-endian short; byteAt, intAt, u16 too
 assertThat(unknownIns).hasNoData();
 
 // TLV assertions (parses data as BER-TLV)
@@ -363,9 +365,14 @@ assertThat(response).tlv()                                     // navigate into 
 
 `SW` names the status words as the Java Card API does (`SW.SECURITY_STATUS_NOT_SATISFIED` is
 `ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED`); `SW.describe(0x6A82)` gives `file or application not found`,
-`SW.format(0x6A82)` gives `6A82 (file or application not found)`. The same numbers outside assertions:
-`response.u8(offset)`, `u16(offset)`, `s16(offset)` (all `int`), `response.data(from, to)`, and
-`response.requireSw(SW.NO_ERROR, 0x6310)`, which fails like `requireSuccess()` on any other status word.
+`SW.format(0x6A82)` gives `6A82 (file or application not found)`. The same numbers outside assertions, in the Java
+Card types: `response.dataAsShort()` reads the whole data as a `short` (exactly two bytes, big-endian, as
+`Util.setShort` writes them; also `dataAsByte()`, `dataAsInt()`, `dataAsBoolean()`), `shortAt(offset)` one at an
+offset (also `byteAt`, `intAt`); `u8(offset)`, `u16(offset)` read unsigned and `s16(offset)` signed, as `int`.
+In assertions every number is an integer assertion, so `dataAsShort().isEqualTo(100)` takes an int literal.
+`Bytes.ofShort(100)`, `ofByte`, `ofInt`, `ofBoolean` and `concat` write command data the same way. Then
+`response.data(from, to)`, and `response.requireSw(SW.NO_ERROR, 0x6310)`, which fails like `requireSuccess()` on
+any other status word.
 
 On failure, you get clear messages:
 
@@ -425,6 +432,10 @@ card.sendHex("80 02 00 00 02 0102 00");                     // the same in one c
 byte[] bytes = GET_DATA.toBytes();                          // 80CA006600
 APDUResponse fci = card.send(APDUCommand.select(aid));      // 00 A4 04 00 Lc AID 00: SELECT and its FCI
 ```
+
+`data(Bytes.ofShort(100))` writes a `short` as the applet reads it with `Util.getShort` (two bytes, big-endian);
+`Bytes.ofByte`, `ofInt`, `ofBoolean` and `concat` write the other Java Card types and join fields
+([Assertions](#assertions) has the readers of the answer).
 
 `APDUCommand.fromHex` is the only static factory of the class that takes a `String`, so JUnit converts
 `@CsvSource` arguments to commands, as it does for `APDUResponse.fromHex`
@@ -683,6 +694,48 @@ WellKnownAIDs.GP_ISD        // A000000151000000 — GlobalPlatform ISD
 // Usage
 card.select(WellKnownAIDs.MRTD);
 ```
+
+## GlobalPlatform API on the Simulated Card
+
+An applet that uses the GlobalPlatform Card API (`org.globalplatform.GPSystem`, `SecureChannel`, `GPRegistryEntry`)
+runs on the embedded card as it is: the card has a GlobalPlatform environment with one Security Domain, whose
+secure channel the applet opens with `GPSystem.getSecureChannel()`. The protocol is SCP03 with the well-known test
+keys `404142...4F` (ENC, MAC and DEK), Key Version Number `FF` and option i = `00`, as on the simulated
+GlobalPlatform card; a host opens the channel through the selected applet, which passes INITIALIZE UPDATE and
+EXTERNAL AUTHENTICATE to `processSecurity`. The test reaches the card's side through `globalPlatform()`:
+
+```java
+GlobalPlatformCard gp = session.globalPlatform();
+
+gp.cardState(GPSystem.CARD_SECURED);                             // what GPSystem.getCardState() answers
+CardApplication application = gp.application(aid).orElseThrow();
+application.grant(GPRegistryEntry.PRIVILEGE_CARD_LOCK);          // a privilege INSTALL would have carried
+int state = application.state();                                 // 0x07 SELECTABLE, or what the applet set
+
+SecurityDomain domain = gp.securityDomain();
+byte[] key = domain.keyEnc();                                    // what a host authenticates with
+domain.scp03Option(SecurityDomain.OPTION_R_MAC_R_ENCRYPTION);    // let hosts ask for R-MAC and R-ENCRYPTION
+int level = domain.securityLevel();                              // Current Security Level of the open session
+int failed = domain.failedAuthentications();
+```
+
+In a `@JavaCardTest` class declare the parameter: `void test(SmartCardSession card, GlobalPlatformCard gp)` (the
+default backend and `simulated-gp` provide it). A `SecurityDomainKeys` parameter is the key set of the Security
+Domain on every backend, also on a card in a reader; with it and `GPSession` of `javacard-express-gp` a test opens
+the secure channel through the applet. The recipe with a sample applet is in the
+[testing cookbook](../TESTING.md#an-applet-that-uses-the-globalplatform-api).
+
+Simulated: the secure channel (`processSecurity` in both calling orders and from a byte array, `unwrap`, `wrap`,
+`decryptData`, `encryptData`, `resetSecurity`, `getSecurityLevel`, `setSecurityLevel`) with the session rules of the
+Card Specification (a command without the protection the level requires aborts the session; selecting an application,
+deselection and a card reset end it), the life cycle rules of `setCardContentState` and `GPRegistryEntry.setState`,
+`lockCard`, `terminateCard` and `setATRHistBytes` with their privileges, `getCardInfo`, and Global Services that
+applets register (`getService`, `getCVM`). Not simulated: a Global PIN of the card itself (`getCVM` returns what an
+applet of the test registered, else null), STORE DATA forwarded to `Application` or `Personalization`, SCP02, the
+selection rules of a locked or terminated card, and the other packages of the API (`org.globalplatform.upgrade`,
+`contactless` and so on). At test runtime the classes of `org.globalplatform` must come from
+`javacard-express-core`; a stub jar ahead of it on the test class path is reported when an applet first uses the
+package.
 
 ## Low-level: Sessions without @JavaCardTest
 

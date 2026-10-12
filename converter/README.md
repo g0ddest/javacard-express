@@ -6,13 +6,17 @@ sections it implements. Most users run it through the [Maven plugin](../maven-pl
 
 - **Targets** Java Card 2.1.2, 2.2.1, 2.2.2, 3.0.3, 3.0.4, 3.0.5 (CAP format 2.1) and 3.1.0, 3.2.0 (compact CAP
   format 2.3).
-- **Linking** against the standard API packages of the selected target from built-in data, with per-version
-  checks, and against other packages from their export files.
+- **Linking** against the standard API packages of the selected target and against the GlobalPlatform Card API
+  package `org.globalplatform` from built-in data, with per-version checks, and against other packages from
+  their export files.
 - **Fail-closed**: code outside the Java Card language subset, references the target API lacks, invalid AIDs,
   JCVM limits and features it does not implement (Java Card RMI) are reported as a `ConverterException` naming
   the class, method and source line where they apply. The converter does not write a CAP file it knows to be
   wrong.
 - **Deterministic**: the same input gives the same bytes.
+- **In javac**: `PackageCheck` runs the converter's subset and link checks without converting; the javac check
+  (`javacard-express-javac-plugin`) reports their problems as compile errors (see
+  [What the converter accepts](#what-the-converter-accepts)).
 - Runs on **JDK 25 or newer** (it reads class files with the JDK ClassFile API, JEP 484); no other dependencies.
 
 How the output is verified, and how it compares with Oracle's converter:
@@ -72,6 +76,7 @@ later stage; the `int` rules of a method are checked once the method has no othe
 | `javaCardVersion(JavaCardVersion)` | `V3_0_5` | Target platform: CAP format, API versions in the Import component, available API. Use the card's version or an older one: a card links a CAP file only when it has the imported API versions (JCVM 3.1 §4.5.2) |
 | `importExportFile(Path)` | none | Export file of an imported package; wins over the export path and the built-in data |
 | `exportPath(Path...)` | none | Directories or JARs holding `<package>/javacard/<last>.exp`, for example a kit's `api_export_files` or a library built earlier |
+| `globalPlatformApi(String)` | lowest sufficient | Version of `org.globalplatform`, `"1.0"` to `"1.8"`, that the CAP file imports from the built-in data (see [The GlobalPlatform API](#the-globalplatform-api)) |
 | `supportInt32(boolean)` | false | Allows `int` (the card must support it); the header's ACC_INT flag is set only if the code uses `int` |
 | `generateExport(boolean)` | true | Writes the Export component, which other packages on the card need to link against this one, when the package has something to export (JCVM 3.1 §6.2, §6.13): the public classes and interfaces of a library package, the public shareable interfaces of an applet package. `false` omits it; a library package converted so cannot be used by any other package |
 | `oracleCompatibility(boolean)` | — | Deprecated, no effect (see [BINARY_COMPATIBILITY.md](BINARY_COMPATIBILITY.md#correction-there-is-no-oracle-dispatch-table-off-by-one-bug)) |
@@ -84,6 +89,37 @@ later stage; the `int` rules of a method are checked once the method has no othe
 | `exportFile()` | Export file (`.exp`), always produced. A library package describes all its public classes and interfaces; a package with applets only its public shareable interfaces (JCVM 3.1 §5.5). Store it as `<package>/javacard/<last>.exp` so that an export path finds it |
 | `warnings()` | Non-fatal findings, for example a generated package AID |
 | `capSize()` | CAP file size in bytes |
+| `imports()` | The packages of the Import component, each with its AID and the version the CAP file was linked against: what a card must hold, in that version or a later minor version, to load the file (JCVM 3.1 §4.5.2, §6.7) |
+
+### The GlobalPlatform API
+
+A package that uses `org.globalplatform` (`GPSystem`, a Security Domain's `SecureChannel`, ...) needs no export
+file: the converter has the linking data of the package versions 1.0 to 1.8. These versions are the package's
+own and do not follow the Java Card version, and a card links an import only when it holds the package in the
+recorded version or a later one (JCVM 3.1 §4.5.2). Later versions only added classes and methods and kept every
+token (§4.4), so the converter records the **lowest version that has everything the package uses**: 1.0 for
+`GPSystem.getSecureChannel()` and the `SecureChannel` methods, 1.2 once a class implements `Personalization`, 1.7
+for `GPSystem.getCardInfo`. `globalPlatformApi` fixes the version instead; the conversion then fails, naming the
+place and the version that introduced it, when the code uses something that version lacks.
+
+```java
+ConverterResult secure = Converter.builder()
+    .classesDirectory(Path.of("target/classes"))
+    .packageName("com.example.secure")
+    .packageAid("F00000000101")
+    .applet("com.example.secure.SecureApplet", "F0000000010101")
+    .globalPlatformApi("1.5")                    // omit it to import the lowest sufficient version
+    .build()
+    .convert();
+
+secure.imports().forEach(i -> System.out.println(i.packageName() + " " + i.version()));
+```
+
+An export file supplied for the package (`importExportFile`, `exportPath`) takes precedence over the built-in
+data, as for every package: the CAP file then imports the version of that file, which must be the fixed one if a
+version is fixed. The other GlobalPlatform packages (`org.globalplatform.upgrade`, `.contactless`, ...) have no
+built-in data and need their export files. `GlobalPlatformApi.exportFileBytes(version, target)` writes the export
+file of a version for tools that take export files as files, such as an off-card verifier.
 
 ### Target versions
 
@@ -97,6 +133,9 @@ later stage; the `int` rules of a method are checked once the method has no othe
 | `V3_0_5` | 2.1 | 2.1 | 1.6 |
 | `V3_1_0` | 2.3 (compact) | 2.3 | 1.8 |
 | `V3_2_0` | 2.3 (compact) | 2.3 | 1.9 |
+
+`JavaCardVersion.parse("3.0.4")` reads a version as build settings write it (`3.0.4`, or `3.0` for 3.0.5 and the
+like) and is empty for anything else; `JavaCardVersion.defaultVersion()` is the default target, `V3_0_5`.
 
 ## What the converter accepts
 
@@ -138,6 +177,24 @@ The Java Card language subset (JCVM 3.1 §2.2) is checked before translation:
 An abstract class may leave the methods of its interfaces to its subclasses: the converter declares them
 `public abstract` in that class (the Class component maps every interface method to a virtual method of the
 class, §6.9.2.5), which gives the same CAP and export files as writing the declarations out.
+
+`PackageCheck.check(packageName, classFiles, settings)` runs the first of these checks without converting: the
+language subset and, when it holds, the linking of the references into the Java Card API, `org.globalplatform`, the
+Java SE library and the packages whose export files `settings` supplies (used as `convert()` uses them: a supplied
+file replaces the built-in data of its package). Where `convert()` stops with the first stage that fails, it returns
+every problem, each with its class, member and source line (`-1` for code compiled without line numbers, which
+still counts as code, not as a declaration); a problem that `convert()` reports once for a method comes once for
+each line of it, and a catch clause's problem at the line of the clause.
+
+Left to the conversion: references into other packages, and a method a class inherits while one of its supertypes
+is in such a package (only that package's export file tells whether it declares the method); Java Card RMI
+(§2.2.6); the applet and AID rules (§2.2.5, §4.2), which depend on the conversion's configuration; static
+initialization (§2.2.4.6), tokens and the JCVM limits. For incremental builds an overload takes a predicate for the
+classes compiled now and links them even when only classes compiled earlier break the subset;
+`PackageCheck.checkSubset` checks the language subset alone, for a build whose export files are not all there yet.
+The javac check (`javacard-express-javac-plugin`) reports the problems as compile errors. The converter reads its
+built-in API tables without the JVM's shared cache of open jar files, so class loaders over the same jar, which javac
+makes and closes for each compilation, can come and go in parallel builds.
 
 ## Pipeline
 

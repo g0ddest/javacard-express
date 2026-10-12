@@ -17,7 +17,7 @@ Part of the [JavaCard Express](../README.md) toolkit.
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-sm</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
 </dependency>
 ```

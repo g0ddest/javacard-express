@@ -14,7 +14,7 @@ Testcontainers. Part of the [JavaCard Express](../README.md) toolkit.
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-container</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -81,6 +81,9 @@ For every session `JavaCardExtension`:
   anonymous classes at any depth (JDK, `javacard.*`, `javacardx.*` and jCardSim classes come from the simulator).
   The simulator JVM must be able to load the class files: the bundled image uses the Java version of the test JVM
   (at least 25).
+- **No GlobalPlatform Card API**: jCardSim has no `org.globalplatform`, so `install(...)` of an applet that uses it
+  throws `UnsupportedOperationException` before anything is sent; the simulated cards of the test JVM
+  (`EmbeddedSession`, `@JavaCardTest` on the default backend or on `simulated-gp`) implement it.
 - **Install parameters** follow the Java Card API (`Applet.install`): the applet receives
   `[Li][instance AID][Lc=0][La][installParams]`, at most 127 bytes in total; longer parameters are rejected with
   `IllegalArgumentException`. Applets that register with `register(bArray, (short) (bOffset + 1), bArray[bOffset])`

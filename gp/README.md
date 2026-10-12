@@ -20,7 +20,7 @@ NXP JCOP4 SCP03 card) and the Samsung OpenSCP-Java AES-128/192/256 S8/S16 transc
 <dependency>
     <groupId>name.velikodniy</groupId>
     <artifactId>javacard-express-gp</artifactId>
-    <version>0.4.0</version>
+    <version>0.5.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -48,6 +48,7 @@ detected from the INITIALIZE UPDATE response.
 - [Authentication](#authentication)
 - [Implementation Options ("i")](#implementation-options-i)
 - [Security Levels](#security-levels)
+- [Secure Channel with an Applet](#secure-channel-with-an-applet)
 - [Responses: Errors, 61XX and 6CXX](#responses-errors-61xx-and-6cxx)
 - [Loading and Installing Applets](#loading-and-installing-applets)
 - [GET STATUS and GET DATA](#get-status-and-get-data)
@@ -125,6 +126,30 @@ initiation and C-MAC on the unmodified APDU are not.
 
 Responses with R-MAC are verified and stripped; with R-ENC they are also decrypted. SCP03 error status words
 carry no R-MAC (Amendment D 6.2.5) and are returned as they are.
+
+## Secure Channel with an Applet
+
+An applet that uses the GlobalPlatform Card API hands INITIALIZE UPDATE and EXTERNAL AUTHENTICATE to its Security
+Domain (`GPSystem.getSecureChannel().processSecurity(apdu)`) and lets it check commands and protect responses (GPCS
+v2.3.1 7.3.1). For the host this is the same handshake, sent to the applet: without `securityDomain(...)`,
+`open()` sends INITIALIZE UPDATE to the application that is selected.
+
+```java
+card.select(appletAid);                                  // the applet forwards the handshake to its Security Domain
+try (GPSession channel = GPSession.on(card).keys(keys).securityLevel(GP.SECURITY_C_MAC_C_ENC).open()) {
+    channel.send(0x80, 0x10, 0x00, 0x00, value).requireSuccess();              // C-MAC, data encrypted
+    byte[] stored = channel.send(0x80, 0x12, 0x00, 0x00, null, 256).data();    // unwrapped by the channel
+}
+```
+
+The keys are those of the Security Domain the applet is associated with, the Issuer Security Domain unless the
+applet was installed under another one, and the session is an authentication of that key set, with its failure
+counter. The level is the host's choice within what the Security Domain supports (its "i"): an applet can only check
+`getSecurityLevel()` afterwards. In a `@JavaCardTest` class the keys of the run's Security Domain are a parameter,
+`SecurityDomainKeys`, on every backend: `SCPKeys.of(keys)`. The simulated cards of `javacard-express-core` implement
+the card side (SCP03 with 8-byte challenges; option "i" `00` unless the test changes it), so such an applet is tested
+without a card; the recipe with the applet is in the
+[testing cookbook](../TESTING.md#an-applet-that-uses-the-globalplatform-api).
 
 ## Responses: Errors, 61XX and 6CXX
 
@@ -348,6 +373,10 @@ The test suite replays known-answer transcripts through the `SCP02`/`SCP03` clas
 - public real-card sessions: an SCP02 card (i=15) driven by GlobalPlatformPro, including GET STATUS for all
   scopes and INSTALL [for load] / LOAD, and an NXP JCOP4 SCP03 (i=70) authentication;
 - Samsung OpenSCP-Java AES-128/192/256 S8 and S16 transcripts at level 33 (C-ENC, C-MAC, R-MAC, R-ENC).
+
+On a card, the live-card suite authenticates with SCP03 (S8, levels 01 and 03) on an NXP JCOP 4 development card,
+loads, installs and deletes its test packages, and opens the secure channel through an applet that uses the
+GlobalPlatform Card API ([live-card report](../LIVE_CARD_TESTING.md#verified-results)).
 
 ## Limitations
 
