@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.embedded;
 
+import name.velikodniy.jcexpress.embedded.gp.ApiClasspath;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -16,8 +18,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Loads the applet code of one simulated card: every class the applet classes need is defined again by this
  * loader (child first), from the class files its parent finds, except the platform the card provides, which comes
- * from the parent: the JDK, the Java Card API and jCardSim ({@code java.}, {@code javax.}, {@code javacard.},
- * {@code javacardx.}, {@code com.licel.}, and any class the parent reads from the run-time image).
+ * from the parent: the JDK, the Java Card API, the GlobalPlatform API and jCardSim ({@code java.}, {@code javax.},
+ * {@code javacard.}, {@code javacardx.}, {@code org.globalplatform.}, {@code com.licel.}, and any class the parent
+ * reads from the run-time image).
  *
  * <p>So a new card starts with fresh static fields in every package of the applet code, as a card on which the
  * packages were just loaded, while the applets of one card share their packages. Classes keep their code source,
@@ -31,7 +34,7 @@ final class AppletClassLoader extends ClassLoader {
 
     /** Packages of the card's platform, always taken from the parent. */
     private static final List<String> PLATFORM = List.of("java.", "javax.", "jdk.", "sun.", "com.sun.",
-            "javacard.", "javacardx.", "com.licel.");
+            "javacard.", "javacardx.", "org.globalplatform.", "com.licel.");
 
     static {
         registerAsParallelCapable();
@@ -84,7 +87,9 @@ final class AppletClassLoader extends ClassLoader {
 
     private Class<?> fromParent(String name, boolean resolve) throws ClassNotFoundException {
         try {
-            return super.loadClass(name, resolve);
+            Class<?> loaded = super.loadClass(name, resolve);
+            ApiClasspath.verify(loaded); // org.globalplatform must be this module's, not a stub jar's
+            return loaded;
         } catch (ClassNotFoundException e) {
             missing.add(name);
             throw e;

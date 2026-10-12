@@ -16,9 +16,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The POM that consumers download (the flattened POM written by the build) must give a test that
- * depends only on javacard-express-core everything the README example uses: JUnit Jupiter
- * ({@code @Test}, {@code @ExtendWith}) and AssertJ ({@code JCXAssertions} extends AssertJ types).
- * Dependencies with scope {@code provided} or {@code test} are not transitive in Maven.
+ * depends only on javacard-express-core everything the README example and the testing cookbook use:
+ * JUnit Jupiter ({@code @Test}, {@code @ExtendWith}, {@code @ParameterizedTest}) and AssertJ
+ * ({@code JCXAssertions} extends AssertJ types). The Maven plugin's build extension gives a project
+ * only this dependency for its tests. Dependencies with scope {@code provided} or {@code test} are not
+ * transitive in Maven.
  */
 class PublishedPomTest {
 
@@ -50,6 +52,7 @@ class PublishedPomTest {
         Map<String, String> scopes = dependencyScopes();
         assertThat(scopes)
                 .containsEntry("org.junit.jupiter:junit-jupiter-api", "compile")
+                .containsEntry("org.junit.jupiter:junit-jupiter-params", "compile")
                 .containsEntry("org.assertj:assertj-core", "compile")
                 .containsEntry("com.klinec:jcardsim", "compile");
     }

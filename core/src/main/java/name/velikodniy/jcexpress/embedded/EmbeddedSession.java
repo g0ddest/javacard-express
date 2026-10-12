@@ -11,6 +11,7 @@ import name.velikodniy.jcexpress.InstallException;
 import name.velikodniy.jcexpress.SelectException;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.apdu.APDUCodec;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
 import javacard.framework.Applet;
 import javacard.framework.ISOException;
 import javacard.framework.SystemException;
@@ -59,6 +60,9 @@ import java.util.StringJoiner;
  *       throw {@link UnsupportedOperationException}.</li>
  *   <li>{@link #history()} records every exchange (SELECT included) with notes for installs and card
  *       resets.</li>
+ *   <li>Applets that use the GlobalPlatform API ({@code org.globalplatform.GPSystem}) find the card's
+ *       GlobalPlatform environment, {@link #globalPlatform()}: a Security Domain with the well-known test keys
+ *       whose SCP03 secure channel they open, and their life cycle state.</li>
  *   <li>After {@link #close()} every operation throws {@link IllegalStateException}.</li>
  *   <li>Creating a session throws {@link IllegalStateException} when the {@code javacard.framework} classes
  *       on the classpath are not jCardSim's (for example compile-only API stubs declared first).</li>
@@ -362,6 +366,18 @@ public class EmbeddedSession implements SmartCardSession {
     @Override
     public APDUHistory history() {
         return history;
+    }
+
+    /**
+     * Returns the GlobalPlatform environment of this card: what the applets see through
+     * {@code org.globalplatform.GPSystem}, and what a test sets up or checks on the card's side (the keys and
+     * options of the Security Domain, the life cycle states and privileges of the applications, the card state).
+     *
+     * @return the GlobalPlatform environment, the same object for the life of the session
+     */
+    public GlobalPlatformCard globalPlatform() {
+        ensureOpen();
+        return runtime.globalPlatform();
     }
 
     /**

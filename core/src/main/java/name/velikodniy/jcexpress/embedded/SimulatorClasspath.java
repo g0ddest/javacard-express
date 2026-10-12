@@ -19,6 +19,9 @@ import java.util.Objects;
  * {@code com.licel.jcardsim.base.SimulatorRuntime}; class literals are used, so no class is initialised.
  * Setups that deliberately take the API classes from another location can switch the check off with the
  * system property {@value #DISABLE_PROPERTY}{@code =false}.</p>
+ *
+ * <p>The classes of the GlobalPlatform API, which this module implements for the simulated card, are checked when
+ * applet code first needs them ({@link name.velikodniy.jcexpress.embedded.gp.ApiClasspath}).</p>
  */
 final class SimulatorClasspath {
 

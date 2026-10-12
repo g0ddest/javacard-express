@@ -83,6 +83,28 @@ class SimulatorClasspathTest {
         }
     }
 
+    /**
+     * GlobalPlatform API stubs ahead of this module do not stop a session: only an applet that uses the package
+     * needs this module's classes of it, and the card's class loader checks them then.
+     */
+    @Test
+    void embeddedSessionStartsWhenGlobalPlatformStubsComeFirst(@TempDir Path dir) throws Exception {
+        Path source = dir.resolve("src/org/globalplatform/GPSystem.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "package org.globalplatform; public class GPSystem { }");
+        Path stubs = Files.createDirectories(dir.resolve("stubs"));
+        JavaCompiler javac = ToolProvider.getSystemJavaCompiler();
+        assertThat(javac.run(null, null, null, "-d", stubs.toString(), source.toString())).isZero();
+
+        URL[] classpath = {stubs.toUri().toURL(), location(SimulatorRuntime.class), location(EmbeddedSession.class)};
+        try (URLClassLoader loader = new URLClassLoader(classpath, ClassLoader.getPlatformClassLoader())) {
+            Class<?> session = loader.loadClass(EmbeddedSession.class.getName());
+
+            assertThatCode(() -> session.getMethod("close").invoke(session.getConstructor().newInstance()))
+                    .doesNotThrowAnyException();
+        }
+    }
+
     private static URL location(Class<?> type) {
         return type.getProtectionDomain().getCodeSource().getLocation();
     }

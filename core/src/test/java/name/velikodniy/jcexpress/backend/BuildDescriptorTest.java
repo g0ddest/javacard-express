@@ -59,6 +59,17 @@ class BuildDescriptorTest {
         assertThat(build.applets()).isEqualTo(Map.of("com.example.wallet.WalletApplet", AID.fromHex("A0000000621201"),
                 "com.example.wallet.Wallet$Admin", AID.fromHex("A0000000621202")));
         assertThat(build.project()).isEqualTo("com.example:wallet");
+        assertThat(build.globalPlatformApi()).isEmpty();
+    }
+
+    /** The plugin writes the line only when the build fixes the version of org.globalplatform. */
+    @Test
+    void tellsTheFixedVersionOfTheGlobalPlatformApi() throws IOException {
+        Path classes = classes(DESCRIPTOR + "globalPlatformApi=1.5\n");
+
+        BuildDescriptor build = BuildDescriptor.read(classes, "com.example.wallet").orElseThrow();
+
+        assertThat(build.globalPlatformApi()).contains("1.5");
     }
 
     @Test

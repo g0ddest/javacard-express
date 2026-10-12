@@ -1,0 +1,176 @@
+# The public surface of the package org.globalplatform, version 1.8 of the GlobalPlatform Card API: the types with
+# their supertypes, the constants with their values and the methods with their descriptors, modifiers and declared
+# exceptions. These are facts of the published API (listed with javap -public -constants from the API's class
+# files); GlobalPlatformApiSurfaceTest compares the classes of this module with them.
+field org/globalplatform/AdminSessionListener ADMIN_SESSION_ERROR S -32767
+field org/globalplatform/AdminSessionListener ADMIN_SESSION_NO_ERROR S 1
+field org/globalplatform/AdminSessionListener SERVICE_ADMIN_SESSION_REPORT B 1
+field org/globalplatform/Authority MODE_KEY_RECOVERY B 2
+field org/globalplatform/Authority MODE_SIGN B 1
+field org/globalplatform/AuthoritySignature MODE_INTEGRITY B 1
+field org/globalplatform/CVM CVM_FAILURE S -1
+field org/globalplatform/CVM CVM_SUCCESS S 0
+field org/globalplatform/CVM FORMAT_ASCII B 1
+field org/globalplatform/CVM FORMAT_BCD B 2
+field org/globalplatform/CVM FORMAT_HEX B 3
+field org/globalplatform/GPRegistryEntry PRIVILEGE_AUTHORIZED_MANAGEMENT B 9
+field org/globalplatform/GPRegistryEntry PRIVILEGE_CARD_LOCK B 3
+field org/globalplatform/GPRegistryEntry PRIVILEGE_CARD_RESET B 5
+field org/globalplatform/GPRegistryEntry PRIVILEGE_CARD_TERMINATE B 4
+field org/globalplatform/GPRegistryEntry PRIVILEGE_CIPHERED_LOAD_FILE_DATA_BLOCK B 17
+field org/globalplatform/GPRegistryEntry PRIVILEGE_CVM_MANAGEMENT B 6
+field org/globalplatform/GPRegistryEntry PRIVILEGE_DAP_VERIFICATION B 1
+field org/globalplatform/GPRegistryEntry PRIVILEGE_DELEGATED_MANAGEMENT B 2
+field org/globalplatform/GPRegistryEntry PRIVILEGE_FINAL_APPLICATION B 14
+field org/globalplatform/GPRegistryEntry PRIVILEGE_GLOBAL_DELETE B 11
+field org/globalplatform/GPRegistryEntry PRIVILEGE_GLOBAL_LOCK B 12
+field org/globalplatform/GPRegistryEntry PRIVILEGE_GLOBAL_REGISTRY B 13
+field org/globalplatform/GPRegistryEntry PRIVILEGE_GLOBAL_SERVICE B 15
+field org/globalplatform/GPRegistryEntry PRIVILEGE_MANDATED_DAP B 7
+field org/globalplatform/GPRegistryEntry PRIVILEGE_RECEIPT_GENERATION B 16
+field org/globalplatform/GPRegistryEntry PRIVILEGE_SECURITY_DOMAIN B 0
+field org/globalplatform/GPRegistryEntry PRIVILEGE_TOKEN_VERIFICATION B 10
+field org/globalplatform/GPRegistryEntry PRIVILEGE_TRUSTED_PATH B 8
+field org/globalplatform/GPSystem APPLICATION_INSTALLED B 3
+field org/globalplatform/GPSystem APPLICATION_LOCKED B -128
+field org/globalplatform/GPSystem APPLICATION_SELECTABLE B 7
+field org/globalplatform/GPSystem CARD_INFO_ATR_HISTORICAL_BYTES S 128
+field org/globalplatform/GPSystem CARD_INFO_CL_IO_RANDOM S 129
+field org/globalplatform/GPSystem CARD_INITIALIZED B 7
+field org/globalplatform/GPSystem CARD_LOCKED B 127
+field org/globalplatform/GPSystem CARD_OP_READY B 1
+field org/globalplatform/GPSystem CARD_SECURED B 15
+field org/globalplatform/GPSystem CARD_TERMINATED B -1
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_1 B 1
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_2 B 2
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_3 B 3
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_4 B 4
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_5 B 5
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_6 B 6
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_7 B 7
+field org/globalplatform/GPSystem CVM_ETSI_PIN_APP_8 B 8
+field org/globalplatform/GPSystem CVM_GLOBAL_PIN B 17
+field org/globalplatform/GPSystem FAMILY_AUHTORITY B -125
+field org/globalplatform/GPSystem FAMILY_AUTHORITY B -125
+field org/globalplatform/GPSystem FAMILY_AUTHORITY_SIGNATURE B -121
+field org/globalplatform/GPSystem FAMILY_BROKER B -120
+field org/globalplatform/GPSystem FAMILY_COAP_ADMINISTRATION B -118
+field org/globalplatform/GPSystem FAMILY_CRYPTO_SERVICE_PROVIDER B -117
+field org/globalplatform/GPSystem FAMILY_CVM B -126
+field org/globalplatform/GPSystem FAMILY_GLOBAL_MASTER_FILE B -119
+field org/globalplatform/GPSystem FAMILY_HTTP_ADMINISTRATION B -124
+field org/globalplatform/GPSystem FAMILY_HTTP_REPORT B -123
+field org/globalplatform/GPSystem FAMILY_PRIVACY_PROTOCOL B -122
+field org/globalplatform/GPSystem FAMILY_SECURE_CHANNEL B -127
+field org/globalplatform/GPSystem FAMILY_USSM B -96
+field org/globalplatform/GPSystem GLOBAL_SERVICE_IDENTIFIER B -128
+field org/globalplatform/GPSystem SECURITY_DOMAIN_PERSONALIZED B 15
+field org/globalplatform/GlobalService KEY_ACCESS_ANY B 0
+field org/globalplatform/GlobalService KEY_ACCESS_APPLICATION B 2
+field org/globalplatform/GlobalService KEY_ACCESS_SECURITY_DOMAIN B 1
+field org/globalplatform/GlobalService KEY_TYPE_3DES B -127
+field org/globalplatform/GlobalService KEY_TYPE_3DES_CBC B -126
+field org/globalplatform/GlobalService KEY_TYPE_AES B -120
+field org/globalplatform/GlobalService KEY_TYPE_DES B -128
+field org/globalplatform/GlobalService KEY_TYPE_DES_CBC B -124
+field org/globalplatform/GlobalService KEY_TYPE_DES_ECB B -125
+field org/globalplatform/GlobalService KEY_TYPE_EXTENDED B -1
+field org/globalplatform/GlobalService KEY_TYPE_HMAC_SHA1 B -112
+field org/globalplatform/GlobalService KEY_TYPE_HMAC_SHA1_160 B -111
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_CRT_DP1 B -89
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_CRT_DQ1 B -88
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_CRT_P B -92
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_CRT_PQ B -90
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_CRT_Q B -91
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_EXPONENT B -93
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PRIVATE_MODULUS B -94
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PUBLIC_EXPONENT B -96
+field org/globalplatform/GlobalService KEY_TYPE_RSA_PUBLIC_MODULUS B -95
+field org/globalplatform/GlobalService KEY_USAGE_COMPUTATION_DECIPHERMENT B 64
+field org/globalplatform/GlobalService KEY_USAGE_CONFIDENTIALITY B 8
+field org/globalplatform/GlobalService KEY_USAGE_CRYPTOGRAPHIC_AUTHORIZATION B 1
+field org/globalplatform/GlobalService KEY_USAGE_CRYPTOGRAPHIC_CHECKSUM B 4
+field org/globalplatform/GlobalService KEY_USAGE_DIGITAL_SIGNATURE B 2
+field org/globalplatform/GlobalService KEY_USAGE_SM_COMMAND B 16
+field org/globalplatform/GlobalService KEY_USAGE_SM_RESPONSE B 32
+field org/globalplatform/GlobalService KEY_USAGE_VERIFICATION_ENCIPHERMENT B -128
+field org/globalplatform/HTTPReportListener HTTP_SESSION_ERROR S -32767
+field org/globalplatform/HTTPReportListener HTTP_SESSION_NO_ERROR S 1
+field org/globalplatform/SecureChannel ANY_AUTHENTICATED B 64
+field org/globalplatform/SecureChannel AUTHENTICATED B -128
+field org/globalplatform/SecureChannel C_DECRYPTION B 2
+field org/globalplatform/SecureChannel C_MAC B 1
+field org/globalplatform/SecureChannel NO_SECURITY_LEVEL B 0
+field org/globalplatform/SecureChannel R_ENCRYPTION B 32
+field org/globalplatform/SecureChannel R_MAC B 16
+method org/globalplatform/AdminSessionListener administrationSessionReport(S)V public abstract throws=
+method org/globalplatform/AdministrationSession requestAdministrationSession([BSS)V public abstract throws=
+method org/globalplatform/Application processData([BSS)V public abstract throws=
+method org/globalplatform/Authority init(B)V public abstract throws=javacard/security/CryptoException
+method org/globalplatform/Authority recoverKey([BSS[BS)S public abstract throws=javacard/security/CryptoException
+method org/globalplatform/Authority sign([BSS[BS)S public abstract throws=javacard/security/CryptoException
+method org/globalplatform/Authority update([BSS)V public abstract throws=javacard/security/CryptoException
+method org/globalplatform/AuthoritySignature getLength()S public abstract throws=
+method org/globalplatform/AuthoritySignature init(B[BSS)V public abstract throws=
+method org/globalplatform/AuthoritySignature sign([BSS[BS)S public abstract throws=
+method org/globalplatform/AuthoritySignature update([BSS)V public abstract throws=
+method org/globalplatform/CVM blockState()Z public abstract throws=
+method org/globalplatform/CVM getTriesRemaining()B public abstract throws=
+method org/globalplatform/CVM isActive()Z public abstract throws=
+method org/globalplatform/CVM isBlocked()Z public abstract throws=
+method org/globalplatform/CVM isSubmitted()Z public abstract throws=
+method org/globalplatform/CVM isVerified()Z public abstract throws=
+method org/globalplatform/CVM resetAndUnblockState()Z public abstract throws=
+method org/globalplatform/CVM resetState()Z public abstract throws=
+method org/globalplatform/CVM setTryLimit(B)Z public abstract throws=
+method org/globalplatform/CVM update([BSBB)Z public abstract throws=
+method org/globalplatform/CVM verify([BSBB)S public abstract throws=
+method org/globalplatform/GPRegistryEntry deregisterService(S)V public abstract throws=javacard/framework/ISOException
+method org/globalplatform/GPRegistryEntry getAID()Ljavacard/framework/AID; public abstract throws=
+method org/globalplatform/GPRegistryEntry getPrivileges([BS)S public abstract throws=java/lang/ArrayIndexOutOfBoundsException
+method org/globalplatform/GPRegistryEntry getState()B public abstract throws=
+method org/globalplatform/GPRegistryEntry isAssociated(Ljavacard/framework/AID;)Z public abstract throws=
+method org/globalplatform/GPRegistryEntry isPrivileged(B)Z public abstract throws=
+method org/globalplatform/GPRegistryEntry registerService(S)V public abstract throws=javacard/framework/ISOException
+method org/globalplatform/GPRegistryEntry setState(B)Z public abstract throws=
+method org/globalplatform/GPSystem <init>()V public throws=
+method org/globalplatform/GPSystem getCVM(B)Lorg/globalplatform/CVM; public static throws=
+method org/globalplatform/GPSystem getCardContentState()B public static throws=
+method org/globalplatform/GPSystem getCardInfo([BSS)S public static throws=
+method org/globalplatform/GPSystem getCardInfoLength(S)S public static throws=
+method org/globalplatform/GPSystem getCardState()B public static throws=
+method org/globalplatform/GPSystem getRegistryEntry(Ljavacard/framework/AID;)Lorg/globalplatform/GPRegistryEntry; public static throws=
+method org/globalplatform/GPSystem getSecureChannel()Lorg/globalplatform/SecureChannel; public static throws=
+method org/globalplatform/GPSystem getService(Ljavacard/framework/AID;S)Lorg/globalplatform/GlobalService; public static throws=
+method org/globalplatform/GPSystem lockCard()Z public static throws=
+method org/globalplatform/GPSystem setATRHistBytes([BSB)Z public static throws=
+method org/globalplatform/GPSystem setCardContentState(B)Z public static throws=
+method org/globalplatform/GPSystem terminateCard()Z public static throws=
+method org/globalplatform/GlobalService getServiceInterface(Lorg/globalplatform/GPRegistryEntry;S[BSS)Ljavacard/framework/Shareable; public abstract throws=javacard/framework/ISOException
+method org/globalplatform/HTTPAdministration requestHTTPAdministrationSession([BSS)V public abstract throws=
+method org/globalplatform/HTTPReportListener httpAdministationSessionReport(S)V public abstract throws=
+method org/globalplatform/Personalization processData([BSS[BS)S public abstract throws=
+method org/globalplatform/SecureChannel decryptData([BSS)S public abstract throws=javacard/framework/ISOException
+method org/globalplatform/SecureChannel encryptData([BSS)S public abstract throws=javacard/framework/ISOException
+method org/globalplatform/SecureChannel getSecurityLevel()B public abstract throws=
+method org/globalplatform/SecureChannel processSecurity(Ljavacard/framework/APDU;)S public abstract throws=javacard/framework/ISOException
+method org/globalplatform/SecureChannel resetSecurity()V public abstract throws=
+method org/globalplatform/SecureChannel unwrap([BSS)S public abstract throws=javacard/framework/ISOException
+method org/globalplatform/SecureChannel wrap([BSS)S public abstract throws=javacard/framework/ISOException
+method org/globalplatform/SecureChannelx setSecurityLevel(B)V public abstract throws=
+method org/globalplatform/SecureChannelx2 processSecurity([BSSS)S public abstract throws=javacard/framework/ISOException
+type org/globalplatform/AdminSessionListener interface supers=javacard/framework/Shareable
+type org/globalplatform/AdministrationSession interface supers=javacard/framework/Shareable
+type org/globalplatform/Application interface supers=javacard/framework/Shareable
+type org/globalplatform/Authority interface supers=javacard/framework/Shareable
+type org/globalplatform/AuthoritySignature interface supers=javacard/framework/Shareable
+type org/globalplatform/CVM interface supers=javacard/framework/Shareable
+type org/globalplatform/GPRegistryEntry interface supers=javacard/framework/Shareable
+type org/globalplatform/GPSystem class supers=java/lang/Object
+type org/globalplatform/GlobalService interface supers=javacard/framework/Shareable
+type org/globalplatform/HTTPAdministration interface supers=javacard/framework/Shareable
+type org/globalplatform/HTTPReportListener interface supers=javacard/framework/Shareable
+type org/globalplatform/Personalization interface supers=javacard/framework/Shareable
+type org/globalplatform/SecureChannel interface supers=javacard/framework/Shareable
+type org/globalplatform/SecureChannelx interface supers=org/globalplatform/SecureChannel
+type org/globalplatform/SecureChannelx2 interface supers=org/globalplatform/SecureChannel
