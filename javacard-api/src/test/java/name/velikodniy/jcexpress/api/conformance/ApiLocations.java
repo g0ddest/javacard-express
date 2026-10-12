@@ -7,11 +7,13 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Optional;
 
 /**
- * Locates the two class-file sets compared by the conformance tests: the stub classes produced by
- * this module and the jar of the reference implementation (jCardSim, a test-scoped dependency, unless
- * {@value #REFERENCE_PROPERTY} names another jar).
+ * Locates the class-file sets compared by the conformance tests: the stub classes produced by
+ * this module, the jar of the reference implementation of the Java Card API (jCardSim, a test-scoped dependency,
+ * unless {@value #REFERENCE_PROPERTY} names another jar) and, when {@value #GLOBALPLATFORM_REFERENCE_PROPERTY}
+ * names one, a jar of the GlobalPlatform Card API.
  */
 final class ApiLocations {
 
@@ -24,6 +26,14 @@ final class ApiLocations {
      * {@code ./mvnw test -pl javacard-api -Djcx.api.reference=/path/to/api.jar}. That jar is only read as data.
      */
     static final String REFERENCE_PROPERTY = "jcx.api.reference";
+
+    /**
+     * System property naming a jar of the GlobalPlatform Card API (package {@code org.globalplatform}) to compare
+     * the stubs of that package with, for example the API jar of GlobalPlatform's own release:
+     * {@code ./mvnw test -pl javacard-api -Djcx.gpapi.reference=/path/to/gpapi-globalplatform.jar}. That jar is only
+     * read as data. Nothing provides it by default: neither jCardSim nor this build contains the package.
+     */
+    static final String GLOBALPLATFORM_REFERENCE_PROPERTY = "jcx.gpapi.reference";
 
     /** A class that exists only in the jCardSim jar, used to find that jar on the test class path. */
     private static final String REFERENCE_MARKER = "com/licel/jcardsim/base/Simulator.class";
@@ -71,6 +81,24 @@ final class ApiLocations {
         } catch (URISyntaxException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * Returns the jar named by {@value #GLOBALPLATFORM_REFERENCE_PROPERTY}.
+     *
+     * @return the jar of the GlobalPlatform Card API to compare with, or empty when the property is not set
+     * @throws IllegalStateException if the property names something that is not a file
+     */
+    static Optional<Path> globalPlatformReferenceJar() {
+        String configured = System.getProperty(GLOBALPLATFORM_REFERENCE_PROPERTY);
+        if (configured == null || configured.isBlank()) {
+            return Optional.empty();
+        }
+        Path jar = Path.of(configured);
+        if (!Files.isRegularFile(jar)) {
+            throw new IllegalStateException(GLOBALPLATFORM_REFERENCE_PROPERTY + " does not name a jar: " + jar);
+        }
+        return Optional.of(jar);
     }
 
     /**
