@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.converter;
 
+import java.util.Optional;
+
 /**
  * Supported JavaCard specification versions with their corresponding CAP file format versions.
  *
@@ -126,6 +128,13 @@ public enum JavaCardVersion {
      */
     V3_2_0(2, 3);
 
+    /**
+     * The version number of the platform a build targets when it configures none: the default of
+     * {@link Converter.Builder#javaCardVersion(JavaCardVersion)}, of the Maven plugin's {@code javaCardVersion} and of
+     * the compile-time check. One constant, so that they cannot differ.
+     */
+    public static final String DEFAULT_VERSION = "3.0.5";
+
     private final int formatMajor;
     private final int formatMinor;
     private final int exportFormatMajor;
@@ -194,5 +203,37 @@ public enum JavaCardVersion {
      */
     public int exportFormatMinor() {
         return exportFormatMinor;
+    }
+
+    /**
+     * Returns the platform a build targets when it configures none, {@link #DEFAULT_VERSION}.
+     *
+     * @return the default target platform
+     */
+    public static JavaCardVersion defaultVersion() {
+        return parse(DEFAULT_VERSION).orElseThrow();
+    }
+
+    /**
+     * Parses a platform version as a build configuration writes it.
+     *
+     * @param text a version number such as {@code 3.0.5}; the short forms {@code 2.1}, {@code 2.2}, {@code 3.0},
+     *             {@code 3.1} and {@code 3.2} stand for the latest supported release of that line; blanks around
+     *             the number are ignored
+     * @return the platform, or empty for {@code null} and any other text
+     */
+    public static Optional<JavaCardVersion> parse(String text) {
+        String version = text == null ? "" : text.strip();
+        return Optional.ofNullable(switch (version) {
+            case "2.1.2", "2.1" -> V2_1_2;
+            case "2.2.1" -> V2_2_1;
+            case "2.2.2", "2.2" -> V2_2_2;
+            case "3.0.3" -> V3_0_3;
+            case "3.0.4" -> V3_0_4;
+            case "3.0.5", "3.0" -> V3_0_5;
+            case "3.1.0", "3.1" -> V3_1_0;
+            case "3.2.0", "3.2" -> V3_2_0;
+            default -> null;
+        });
     }
 }

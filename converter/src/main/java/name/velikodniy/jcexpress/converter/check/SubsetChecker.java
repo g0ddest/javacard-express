@@ -58,6 +58,12 @@ import java.util.List;
  */
 public final class SubsetChecker {
 
+    /**
+     * How the message of a violation in a catch clause starts: the class the clause names is not part of the Java
+     * Card platform (JCVM 3.1 §2.2.1.4). The violation is in the method's declaration; the clause has no instruction.
+     */
+    public static final String CATCH_CLAUSE = "catch clause: ";
+
     private static final int ACC_VOLATILE = 0x0040;
     private static final int ACC_TRANSIENT = 0x0080;
     private static final int ACC_ANNOTATION = 0x2000;
