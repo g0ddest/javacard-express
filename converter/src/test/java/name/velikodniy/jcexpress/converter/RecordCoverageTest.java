@@ -454,6 +454,33 @@ class RecordCoverageTest {
             var r = new ConverterResult(new byte[10], new byte[5], List.of(), 10);
             assertThat(r.toString()).isNotBlank();
         }
+
+        @Test
+        void imports_areEmptyWithoutThem() {
+            var r = new ConverterResult(new byte[]{1}, new byte[]{2}, List.of(), 1);
+            assertThat(r.imports()).isEmpty();
+        }
+
+        @Test
+        void imports_arePartOfEqualityAndText() {
+            var framework = new ConverterResult.Import("javacard.framework", "A0000000620101", 1, 6, true);
+            var a = new ConverterResult(new byte[]{1}, new byte[]{2}, List.of(), 1, List.of(framework));
+            var b = new ConverterResult(new byte[]{1}, new byte[]{2}, List.of(), 1, List.of(framework));
+            var none = new ConverterResult(new byte[]{1}, new byte[]{2}, List.of(), 1);
+
+            assertThat(a).isEqualTo(b).hasSameHashCodeAs(b).isNotEqualTo(none);
+            assertThat(a.toString()).contains("javacard.framework", "A0000000620101");
+            assertThat(framework.version()).isEqualTo("1.6");
+        }
+
+        @Test
+        void imports_areCopied() {
+            var list = new java.util.ArrayList<ConverterResult.Import>();
+            var r = new ConverterResult(new byte[]{1}, new byte[]{2}, List.of(), 1, list);
+            list.add(new ConverterResult.Import("java.lang", "A0000000620001", 1, 0, true));
+
+            assertThat(r.imports()).isEmpty();
+        }
     }
 
     // ── ImportedPackage ──

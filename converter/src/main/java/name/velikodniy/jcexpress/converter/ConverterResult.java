@@ -46,6 +46,10 @@ import java.util.Objects;
  *                   that import this package
  * @param warnings   non-fatal warnings generated during conversion; empty list if none
  * @param capSize    size of the CAP file in bytes (equivalent to {@code capFile.length})
+ * @param imports    the packages the CAP file imports, in the order of its Import component
+ *                   (JCVM 3.1 §6.7), each with the version the CAP file was linked against: a card
+ *                   needs that version or a later minor version of the package to load the CAP
+ *                   file (§4.5.2)
  *
  * @see Converter#convert()
  * @see ConverterException
@@ -54,16 +58,59 @@ public record ConverterResult(
         byte[] capFile,
         byte[] exportFile,
         List<String> warnings,
-        int capSize
+        int capSize,
+        List<Import> imports
 ) {
+    /**
+     * A package the CAP file imports (package_info of the Import component, JCVM 3.1 §6.7).
+     *
+     * @param packageName  the package in dot notation, e.g. {@code javacard.framework}
+     * @param aid          the package AID, uppercase hex
+     * @param majorVersion the major version the CAP file was linked against
+     * @param minorVersion the minor version the CAP file was linked against
+     * @param builtIn      whether the converter's built-in data described the package ({@code false}:
+     *                     an export file given with {@code importExportFile} or found on the export path)
+     */
+    public record Import(String packageName, String aid, int majorVersion, int minorVersion, boolean builtIn) {
+
+        /**
+         * Returns the version the CAP file was linked against.
+         *
+         * @return {@code <major>.<minor>}
+         */
+        public String version() {
+            return majorVersion + "." + minorVersion;
+        }
+    }
+
+    /**
+     * Canonical constructor; copies the list of imports.
+     */
+    public ConverterResult {
+        imports = List.copyOf(imports);
+    }
+
+    /**
+     * Creates a result without the list of imported packages (source compatibility).
+     *
+     * @param capFile    CAP file bytes
+     * @param exportFile export file bytes
+     * @param warnings   non-fatal warnings
+     * @param capSize    size of the CAP file in bytes
+     */
+    public ConverterResult(byte[] capFile, byte[] exportFile, List<String> warnings, int capSize) {
+        this(capFile, exportFile, warnings, capSize, List.of());
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o instanceof ConverterResult(var cf, var ef, var w, var cs)) {
+        if (o instanceof ConverterResult(var cf, var ef, var w, var cs, var imp)) {
             return capSize == cs
                     && Arrays.equals(capFile, cf)
                     && Arrays.equals(exportFile, ef)
-                    && Objects.equals(warnings, w);
+                    && Objects.equals(warnings, w)
+                    && imports.equals(imp);
         }
         return false;
     }
@@ -71,7 +118,7 @@ public record ConverterResult(
     @Override
     public int hashCode() {
         return 31 * (31 * Arrays.hashCode(capFile) + Arrays.hashCode(exportFile))
-                + Objects.hashCode(warnings);
+                + Objects.hash(warnings, imports);
     }
 
     @Override
@@ -80,6 +127,7 @@ public record ConverterResult(
         return "ConverterResult[capFile=" + hex.formatHex(capFile)
                 + ", exportFile=" + hex.formatHex(exportFile)
                 + ", warnings=" + warnings
-                + ", capSize=" + capSize + "]";
+                + ", capSize=" + capSize
+                + ", imports=" + imports + "]";
     }
 }

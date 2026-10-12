@@ -6,6 +6,7 @@ import name.velikodniy.jcexpress.converter.TestFixtures.Fixture;
 import name.velikodniy.jcexpress.converter.testutil.OracleReferences;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.FieldSource;
 
 import java.io.IOException;
@@ -46,6 +47,15 @@ class CapInvariantsTest {
         CapImage cap = CapImage.parse(TestFixtures.LIBRARY.convert().capFile());
 
         assertThat(CapInvariants.check(cap)).isEmpty();
+    }
+
+    /** A package that imports {@code org.globalplatform} from the converter's built-in data (JCVM 3.1 §6.7). */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = JavaCardVersion.class, names = {"V3_0_4", "V3_0_5", "V3_2_0"})
+    void globalPlatformApiCapSatisfiesSpecInvariants(JavaCardVersion version) throws Exception {
+        CapImage cap = CapImage.parse(TestFixtures.GLOBAL_PLATFORM.builder(version).build().convert().capFile());
+
+        assertThat(CapInvariants.check(cap)).as("SecureChannelApplet for " + version).isEmpty();
     }
 
     /**

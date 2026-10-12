@@ -2,6 +2,9 @@ package name.velikodniy.jcexpress.converter;
 
 import name.velikodniy.jcexpress.converter.resolve.ImportedPackage;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -122,6 +125,44 @@ final class AidRules {
         return "no package AID was configured; using " + hex(packageAid) + ", generated from the package name."
                 + " Its RID is proprietary (not registered with ISO, JCVM 3.1 §4.2.1); configure a package AID"
                 + " under your own RID for cards in the field";
+    }
+
+    /**
+     * Generates the deterministic AID of a package without a configured one, using SHA-1:
+     * {@code 0xF0 || SHA-1(packageName)[0:7]}.
+     *
+     * @param packageName the package name (dot notation)
+     * @return the 8-byte AID
+     */
+    @SuppressWarnings("java:S4790") // SHA-1 used for deterministic AID generation, not security
+    static byte[] generated(String packageName) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-1");
+            byte[] hash = md.digest(packageName.getBytes(StandardCharsets.UTF_8));
+            byte[] aid = new byte[8];
+            aid[0] = (byte) 0xF0;
+            System.arraycopy(hash, 0, aid, 1, 7);
+            return aid;
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-1 not available", e);
+        }
+    }
+
+    /**
+     * Parses an AID given as hex digits, optionally separated by spaces or colons.
+     *
+     * @param hex the AID text
+     * @return the AID bytes
+     * @throws IllegalArgumentException if the text is not an even number of hex digits
+     */
+    static byte[] parse(String hex) {
+        String digits = hex.replace(" ", "").replace(":", "");
+        try {
+            return HexFormat.of().parseHex(digits);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid AID '" + hex
+                    + "': expected an even number of hexadecimal digits", e);
+        }
     }
 
     private static String hex(byte[] aid) {

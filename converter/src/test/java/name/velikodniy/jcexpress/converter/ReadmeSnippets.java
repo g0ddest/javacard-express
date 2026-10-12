@@ -32,6 +32,20 @@ final class ReadmeSnippets {
         result.warnings().forEach(System.err::println);
     }
 
+    /** "The GlobalPlatform API". */
+    static void globalPlatformApi() throws Exception {
+        ConverterResult secure = Converter.builder()
+            .classesDirectory(Path.of("target/classes"))
+            .packageName("com.example.secure")
+            .packageAid("F00000000101")
+            .applet("com.example.secure.SecureApplet", "F0000000010101")
+            .globalPlatformApi("1.5")                    // omit it to import the lowest sufficient version
+            .build()
+            .convert();
+
+        secure.imports().forEach(i -> System.out.println(i.packageName() + " " + i.version()));
+    }
+
     /** "A rejected conversion reports what the failing check found". */
     static void rejected(Converter converter) {
         try {

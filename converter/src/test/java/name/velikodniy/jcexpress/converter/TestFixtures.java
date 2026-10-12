@@ -94,6 +94,14 @@ public final class TestFixtures {
     public static final Fixture LIBRARY =
             new Fixture("Library", "com.example.lib", "A000000062170101", null, null, false);
 
+    /**
+     * Applet package that uses the GlobalPlatform Card API ({@code org.globalplatform}) of the project's stubs. It
+     * is not among {@link #APPLETS}: its CAP file imports a package outside the Java Card API, so the tests that
+     * run a kit's verifier or compare with a kit's converter need that package's export file.
+     */
+    public static final Fixture GLOBAL_PLATFORM =
+            applet("SecureChannelApplet", "com.example.gp", "A0000000621D0101", "SecureChannelApplet", false);
+
     /** Packages the converter must reject: they break a rule of the Java Card language subset. */
     public static final List<Fixture> REJECTED = List.of(
             applet("PubOverApplet", "com.example.pubover", "A000000062180101", "PubOverApplet", false),
