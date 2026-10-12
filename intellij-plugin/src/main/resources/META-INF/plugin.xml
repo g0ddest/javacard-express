@@ -1,0 +1,29 @@
+<idea-plugin>
+    <id>name.velikodniy.jcexpress</id>
+    <name>JavaCard Express</name>
+    <vendor email="vitaliy@velikodniy.name" url="https://github.com/g0ddest/javacard-express">Vitaliy Velikodniy</vendor>
+
+    <description><![CDATA[
+    Shows the errors of the JavaCard Express javac check in the editor while you type: code outside the Java Card
+    language subset (<code>long</code>, <code>String</code>, lambdas, enums, ...) and API the target Java Card
+    platform does not have are marked at their source lines, with the same message the build gives.
+    <p>The plugin has no rules of its own. In a module whose compilation runs the check (the JavaCard Express Maven
+    plugin as a build extension, or the applet parent, puts it on the annotation processor path), it compiles the
+    package of the open file in memory with the project's own check, in the version the build uses, and marks what
+    the check reports.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends optional="true" config-file="jcx-maven.xml">org.jetbrains.idea.maven</depends>
+
+    <extensionPoints>
+        <extensionPoint qualifiedName="name.velikodniy.jcexpress.checkOptions"
+                        interface="name.velikodniy.jcexpress.idea.CheckOptionsSource" dynamic="true"/>
+    </extensionPoints>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <externalAnnotator language="JAVA"
+                           implementationClass="name.velikodniy.jcexpress.idea.JavaCardCheckAnnotator"/>
+    </extensions>
+</idea-plugin>
