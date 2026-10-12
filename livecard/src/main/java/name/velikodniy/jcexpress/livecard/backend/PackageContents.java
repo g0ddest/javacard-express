@@ -38,13 +38,18 @@ import java.util.zip.ZipFile;
  * <p>The GlobalPlatform backends convert from it what a card needs of the package: its applets
  * ({@link #applets(Collection)}) and the classes they use ({@link #closure(Collection)}), so that JUnit test classes
  * of the package are not converted. A CAP file links only against the export files of the packages it imports
- * (JCVM 3.1 §4.3.3); {@link #foreignPackages(Map)} names the packages outside the Java Card API that the classes
- * use.</p>
+ * (JCVM 3.1 §4.3.3); {@link #foreignPackages(Map)} names the packages outside the Java Card API and the
+ * GlobalPlatform Card API that the classes use.</p>
  */
 final class PackageContents {
 
     /** Namespaces of the Java Card API, which the converter links against its built-in export data. */
     private static final List<String> API_NAMESPACES = List.of("java/", "javacard/", "javacardx/");
+    /**
+     * The GlobalPlatform Card API package, which the converter links against its built-in data too and a
+     * GlobalPlatform card has; its sibling packages ({@code org.globalplatform.upgrade} and others) are not built in.
+     */
+    private static final String GLOBALPLATFORM_API = "org/globalplatform";
     private static final String INSTALL = "install";
     private static final String INSTALL_DESCRIPTOR = "([BSB)V";
 
@@ -175,8 +180,9 @@ final class PackageContents {
     }
 
     /**
-     * Returns the packages outside the Java Card API ({@code java.*}, {@code javacard.*}, {@code javacardx.*}) that
-     * class files use, each with the classes used and where the first use is.
+     * Returns the packages outside the platform API ({@code java.*}, {@code javacard.*}, {@code javacardx.*} and
+     * {@code org.globalplatform}, for which the converter has built-in linking data) that class files use, each with
+     * the classes used and where the first use is.
      *
      * @param classFiles class files of the package
      * @return descriptions by package name (dotted), in the order of first use
@@ -186,7 +192,8 @@ final class PackageContents {
         Map<String, String> firstUse = new LinkedHashMap<>();
         for (ClassReferences.Reference reference : ClassReferences.scan(List.copyOf(classFiles.values()))) {
             String owner = reference.ownerPackage();
-            if (!owner.equals(packagePath) && API_NAMESPACES.stream().noneMatch(owner::startsWith)) {
+            if (!owner.equals(packagePath) && !owner.equals(GLOBALPLATFORM_API)
+                    && API_NAMESPACES.stream().noneMatch(owner::startsWith)) {
                 String pkg = owner.replace('/', '.');
                 used.computeIfAbsent(pkg, key -> new LinkedHashSet<>())
                         .add(reference.owner().substring(owner.isEmpty() ? 0 : owner.length() + 1));

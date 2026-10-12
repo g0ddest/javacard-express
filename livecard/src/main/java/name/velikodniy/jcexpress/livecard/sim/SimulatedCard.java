@@ -5,6 +5,8 @@ import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.apdu.APDUCodec;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
+import name.velikodniy.jcexpress.embedded.gp.SecurityDomain;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,6 +28,11 @@ import java.util.function.Consumer;
  * installed applet on a logical channel is answered '6881' (logical channel not supported, ISO/IEC 7816-4:2005
  * 5.1.3, Table 6), and the card says why ({@link #onLimit(Consumer)}); an AID the card does not have is answered
  * '6A82'. Every command that reaches the card is recorded, so tests can assert what the guard let through.</p>
+ *
+ * <p>The applets see the card through {@code org.globalplatform.GPSystem} ({@link #globalPlatform()}): their
+ * Security Domain is the Issuer Security Domain, so an applet that passes INITIALIZE UPDATE and EXTERNAL
+ * AUTHENTICATE to {@code GPSystem.getSecureChannel()} opens an SCP03 session with the ISD's key set and option
+ * i = '00', as on the real card, and the authentications it forwards are counted with those of the ISD.</p>
  */
 public final class SimulatedCard implements SmartCardSession {
 
@@ -36,6 +43,7 @@ public final class SimulatedCard implements SmartCardSession {
     private static final HexFormat HEX = HexFormat.of().withUpperCase();
     private static final String FCI = "6F108408A000000151000000A5049F6501FF";
 
+    private final GlobalPlatformCard globalPlatform;
     private final SimulatedContent content;
     private final SimulatedIsd isd;
     private final List<String> received = new ArrayList<>();
@@ -50,8 +58,22 @@ public final class SimulatedCard implements SmartCardSession {
      * @param applets   the applets the card can run
      */
     public SimulatedCard(byte[] staticKey, SimulatedApplets applets) {
-        this.content = new SimulatedContent(ISD, applets);
+        this.globalPlatform = new GlobalPlatformCard(SecurityDomain.withKeys(staticKey, staticKey, staticKey)
+                .fixed("the simulated GlobalPlatform card models the Issuer Security Domain of the real card the"
+                        + " harness was validated on (SCP03, i = '00', Key Version Number 'FF')"));
+        this.content = new SimulatedContent(ISD, applets, globalPlatform);
         this.isd = new SimulatedIsd(staticKey, content);
+    }
+
+    /**
+     * Returns the GlobalPlatform environment of the card as its applets see it through
+     * {@code org.globalplatform.GPSystem}: the registry with the life cycle state and privileges of every
+     * application, the card life cycle state and the Security Domain behind {@code GPSystem.getSecureChannel()}.
+     *
+     * @return the GlobalPlatform environment
+     */
+    public synchronized GlobalPlatformCard globalPlatform() {
+        return globalPlatform;
     }
 
     /**
@@ -64,21 +86,23 @@ public final class SimulatedCard implements SmartCardSession {
     }
 
     /**
-     * Returns how many EXTERNAL AUTHENTICATE commands reached the card.
+     * Returns how many EXTERNAL AUTHENTICATE commands reached the Issuer Security Domain: those sent to it and
+     * those an applet passed to it through the GlobalPlatform API.
      *
      * @return the count
      */
     public synchronized int externalAuthentications() {
-        return isd.externalAuthentications();
+        return isd.externalAuthentications() + globalPlatform.securityDomain().externalAuthentications();
     }
 
     /**
-     * Returns how many EXTERNAL AUTHENTICATE commands the card rejected (what a real card counts).
+     * Returns how many EXTERNAL AUTHENTICATE commands the Issuer Security Domain rejected (what a real card
+     * counts), sent to it or passed on by an applet.
      *
      * @return the count
      */
     public synchronized int failedAuthentications() {
-        return isd.failedAuthentications();
+        return isd.failedAuthentications() + globalPlatform.securityDomain().failedAuthentications();
     }
 
     /**
@@ -190,8 +214,8 @@ public final class SimulatedCard implements SmartCardSession {
         isd.endSession();
         String hex = HEX.formatHex(aid);
         SimulatedContent.Application application = aid.length == 0 ? null : content.application(hex);
-        boolean selectable = application != null && application.card != null && (application.state & 0x80) == 0
-                && (application.state & 0x07) == 0x07;
+        boolean selectable = application != null && application.card != null && (application.state() & 0x80) == 0
+                && (application.state() & 0x07) == 0x07;
         if (selected != null && (!selectable || selected.card != application.card)) {
             selected.card.deselect();
         }
@@ -233,6 +257,7 @@ public final class SimulatedCard implements SmartCardSession {
         selected = null;
         channels.clear();
         content.reset();
+        globalPlatform.cardReset();
     }
 
     @Override

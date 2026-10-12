@@ -1,6 +1,8 @@
 package name.velikodniy.jcexpress.livecard.sim;
 
 import name.velikodniy.jcexpress.AID;
+import name.velikodniy.jcexpress.embedded.gp.CardApplication;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
@@ -17,6 +19,10 @@ import java.util.Optional;
  * card, so shareable interface objects work across their packages. GET STATUS responses follow GlobalPlatform
  * Card Specification v2.3.1 Tables 11-36/11-37 in the shape the real JCOP 4 card produced (see the realcard
  * transcripts).
+ *
+ * <p>The life cycle state and the privileges of every application are those of the card's GlobalPlatform Registry
+ * ({@link GlobalPlatformCard}), which the applets read and change through {@code org.globalplatform.GPSystem}: a
+ * state an applet gives itself shows in GET STATUS, and SET STATUS shows to the applet.</p>
  */
 final class SimulatedContent {
 
@@ -32,25 +38,41 @@ final class SimulatedContent {
     private record LoadFile(List<String> modules, List<String> imports, JCardSimCard card) {
     }
 
-    /** An application instance; one that another tool installed has no jCardSim card behind it. */
+    /**
+     * An application instance; one that another tool installed has no jCardSim card behind it. Its life cycle
+     * state and privileges are its entry in the GlobalPlatform Registry of the card.
+     */
     static final class Application {
         final String aid;
         final String loadFile;
         final JCardSimCard card;
-        final int privileges;
-        int state;
+        private final CardApplication entry;
 
-        Application(String aid, String loadFile, JCardSimCard card, int privileges, int state) {
+        Application(String aid, String loadFile, JCardSimCard card, CardApplication entry) {
             this.aid = aid;
             this.loadFile = loadFile;
             this.card = card;
-            this.privileges = privileges;
-            this.state = state;
+            this.entry = entry;
+        }
+
+        /** The life cycle state (GPCS v2.3.1 Table 11-4). */
+        int state() {
+            return entry.state();
+        }
+
+        void state(int state) {
+            entry.state(state);
+        }
+
+        /** The three privilege bytes (GPCS v2.3.1 Tables 11-7 to 11-9). */
+        byte[] privileges() {
+            return entry.privileges();
         }
     }
 
     private final String isd;
     private final SimulatedApplets applets;
+    private final GlobalPlatformCard globalPlatform;
     private final Map<String, LoadFile> loadFiles = new LinkedHashMap<>();
     private final Map<String, Application> applications = new LinkedHashMap<>();
     private boolean refuseDeletingLocked;
@@ -58,19 +80,22 @@ final class SimulatedContent {
     /**
      * Creates the content of a new card.
      *
-     * @param isd           the ISD AID
-     * @param applets the applets the card can run
+     * @param isd            the ISD AID
+     * @param applets        the applets the card can run
+     * @param globalPlatform the GlobalPlatform environment of the card, whose registry holds the applications
      */
-    SimulatedContent(String isd, SimulatedApplets applets) {
+    SimulatedContent(String isd, SimulatedApplets applets, GlobalPlatformCard globalPlatform) {
         this.isd = isd;
         this.applets = applets;
+        this.globalPlatform = globalPlatform;
         loadFiles.put(BUILT_IN_LOAD_FILE, new LoadFile(List.of(BUILT_IN_MODULE), List.of(), null));
     }
 
     /** Adds a loaded load file; it shares the jCardSim card of the first load file it imports, if any. */
     void addLoadFile(String aid, List<String> modules, List<String> imports) {
         JCardSimCard card = imports.stream().map(loadFiles::get).filter(Objects::nonNull).map(LoadFile::card)
-                .filter(Objects::nonNull).findFirst().orElseGet(() -> new JCardSimCard(applets.classPath()));
+                .filter(Objects::nonNull).findFirst()
+                .orElseGet(() -> new JCardSimCard(applets.classPath(), globalPlatform));
         loadFiles.put(aid, new LoadFile(List.copyOf(modules), List.copyOf(imports), card));
     }
 
@@ -90,14 +115,16 @@ final class SimulatedContent {
         if (className.isEmpty() || card == null) {
             return false;
         }
-        card.install(className.get(), AID.fromHex(aid), params);
-        applications.put(aid, new Application(aid, loadFile, card, 0x00, state));
+        card.install(className.get(), AID.fromHex(aid), params, state);
+        applications.put(aid, new Application(aid, loadFile, card,
+                globalPlatform.application(AID.fromHex(aid)).orElseThrow()));
         return true;
     }
 
     /** Adds an application that another tool installed: listed by GET STATUS, nothing runs behind it. */
     void addForeignApplication(String aid, String loadFile, int privileges, int state) {
-        applications.put(aid, new Application(aid, loadFile, null, privileges, state));
+        applications.put(aid, new Application(aid, loadFile, null,
+                globalPlatform.register(AID.fromHex(aid), state, new byte[]{(byte) privileges})));
     }
 
     /** Makes DELETE of a LOCKED application fail with '6985', as a card may (never tried on the real card). */
@@ -127,12 +154,14 @@ final class SimulatedContent {
     int delete(String aid, boolean related) {
         Application application = applications.get(aid);
         if (application != null) {
-            if (refuseDeletingLocked && (application.state & 0x80) != 0) {
+            if (refuseDeletingLocked && (application.state() & 0x80) != 0) {
                 return 0x6985;
             }
             applications.remove(aid);
             if (application.card != null) {
                 application.card.delete(AID.fromHex(aid));
+            } else {
+                globalPlatform.unregister(AID.fromHex(aid));
             }
             return 0x9000;
         }
@@ -175,8 +204,8 @@ final class SimulatedContent {
     private byte[] applicationEntry(Application app) {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         tlv(body, "4F", HEX.parseHex(app.aid));
-        tlv(body, "9F70", new byte[]{(byte) app.state});
-        tlv(body, "C5", new byte[]{(byte) app.privileges, 0, 0});
+        tlv(body, "9F70", new byte[]{(byte) app.state()});
+        tlv(body, "C5", app.privileges());
         tlv(body, "C4", HEX.parseHex(app.loadFile));
         tlv(body, "CE", new byte[]{1, 0});
         tlv(body, "CC", HEX.parseHex(isd));

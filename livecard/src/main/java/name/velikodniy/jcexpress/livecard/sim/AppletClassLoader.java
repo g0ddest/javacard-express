@@ -1,5 +1,7 @@
 package name.velikodniy.jcexpress.livecard.sim;
 
+import name.velikodniy.jcexpress.embedded.gp.ApiClasspath;
+
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -9,9 +11,10 @@ import java.util.List;
 
 /**
  * Loads the applet classes of its directories (the test applets, compiled third-party applets) itself, child
- * first, and everything else (jCardSim's {@code javacard.framework}, the JDK) from its parent. A jCardSim card
- * with its own loader starts with fresh static fields, like a package that has just been loaded onto a card;
- * applets that share objects through a shareable interface must use the same loader.
+ * first, and everything else (jCardSim's {@code javacard.framework}, the simulator's {@code org.globalplatform},
+ * the JDK) from its parent. A jCardSim card with its own loader starts with fresh static fields, like a package that
+ * has just been loaded onto a card; applets that share objects through a shareable interface must use the same
+ * loader.
  */
 final class AppletClassLoader extends URLClassLoader {
 
@@ -22,7 +25,9 @@ final class AppletClassLoader extends URLClassLoader {
     @Override
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         if (findResource(name.replace('.', '/') + ".class") == null) {
-            return super.loadClass(name, resolve);
+            Class<?> loaded = super.loadClass(name, resolve);
+            ApiClasspath.verify(loaded); // org.globalplatform must be the simulator's, not a stub jar's
+            return loaded;
         }
         synchronized (getClassLoadingLock(name)) {
             Class<?> loaded = findLoadedClass(name);

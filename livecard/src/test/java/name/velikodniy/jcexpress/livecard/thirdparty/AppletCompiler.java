@@ -24,7 +24,7 @@ import java.util.stream.Stream;
  * Compiles applet sources the way an applet project builds them: {@code javac --release 8} against the Java Card
  * API stubs of this project ({@code javacard-api}), with {@code javax.tools} in the test JVM.
  */
-final class AppletCompiler {
+public final class AppletCompiler {
 
     /** System property set by the build: the API stubs jar (or classes directory). */
     static final String STUBS_PROPERTY = "jcx.livecard.test.apiStubs";
@@ -107,7 +107,14 @@ final class AppletCompiler {
         }
     }
 
-    private static Path apiStubs() {
+    /**
+     * Returns where the API stubs of this project are: the jar of {@code javacard-express-api} or the classes
+     * directory of its module.
+     *
+     * @return the stubs
+     * @throws IllegalStateException if they are not found
+     */
+    public static Path apiStubs() {
         return firstWithTheApi(candidates(System.getProperty(STUBS_PROPERTY),
                 System.getProperty("maven.multiModuleProjectDirectory"), System.getProperty("java.class.path", "")));
     }

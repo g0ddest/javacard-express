@@ -33,7 +33,8 @@ class LiveSuiteOnSimulatedCardTest {
 
     private static final List<Class<?>> SUITE = List.of(CardIdentificationLiveTest.class, SecureChannelLiveTest.class,
             PcscSessionLiveTest.class, AppletLifecycleLiveTest.class, InstallAndStatusLiveTest.class,
-            ConverterFeaturesLiveTest.class, OpenSourceAppletsLiveTest.class, CryptoApiLiveTest.class);
+            ConverterFeaturesLiveTest.class, OpenSourceAppletsLiveTest.class, CryptoApiLiveTest.class,
+            GlobalPlatformApiLiveTest.class);
 
     @TempDir
     Path tmp;
@@ -136,7 +137,7 @@ class LiveSuiteOnSimulatedCardTest {
                 .anyMatch(event -> event.startsWith("abortedTransactionRestoresState(LiveCard): ")
                         && event.contains("does not roll back aborted transactions"));
         missing.forEach(applet -> assertThat(aborted).anyMatch(event -> event.contains(applet.initCommand())));
-        assertThat(results.testEvents().succeeded().count()).isEqualTo(44 + 2 - missing.size());
+        assertThat(results.testEvents().succeeded().count()).isEqualTo(50 + 2 - missing.size());
     }
 
     private static void assertTranscripts(Path transcripts) throws IOException {
@@ -145,6 +146,10 @@ class LiveSuiteOnSimulatedCardTest {
         Path level03 = transcripts.resolve(SecureChannelLiveTest.class.getName())
                 .resolve("authenticatesAndReadsUnderSecureMessaging-2.txt");
         assertThat(level03).content().contains("secure channel session open at security level 03");
+        Path throughApplet = transcripts.resolve(GlobalPlatformApiLiveTest.class.getName())
+                .resolve("hostOpensTheSecureChannelThroughTheApplet-1.txt");
+        assertThat(throughApplet).content().contains("secure channel through the applet F04A4358010E01",
+                "card cryptogram independently VERIFIED", "secure channel session open at security level 01");
         if (ThirdPartyApplet.SMART_PGP.initialized()) {
             assertThat(transcripts.resolve(OpenSourceAppletsLiveTest.class.getName()).resolve("smartPgp.txt")).content()
                     .contains("deploying SmartPGP (https://github.com/ANSSI-FR/SmartPGP @", "C: 0047800002B60000");

@@ -4,6 +4,7 @@ import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.InstallException;
 import name.velikodniy.jcexpress.Mode;
+import name.velikodniy.jcexpress.SecurityDomainKeys;
 import name.velikodniy.jcexpress.SmartCardSession;
 import name.velikodniy.jcexpress.backend.AidScheme;
 import name.velikodniy.jcexpress.backend.AppletDeclaration;
@@ -11,12 +12,14 @@ import name.velikodniy.jcexpress.backend.BuildDescriptor;
 import name.velikodniy.jcexpress.backend.CardRequest;
 import name.velikodniy.jcexpress.backend.TestCard;
 import name.velikodniy.jcexpress.converter.ConverterException;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
 import name.velikodniy.jcexpress.gp.GPException;
 import name.velikodniy.jcexpress.livecard.AppletInstance;
 import name.velikodniy.jcexpress.livecard.Deployment;
 import name.velikodniy.jcexpress.livecard.LiveCard;
 import name.velikodniy.jcexpress.livecard.LiveCardConfig;
 import name.velikodniy.jcexpress.livecard.LiveCardException;
+import name.velikodniy.jcexpress.scp.SCPKeys;
 
 import java.nio.file.Path;
 import java.util.Collection;
@@ -57,6 +60,7 @@ final class GpTestCard implements TestCard {
     private final LiveCard live;
     private final Optional<Boolean> intSupport;
     private final Consumer<PackageLoad> beforeLoad;
+    private final Optional<GlobalPlatformCard> simulated;
     private final Map<String, Deployment> deployments = new HashMap<>();
     /** The applets each loaded package holds: module AIDs by class name. */
     private final Map<String, Map<String, AID>> modules = new HashMap<>();
@@ -72,12 +76,16 @@ final class GpTestCard implements TestCard {
      *                   build did, or without)
      * @param beforeLoad told about every package before it is loaded (the simulated card learns which classes
      *                   implement its applets and where they are)
+     * @param simulated  the GlobalPlatform environment of a simulated card, which tests can declare as a
+     *                   parameter; empty for a card in a reader
      */
-    GpTestCard(Mode mode, LiveCard live, Optional<Boolean> intSupport, Consumer<PackageLoad> beforeLoad) {
+    GpTestCard(Mode mode, LiveCard live, Optional<Boolean> intSupport, Consumer<PackageLoad> beforeLoad,
+               Optional<GlobalPlatformCard> simulated) {
         this.mode = mode;
         this.live = live;
         this.intSupport = intSupport;
         this.beforeLoad = beforeLoad;
+        this.simulated = simulated;
         this.session = new GpTestSession(live.session(), aid -> runAids.explain(aid, live.config().aidPrefix()));
     }
 
@@ -202,7 +210,11 @@ final class GpTestCard implements TestCard {
                     + " 6438). A card links a CAP file only when it has every imported API package with the same"
                     + " major and an equal or higher minor version (JCVM 3.1 §4.5.2): build for the card's Java Card"
                     + " version or an older one (<javaCardVersion> of javacard-express-maven-plugin, or the"
-                    + " live-card setting javaCardVersion)", e);
+                    + " live-card setting javaCardVersion). The line \"load " + load.pkg().packageName() + "\" of the"
+                    + " transcript lists the imported packages with their versions; org.globalplatform among them is"
+                    + " the GlobalPlatform Card API, whose version on the card does not follow from the Java Card"
+                    + " version: the converter imports the lowest one that has everything the package uses, unless"
+                    + " <globalPlatformApi> fixes a later one", e);
         }
     }
 
@@ -260,9 +272,22 @@ final class GpTestCard implements TestCard {
         live.session().select(AID.fromHex(live.config().isd()));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The harness; the keys of the Issuer Security Domain, with which an applet that uses the GlobalPlatform
+     * API opens its secure channel; on the simulated card its GlobalPlatform environment.</p>
+     */
     @Override
     public <T> Optional<T> resolve(Class<T> type) {
-        return type == LiveCard.class ? Optional.of(type.cast(live)) : Optional.empty();
+        if (type == LiveCard.class) {
+            return Optional.of(type.cast(live));
+        }
+        if (type == SecurityDomainKeys.class) {
+            SCPKeys keys = live.config().keys().toScpKeys();
+            return Optional.of(type.cast(new SecurityDomainKeys(keys.enc(), keys.mac(), keys.dek())));
+        }
+        return type == GlobalPlatformCard.class ? simulated.map(type::cast) : Optional.empty();
     }
 
     @Override

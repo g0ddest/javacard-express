@@ -87,6 +87,23 @@ class TestAppletsVerifierTest {
         assertThat(tmp.resolve("exp/com/jcx/livecard/hello")).doesNotExist();
     }
 
+    /**
+     * The export file written from the built-in data of {@code org.globalplatform} stays out of the export path root
+     * of the run's packages: a package with an Export component hands that root to the verifier of its importers,
+     * which would get the file too, and with two versions of it two export files of one package.
+     */
+    @Test
+    @EnabledIf(value = "kitAvailable", disabledReason = NO_KIT)
+    void globalPlatformExportFileStaysOutOfTheExportPathOfThePackages() {
+        LiveCardConfig config = LiveCardConfig.of(Map.of("transcriptDir", tmp.toString()));
+
+        PreparedCap.prepare(TestApplet.GP_API.pkg(config), config, new CapVerifier(KIT));
+
+        assertThat(tmp.resolve("globalplatform-exp/org.globalplatform-1.0/org/globalplatform/javacard/globalplatform.exp"))
+                .isNotEmptyFile();
+        assertThat(tmp.resolve("exp/org.globalplatform-1.0")).doesNotExist();
+    }
+
     /** Without the server's export file the client cannot be converted: nothing would be loaded. */
     @Test
     void importingPackageNeedsTheExportFileOfTheImportedOne() {

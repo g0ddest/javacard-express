@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * A CAP file ready to load: converted by this project's converter for the configured Java Card version, in
@@ -26,8 +27,12 @@ import java.util.Objects;
  * @param capFile      where the CAP file was saved
  * @param verification the verification result, or a note that none was configured
  * @param exportPath   the export path entry with the package's export file, or null without Export component
+ * @param imports      the packages the CAP file imports with the versions it was linked against, e.g.
+ *                     {@code javacard.framework 1.5, org.globalplatform 1.0, java.lang 1.0}: a card loads the file
+ *                     only when it has each of them in that version or a later minor one (JCVM 3.1 4.5.2)
  */
-record PreparedCap(byte[] cap, List<String> warnings, Path capFile, String verification, Path exportPath) {
+record PreparedCap(byte[] cap, List<String> warnings, Path capFile, String verification, Path exportPath,
+                   String imports) {
 
     PreparedCap {
         cap = cap.clone();
@@ -66,12 +71,20 @@ record PreparedCap(byte[] cap, List<String> warnings, Path capFile, String verif
             save(exportFile, result.exportFile());
         }
         Path exportPath = pkg.exportComponent() ? exportRoot : null;
-        String verification = verify(pkg, result.capFile(), verifier, exportPath);
+        String verification = verify(pkg, result, verifier, exportPath, config);
         save(file, result.capFile());
-        return new PreparedCap(result.capFile(), result.warnings(), file, verification, exportPath);
+        String imports = result.imports().stream()
+                .map(imported -> imported.packageName() + " " + imported.version()).collect(Collectors.joining(", "));
+        return new PreparedCap(result.capFile(), result.warnings(), file, verification, exportPath, imports);
     }
 
-    private static String verify(AppletPackage pkg, byte[] cap, CapVerifier verifier, Path exportPath) {
+    /**
+     * Runs the verifier with the export files of the package itself (Export component), of the packages on its
+     * export path and, for a CAP file that imports {@code org.globalplatform} from the converter's built-in data, the
+     * export file written from that data ({@link GlobalPlatformExportFile}).
+     */
+    private static String verify(AppletPackage pkg, ConverterResult converted, CapVerifier verifier, Path exportPath,
+                                 LiveCardConfig config) {
         if (verifier == null) {
             return "not verified (verifierSdk=none)";
         }
@@ -80,7 +93,9 @@ record PreparedCap(byte[] cap, List<String> warnings, Path capFile, String verif
             entries.add(exportPath);
         }
         entries.addAll(pkg.exportPath());
-        CapVerifier.Result result = verifier.verify(cap, entries);
+        GlobalPlatformExportFile.forVerifier(converted, config.javaCardVersion(),
+                config.transcriptDir().resolve("globalplatform-exp")).ifPresent(entries::add);
+        CapVerifier.Result result = verifier.verify(converted.capFile(), entries);
         if (!result.passed()) {
             throw new LiveCardException("The CAP file of " + pkg.packageName() + " fails the off-card verifier of "
                     + verifier.kit() + "; nothing was loaded:\n" + result.output());
@@ -109,7 +124,7 @@ record PreparedCap(byte[] cap, List<String> warnings, Path capFile, String verif
     public boolean equals(Object o) {
         return o instanceof PreparedCap other && Arrays.equals(cap, other.cap) && warnings.equals(other.warnings)
                 && capFile.equals(other.capFile) && verification.equals(other.verification)
-                && Objects.equals(exportPath, other.exportPath);
+                && Objects.equals(exportPath, other.exportPath) && imports.equals(other.imports);
     }
 
     @Override

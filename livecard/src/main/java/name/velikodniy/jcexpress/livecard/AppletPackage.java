@@ -31,10 +31,14 @@ import java.util.List;
  * @param exportComponent  whether the CAP file gets an Export component (JCVM 3.0.5 6.12), so that packages
  *                         loaded later can link to this one's shareable interfaces
  * @param exportPath       export path entries with the export files of imported packages (JCVM 3.0.5 4.1.1)
+ * @param globalPlatformApi the version of the GlobalPlatform Card API package {@code org.globalplatform} the CAP
+ *                         file imports, e.g. {@code 1.5}, or null for the lowest version that has everything the
+ *                         package uses (JCVM 3.1 4.5.2: a card links the import only when its own package has this
+ *                         version or a later minor one)
  */
 public record AppletPackage(Path classesDirectory, String packageName, String aid, int majorVersion,
                             int minorVersion, List<Module> modules, boolean intSupport, boolean exportComponent,
-                            List<Path> exportPath) {
+                            List<Path> exportPath, String globalPlatformApi) {
 
     /**
      * An applet class of the package and its module AID.
@@ -56,6 +60,25 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
         if (majorVersion < 0 || majorVersion > 0xFF || minorVersion < 0 || minorVersion > 0xFF) {
             throw new IllegalArgumentException("package version must be 0-255.0-255");
         }
+    }
+
+    /**
+     * Creates a package description that leaves the version of {@code org.globalplatform} to the converter.
+     *
+     * @param classesDirectory the directory with the compiled classes
+     * @param packageName      the Java package name
+     * @param aid              the package AID, uppercase hex
+     * @param majorVersion     the package major version
+     * @param minorVersion     the package minor version
+     * @param modules          the applets of the package
+     * @param intSupport       whether to convert with int support
+     * @param exportComponent  whether the CAP file gets an Export component
+     * @param exportPath       export path entries with the export files of imported packages
+     */
+    public AppletPackage(Path classesDirectory, String packageName, String aid, int majorVersion, int minorVersion,
+                         List<Module> modules, boolean intSupport, boolean exportComponent, List<Path> exportPath) {
+        this(classesDirectory, packageName, aid, majorVersion, minorVersion, modules, intSupport, exportComponent,
+                exportPath, null);
     }
 
     /**
@@ -84,7 +107,7 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
         List<Module> more = new ArrayList<>(modules);
         more.add(new Module(qualified, aid.toHex()));
         return new AppletPackage(classesDirectory, packageName, this.aid, majorVersion, minorVersion, more,
-                intSupport, exportComponent, exportPath);
+                intSupport, exportComponent, exportPath, globalPlatformApi);
     }
 
     /**
@@ -96,7 +119,7 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
      */
     public AppletPackage withVersion(int major, int minor) {
         return new AppletPackage(classesDirectory, packageName, aid, major, minor, modules, intSupport,
-                exportComponent, exportPath);
+                exportComponent, exportPath, globalPlatformApi);
     }
 
     /**
@@ -106,7 +129,7 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
      */
     public AppletPackage withIntSupport() {
         return new AppletPackage(classesDirectory, packageName, aid, majorVersion, minorVersion, modules, true,
-                exportComponent, exportPath);
+                exportComponent, exportPath, globalPlatformApi);
     }
 
     /**
@@ -116,7 +139,7 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
      */
     public AppletPackage withExportComponent() {
         return new AppletPackage(classesDirectory, packageName, aid, majorVersion, minorVersion, modules,
-                intSupport, true, exportPath);
+                intSupport, true, exportPath, globalPlatformApi);
     }
 
     /**
@@ -129,7 +152,20 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
         List<Path> more = new ArrayList<>(exportPath);
         more.addAll(List.of(entries));
         return new AppletPackage(classesDirectory, packageName, aid, majorVersion, minorVersion, modules,
-                intSupport, exportComponent, more);
+                intSupport, exportComponent, more, globalPlatformApi);
+    }
+
+    /**
+     * Fixes the version of {@code org.globalplatform} the CAP file imports, as the plugin's
+     * {@code <globalPlatformApi>} does for a build. Without it the converter imports the lowest version that has
+     * everything the package uses.
+     *
+     * @param version a version of the package, e.g. {@code 1.5}
+     * @return a new description with the fixed version
+     */
+    public AppletPackage withGlobalPlatformApi(String version) {
+        return new AppletPackage(classesDirectory, packageName, aid, majorVersion, minorVersion, modules,
+                intSupport, exportComponent, exportPath, version);
     }
 
     /**
@@ -156,6 +192,7 @@ public record AppletPackage(Path classesDirectory, String packageName, String ai
                 .javaCardVersion(version)
                 .supportInt32(intSupport)
                 .generateExport(exportComponent)
+                .globalPlatformApi(globalPlatformApi)
                 .exportPath(exportPath.toArray(Path[]::new));
         for (Module module : modules) {
             builder.applet(module.className(), module.aid());

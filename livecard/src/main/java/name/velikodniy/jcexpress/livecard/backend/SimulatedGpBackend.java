@@ -1,10 +1,12 @@
 package name.velikodniy.jcexpress.livecard.backend;
 
 import name.velikodniy.jcexpress.Mode;
+import name.velikodniy.jcexpress.SecurityDomainKeys;
 import name.velikodniy.jcexpress.backend.AidScheme;
 import name.velikodniy.jcexpress.backend.CardBackend;
 import name.velikodniy.jcexpress.backend.CardRequest;
 import name.velikodniy.jcexpress.backend.TestCard;
+import name.velikodniy.jcexpress.embedded.gp.GlobalPlatformCard;
 import name.velikodniy.jcexpress.livecard.CardConnector;
 import name.velikodniy.jcexpress.livecard.LiveCard;
 import name.velikodniy.jcexpress.livecard.LiveCardConfig;
@@ -44,6 +46,10 @@ import java.util.logging.Logger;
  * {@code jcx.livecard.transcriptDir}, {@value #INT_SETTING} ({@code true} or {@code false}; default the build's, else
  * no int support).</p>
  *
+ * <p>Besides the harness ({@link LiveCard}) tests can declare a {@link SecurityDomainKeys} parameter, the keys of the
+ * Issuer Security Domain, and a {@link GlobalPlatformCard} parameter, the GlobalPlatform environment of the simulated
+ * card that its applets reach through {@code org.globalplatform.GPSystem}.</p>
+ *
  * <p>Limits of the simulated card: applets run on the basic channel only; on logical channels 1-3 only the Issuer
  * Security Domain can be selected, and a SELECT of an applet there is answered '6881' with a note in the transcript
  * ({@link SimulatedCard}).</p>
@@ -77,7 +83,7 @@ public final class SimulatedGpBackend implements CardBackend {
 
     @Override
     public Set<Class<?>> parameterTypes() {
-        return Set.of(LiveCard.class);
+        return Set.of(LiveCard.class, SecurityDomainKeys.class, GlobalPlatformCard.class);
     }
 
     @Override
@@ -89,7 +95,8 @@ public final class SimulatedGpBackend implements CardBackend {
         GpTestCard.transcribe(live, request);
         card.onLimit(live::note);
         Optional<Boolean> intSupport = request.setting(INT_SETTING).map(Boolean::parseBoolean);
-        return new GpTestCard(Mode.SIMULATED_GP, live, intSupport, registry::register);
+        return new GpTestCard(Mode.SIMULATED_GP, live, intSupport, registry::register,
+                Optional.of(card.globalPlatform()));
     }
 
     /**

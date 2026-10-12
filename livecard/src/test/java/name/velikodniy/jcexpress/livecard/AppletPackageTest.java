@@ -42,9 +42,10 @@ class AppletPackageTest {
 
     @Test
     void withersKeepTheOtherSettings() {
-        AppletPackage pkg = TestApplet.HELLO.pkg(config).withIntSupport().withExportComponent()
-                .withExportPath(Path.of("a")).withExportPath(Path.of("b")).withVersion(2, 1);
+        AppletPackage pkg = TestApplet.HELLO.pkg(config).withGlobalPlatformApi("1.5").withIntSupport()
+                .withExportComponent().withExportPath(Path.of("a")).withExportPath(Path.of("b")).withVersion(2, 1);
 
+        assertThat(pkg.globalPlatformApi()).isEqualTo("1.5");
         assertThat(pkg.intSupport()).isTrue();
         assertThat(pkg.exportComponent()).isTrue();
         assertThat(pkg.exportPath()).containsExactly(Path.of("a"), Path.of("b"));

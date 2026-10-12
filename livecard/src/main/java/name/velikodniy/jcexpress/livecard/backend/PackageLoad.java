@@ -28,8 +28,9 @@ import java.util.stream.Stream;
  * read from every class path entry that holds the package ({@link PackageContents}) and written to a temporary
  * classes directory for the converter, which {@link #close()} deletes.
  *
- * <p>A package that uses packages outside the Java Card API is refused before anything is converted: the backends
- * convert without the export files of other packages and do not load them first (JCVM 3.1 §4.3.3, §6.7).</p>
+ * <p>A package that uses packages outside the Java Card API and the GlobalPlatform Card API
+ * ({@code org.globalplatform}) is refused before anything is converted: the backends convert without the export files
+ * of other packages and do not load them first (JCVM 3.1 §4.3.3, §6.7).</p>
  */
 final class PackageLoad implements AutoCloseable {
 
@@ -81,6 +82,7 @@ final class PackageLoad implements AutoCloseable {
         }
         if (build.isPresent()) {
             pkg = pkg.withVersion(build.get().majorVersion(), build.get().minorVersion());
+            pkg = build.get().globalPlatformApi().map(pkg::withGlobalPlatformApi).orElse(pkg);
         }
         boolean withInt = intSupport.orElse(build.map(BuildDescriptor::supportInt32).orElse(false));
         String converted = "applets " + String.join(", ", names) + "; classes " + contents.describe(classes);
