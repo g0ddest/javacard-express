@@ -4,6 +4,7 @@ import javacard.framework.ISO7816;
 import name.velikodniy.jcexpress.AID;
 import name.velikodniy.jcexpress.APDULogEntry;
 import name.velikodniy.jcexpress.APDUResponse;
+import name.velikodniy.jcexpress.Bytes;
 import name.velikodniy.jcexpress.EnabledOnBackend;
 import name.velikodniy.jcexpress.InstallApplet;
 import name.velikodniy.jcexpress.JavaCardTest;
@@ -39,8 +40,8 @@ class WalletAppletTest {
     /** Recipe "Commands as constants". */
     @Test
     void credits(SmartCardSession card) {
-        assertThat(card.send(CREDIT.data(0x00, 0x64))).isSuccess();   // a new command; CREDIT stays as it is
-        assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+        assertThat(card.send(CREDIT.data(Bytes.ofShort(100)))).isSuccess();   // a new command; CREDIT stays as it is
+        assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(100);
     }
 
     /** Recipe "Commands as constants": a command copied from a trace, the applet's own byte constants. */
@@ -55,26 +56,26 @@ class WalletAppletTest {
     @Test
     void statusWords(SmartCardSession card) {
         assertThat(card.send(GET_BALANCE)).isSuccess();                                   // 9000
-        assertThat(card.send(DEBIT.data(0x00, 0x0A))).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
+        assertThat(card.send(DEBIT.data(Bytes.ofShort(10)))).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED);
         assertThat(card.send(0x80, 0x7F)).hasStatusWord(ISO7816.SW_INS_NOT_SUPPORTED);   // the applet's constants
         assertThat(card.send(0x80, 0x7F)).isNotSuccess().hasSw1(0x6D);
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();         // an AssertionError unless the SW is 9000
-        card.send(DEBIT.data(0x00, 0x0A)).requireSw(SW.NO_ERROR, SW.SECURITY_STATUS_NOT_SATISFIED);
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();         // an AssertionError unless the SW is 9000
+        card.send(DEBIT.data(Bytes.ofShort(10))).requireSw(SW.NO_ERROR, SW.SECURITY_STATUS_NOT_SATISFIED);
     }
 
     /** Recipe "Response data". */
     @Test
     void responseData(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
         APDUResponse info = card.send(GET_INFO);                   // E1 07 81 02 <balance> 82 01 <tries>
-        int balance = info.u16(4);                                 // two bytes, big-endian, unsigned: 100
+        short balance = info.shortAt(4);                           // two bytes, big-endian, as Util.getShort: 100
         int tries = info.u8(8);                                    // one byte, unsigned: 3
         byte[] balanceTlv = info.data(2, 6);                       // bytes 2 to 5: 81 02 00 64
-        assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+        assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(100);
         assertThat(card.send(GET_BALANCE)).hasDataHex("0064");
         assertThat(card.send(GET_BALANCE)).data().hasSize(2);
 
-        assertThat(balance).isEqualTo(100);
+        assertThat(balance).isEqualTo((short) 100);
         assertThat(tries).isEqualTo(3);
         assertThat(balanceTlv).containsExactly(0x81, 0x02, 0x00, 0x64);
     }
@@ -101,12 +102,12 @@ class WalletAppletTest {
     @Test
     void theBalanceSurvivesAResetThePinValidationDoesNot(SmartCardSession card) {
         PinSession pin = card.pin().cla(0x80).padTo(8, 0xFF);
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
         pin.verify(1, "1234").requireSuccess();
 
         card.reset();                                  // like pulling the card out: fields stay, nothing is selected
         card.select(WalletApplet.class);
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);
         assertThat(pin.isVerified(1)).isFalse();       // the PIN's validation flag is cleared by a reset
     }
 
@@ -129,13 +130,13 @@ class WalletAppletTest {
         assertThat(pin.retries(1)).hasValue(2);
         assertThat(pin.verify(1, "1234")).isSuccess();
         assertThat(pin.isVerified(1)).isTrue();
-        assertThat(card.send(DEBIT.data(0x00, 0x00))).isSuccess();
+        assertThat(card.send(DEBIT.data(Bytes.ofShort(0)))).isSuccess();
     }
 
     /** Recipe "TLV". */
     @Test
     void tlv(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
         APDUResponse info = card.send(GET_INFO);
         assertThat(info).tlv().tag(0xE1).isConstructed().tag(0x81).hasValue("0064");
         TLV tries = info.tlv().at(0xE1, 0x82).orElseThrow();      // E1 > 82, or Optional.empty()
@@ -145,7 +146,7 @@ class WalletAppletTest {
     /** Recipe "Watching the exchanges": the history of the current test. */
     @Test
     void historyHoldsTheExchangesOfThisTest(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
         assertThat(card.history().entries())                       // this test's exchanges: its SELECT, CREDIT
                 .extracting(APDULogEntry::ins).containsExactly(0xA4, 0x30);
     }
@@ -153,7 +154,7 @@ class WalletAppletTest {
     /** Recipe "Timing a command". */
     @Test
     void creditStaysWithinItsTimeBudget(SmartCardSession card) {
-        card.send(CREDIT.data(0x00, 0x64)).requireSuccess();
+        card.send(CREDIT.data(Bytes.ofShort(100))).requireSuccess();
         assertThat(card.history().last()).tookAtMost(Duration.ofMillis(200));   // the exchange just made
     }
 

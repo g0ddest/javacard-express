@@ -3,9 +3,7 @@ package name.velikodniy.jcexpress.assertions;
 import name.velikodniy.jcexpress.APDUResponse;
 import name.velikodniy.jcexpress.Hex;
 import name.velikodniy.jcexpress.SW;
-import org.assertj.core.api.AbstractAssert;
 import org.assertj.core.api.AbstractByteArrayAssert;
-import org.assertj.core.api.AbstractIntegerAssert;
 import org.assertj.core.api.AbstractStringAssert;
 import org.assertj.core.api.Assertions;
 
@@ -21,13 +19,13 @@ import java.util.stream.Collectors;
  * ({@code ISO7816.SW_NO_ERROR}).</p>
  *
  * <pre>
- * assertThat(card.send(GET_BALANCE)).isSuccess().u16(0).isEqualTo(100);
+ * assertThat(card.send(GET_BALANCE)).isSuccess().dataAsShort().isEqualTo(100);
  * assertThat(card.send(DEBIT)).hasStatusWord(SW.SECURITY_STATUS_NOT_SATISFIED).hasNoData();
  * assertThat(card.send(READ)).hasDataHex("01 02 03");
  * assertThat(card.send(READ)).data().hasSize(3).startsWith((byte) 0x01);
  * </pre>
  */
-public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUResponse> {
+public class APDUResponseAssert extends AbstractResponseValueAssert<APDUResponseAssert> {
 
     /**
      * Creates a new assertion for the given response.
@@ -245,41 +243,6 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
     }
 
     /**
-     * Returns an assertion on an unsigned byte of the response data ({@link APDUResponse#u8(int)}).
-     *
-     * @param offset the offset in the data
-     * @return an integer assertion on the byte, {@code 0} to {@code 255}
-     */
-    public AbstractIntegerAssert<?> u8(int offset) {
-        requireData("u8", offset, 1);
-        return Assertions.assertThat(actual.u8(offset)).as("u8 at offset %d of the data of %s", offset, actual);
-    }
-
-    /**
-     * Returns an assertion on an unsigned big-endian 16-bit number of the response data
-     * ({@link APDUResponse#u16(int)}): {@code assertThat(response).isSuccess().u16(0).isEqualTo(70)}.
-     *
-     * @param offset the offset of the high byte in the data
-     * @return an integer assertion on the number, {@code 0} to {@code 65535}
-     */
-    public AbstractIntegerAssert<?> u16(int offset) {
-        requireData("u16", offset, 2);
-        return Assertions.assertThat(actual.u16(offset)).as("u16 at offset %d of the data of %s", offset, actual);
-    }
-
-    /**
-     * Returns an assertion on a signed big-endian 16-bit number of the response data, the {@code short} an applet
-     * wrote with {@code Util.setShort} ({@link APDUResponse#s16(int)}).
-     *
-     * @param offset the offset of the high byte in the data
-     * @return an integer assertion on the number, {@code -32768} to {@code 32767}
-     */
-    public AbstractIntegerAssert<?> s16(int offset) {
-        requireData("s16", offset, 2);
-        return Assertions.assertThat(actual.s16(offset)).as("s16 at offset %d of the data of %s", offset, actual);
-    }
-
-    /**
      * Returns a string assertion on the response data interpreted as UTF-8.
      *
      * @return a string assertion for chaining
@@ -370,17 +333,6 @@ public class APDUResponseAssert extends AbstractAssert<APDUResponseAssert, APDUR
                     String.format(tag > 0xFF ? "%04X" : "%02X", tag), list);
         }
         return this;
-    }
-
-    /** Fails (as an assertion) when the data has no {@code width} bytes at {@code offset}, naming the status word. */
-    private void requireData(String reader, int offset, int width) {
-        isNotNull();
-        int length = actual.data().length;
-        if (offset < 0 || offset > length - width) {
-            failWithMessage("Expected response data with %d byte%s at offset %d for %s, but the data has %d byte%s"
-                            + " (SW=%04X, %s)", width, width == 1 ? "" : "s", offset, reader, length,
-                    length == 1 ? "" : "s", actual.sw(), SW.describe(actual.sw()));
-        }
     }
 
     private static String formatBytes(int... bytes) {

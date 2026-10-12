@@ -16,8 +16,8 @@ class TwoWalletsTest {
 
     @Test
     void everyInstanceHasItsOwnBalance(SmartCardSession card) {
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(100);   // the first declared instance is selected
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(100);   // the first declared instance is selected
         card.select(card.aid("0102"));
-        assertThat(card.send(GET_BALANCE)).u16(0).isEqualTo(200);
+        assertThat(card.send(GET_BALANCE)).dataAsShort().isEqualTo(200);
     }
 }
